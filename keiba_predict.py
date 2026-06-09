@@ -11,6 +11,7 @@ keiba_auto.py と同じ特徴量・モデルを使用。
 
 import os
 import sys
+import glob
 import pickle
 import smtplib
 import warnings
@@ -516,6 +517,58 @@ def predict_race(race_id: str):
     )
     print("\n" + report)
 
+    # ── CSV保存（GitHub経由でダッシュボードに表示） ──────────────────
+    try:
+        # 総合スコア計算（build_reportと同じロジック）
+        pdf["_ai_rank"] = pdf["勝ち確率"].rank(ascending=False)
+        pdf["_ev_rank"] = pdf["単勝期待値"].rank(ascending=False)
+        n = len(pdf)
+        pdf["総合スコア"] = (
+            (1 - (pdf["_ai_rank"] - 1) / n) * 40 +
+            (1 - (pdf["_ev_rank"] - 1) / n) * 40 +
+            pdf["該当戦略"].apply(lambda s: 20 if s else 0)
+        )
+        final_top = pdf.sort_values("総合スコア", ascending=False).head(5)
+        marks = ["◎", "○", "▲", "△", "×"]
+        pdf["推奨ランク"] = ""
+        for i, (idx, _) in enumerate(final_top.iterrows()):
+            if i < len(marks):
+                pdf.at[idx, "推奨ランク"] = marks[i]
+
+        # 保存する列を選択
+        save_cols = [
+            "race_id", "馬名", "馬番", "枠番",
+            "単勝オッズ", "人気",
+            "勝ち確率", "複勝確率", "3着内確率",
+            "単勝期待値", "推奨賭け率",
+            "乖離スコア", "MF予測順位",
+            "該当戦略", "推奨ランク", "総合スコア",
+            "予測順位", "過去勝率", "過去出走数", "前走間隔",
+        ]
+        save_cols = [c for c in save_cols if c in pdf.columns]
+        save_df = pdf[save_cols].copy()
+
+        # レース情報を追加
+        save_df["jyo"]      = jyo_name
+        save_df["race_no"]  = race_no
+        save_df["距離"]     = dist
+        save_df["馬場"]     = turf
+        save_df["馬場状態"] = baba
+        save_df["クラス"]   = cls
+        save_df["予想日時"] = datetime.now().strftime("%Y/%m/%d %H:%M")
+
+        # today_predictions.csv に追記（当日分をまとめる）
+        out_path = os.path.join(BASE_DIR, "today_predictions.csv")
+        if os.path.exists(out_path):
+            existing = pd.read_csv(out_path)
+            # 同じrace_idは上書き
+            existing = existing[existing["race_id"].astype(str) != str(race_id)]
+            save_df = pd.concat([existing, save_df], ignore_index=True)
+        save_df.to_csv(out_path, index=False, encoding="utf-8-sig")
+        print(f"  予想データ保存完了 → {out_path}")
+    except Exception as e:
+        print(f"  予想データ保存エラー: {e}")
+
     # メール送信
     subject = f"【競馬AI詳細予想】{jyo_name} {race_no}R"
     print("\nメール送信中...")
@@ -523,5 +576,22 @@ def predict_race(race_id: str):
 
 
 if __name__ == "__main__":
-    race_id = sys.argv[1] if len(sys.argv) > 1 else TARGET_RACE_ID
-    predict_race(race_id)
+    if len(sys.argv) > 1 and sys.argv[1] == "today":
+        # 当日の全レースを予想してCSVに保存
+        # keiba_auto.pyと同じロジックで当日レース一覧を取得
+        from keiba_auto import get_today_races
+        print("当日レース一覧を取得中...")
+        race_info = get_today_races()
+        if not race_info:
+            print("本日のレースが取得できませんでした")
+            sys.exit(1)
+        print(f"{len(race_info)}レースを予想します")
+        for rid in sorted(race_info.keys()):
+            try:
+                predict_race(rid)
+            except Exception as e:
+                print(f"  {rid} エラー: {e}")
+        print("\n全レース予想完了 → today_predictions.csv")
+    else:
+        race_id = sys.argv[1] if len(sys.argv) > 1 else TARGET_RACE_ID
+        predict_race(race_id)

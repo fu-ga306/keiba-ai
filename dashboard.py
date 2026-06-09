@@ -15,7 +15,8 @@ from datetime import datetime
 GITHUB_USER = "fu-ga306"
 GITHUB_REPO = "keiba-ai"
 GITHUB_BRANCH = "main"
-RECORD_FILE_URL = f"https://raw.githubusercontent.com/{GITHUB_USER}/{GITHUB_REPO}/{GITHUB_BRANCH}/prediction_record_v2.csv"
+RECORD_FILE_URL    = f"https://raw.githubusercontent.com/{GITHUB_USER}/{GITHUB_REPO}/{GITHUB_BRANCH}/prediction_record_v2.csv"
+TODAY_PRED_URL     = f"https://raw.githubusercontent.com/{GITHUB_USER}/{GITHUB_REPO}/{GITHUB_BRANCH}/today_predictions.csv"
 
 # ローカル実行時のフォールバック
 BASE_DIR    = r"c:\Users\別府飛河\OneDrive\デスクトップ\keiba_ai"
@@ -137,6 +138,20 @@ def load_data():
         return pd.read_csv(RECORD_FILE)
     return pd.DataFrame()
 
+@st.cache_data(ttl=120)  # 2分キャッシュ
+def load_today_predictions():
+    try:
+        df = pd.read_csv(TODAY_PRED_URL)
+        return df
+    except Exception:
+        pass
+    # ローカルフォールバック
+    local = os.path.join(BASE_DIR, "today_predictions.csv")
+    if os.path.exists(local):
+        return pd.read_csv(local)
+    return pd.DataFrame()
+
+
 def get_result_df(df):
     if df.empty or "hit" not in df.columns:
         return pd.DataFrame()
@@ -179,7 +194,7 @@ def strat_badges(s):
 # ── サイドバー ────────────────────────────────────────────────────────────
 st.sidebar.markdown("## 🏇 競馬AI")
 st.sidebar.markdown("---")
-page = st.sidebar.radio("", ["📊 成績サマリー", "📋 レース結果", "🏆 戦略分析"])
+page = st.sidebar.radio("ページ", ["🏇 当日予想", "📊 成績サマリー", "📋 レース結果", "🏆 戦略分析"])
 st.sidebar.markdown("---")
 if st.sidebar.button("🔄 更新"):
     st.cache_data.clear()
@@ -192,9 +207,114 @@ df_result = get_result_df(df_all)
 
 
 # ════════════════════════════════════════════════════════════════════════
-# ページ① 成績サマリー
+# ページ① 当日予想
 # ════════════════════════════════════════════════════════════════════════
-if page == "📊 成績サマリー":
+if page == "🏇 当日予想":
+    st.markdown("## 🏇 当日予想")
+
+    df_today = load_today_predictions()
+
+    if df_today.empty:
+        st.warning("本日の予想データがありません。keiba_predict.py を実行してください。")
+        st.info("実行コマンド: `python keiba_predict.py today`")
+        st.stop()
+
+    # レース選択
+    if "jyo" in df_today.columns and "race_no" in df_today.columns:
+        races = df_today[["race_id", "jyo", "race_no"]].drop_duplicates()
+        races["label"] = races["jyo"] + " " + races["race_no"].astype(str) + "R"
+        race_labels = races["label"].tolist()
+        sel = st.selectbox("レースを選択", race_labels)
+        sel_race_id = races[races["label"] == sel]["race_id"].iloc[0]
+        race_df = df_today[df_today["race_id"].astype(str) == str(sel_race_id)].copy()
+    else:
+        race_df = df_today.copy()
+
+    if race_df.empty:
+        st.warning("選択したレースのデータがありません。")
+        st.stop()
+
+    # レース概要
+    row0 = race_df.iloc[0]
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("コース", f"{row0.get('馬場','')}{row0.get('距離','')}m")
+    col2.metric("馬場状態", str(row0.get('馬場状態', '-')))
+    col3.metric("クラス", str(row0.get('クラス', '-')))
+    col4.metric("出走頭数", f"{len(race_df)}頭")
+
+    st.markdown("---")
+
+    # 推奨馬（◎○▲△×）
+    st.subheader("⭐ AI推奨馬")
+    marks = ["◎", "○", "▲", "△", "×"]
+    mark_colors = {"◎": "#f0b429", "○": "#3b82f6", "▲": "#10b981", "△": "#8892a4", "×": "#e74c3c"}
+    mark_labels = {"◎": "最強推奨", "○": "強く推奨", "▲": "推奨", "△": "穴候補", "×": "注目"}
+
+    if "推奨ランク" in race_df.columns:
+        for mark in marks:
+            rows = race_df[race_df["推奨ランク"] == mark]
+            if rows.empty:
+                continue
+            row = rows.iloc[0]
+            color  = mark_colors[mark]
+            label  = mark_labels[mark]
+            odds   = row.get("単勝オッズ", np.nan)
+            pop    = row.get("人気", np.nan)
+            wp     = row.get("勝ち確率", np.nan)
+            pp     = row.get("複勝確率", np.nan)
+            ev     = row.get("単勝期待値", np.nan)
+            strat  = row.get("該当戦略", "")
+            gap    = row.get("乖離スコア", np.nan)
+
+            odds_s  = f"{odds:.1f}倍" if pd.notna(odds) else "-"
+            pop_s   = f"{int(pop)}番人気" if pd.notna(pop) else "-"
+            wp_s    = f"{wp*100:.1f}%" if pd.notna(wp) else "-"
+            pp_s    = f"{pp*100:.1f}%" if pd.notna(pp) else "-"
+            ev_s    = f"{ev:+.2f}" if pd.notna(ev) else "-"
+            gap_s   = f"{gap:+.0f}" if pd.notna(gap) else "-"
+
+            st.markdown(
+                f"<div style='background:#1a1f2e;border-left:4px solid {color};"
+                f"border-radius:8px;padding:12px 16px;margin-bottom:8px'>"
+                f"<span style='color:{color};font-size:1.3rem;font-weight:900'>{mark}</span>"
+                f"<span style='color:#fff;font-size:1.1rem;font-weight:700;margin-left:8px'>"
+                f"【{label}】馬番{int(row['馬番'])}番 {row['馬名']}</span><br>"
+                f"<span style='color:#8892a4;font-size:0.85rem'>"
+                f"オッズ: {odds_s} / {pop_s} | "
+                f"勝率: {wp_s} | 複勝率: {pp_s} | 期待値: {ev_s} | 乖離: {gap_s}"
+                f"</span>"
+                + (f"<br><span style='color:#f0b429;font-size:0.8rem'>🔥 {strat}</span>" if strat else "")
+                + "</div>",
+                unsafe_allow_html=True
+            )
+
+    st.markdown("---")
+
+    # 全馬評価テーブル
+    st.subheader("🐴 全馬評価")
+    disp_cols = ["推奨ランク", "馬番", "馬名", "単勝オッズ", "人気",
+                 "勝ち確率", "複勝確率", "単勝期待値", "乖離スコア", "該当戦略"]
+    disp_cols = [c for c in disp_cols if c in race_df.columns]
+    disp = race_df[disp_cols].sort_values("予測順位" if "予測順位" in race_df.columns else disp_cols[0])
+
+    # 数値を見やすく変換
+    for col in ["勝ち確率", "複勝確率"]:
+        if col in disp.columns:
+            disp[col] = disp[col].apply(lambda x: f"{x*100:.1f}%" if pd.notna(x) else "-")
+    if "単勝期待値" in disp.columns:
+        disp["単勝期待値"] = disp["単勝期待値"].apply(lambda x: f"{x:+.2f}" if pd.notna(x) else "-")
+    if "乖離スコア" in disp.columns:
+        disp["乖離スコア"] = disp["乖離スコア"].apply(lambda x: f"{x:+.0f}" if pd.notna(x) else "-")
+
+    st.dataframe(disp, hide_index=True, use_container_width=True)
+
+    st.caption(f"予想日時: {race_df['予想日時'].iloc[0] if '予想日時' in race_df.columns else '-'}")
+
+
+# ════════════════════════════════════════════════════════════════════════
+# ページ② 成績サマリー
+# ════════════════════════════════════════════════════════════════════════
+elif page == "📊 成績サマリー":
     st.markdown("## 📊 成績サマリー")
 
     if df_result.empty:
@@ -294,7 +414,7 @@ if page == "📊 成績サマリー":
 
 
 # ════════════════════════════════════════════════════════════════════════
-# ページ② レース結果
+# ページ③ レース結果
 # ════════════════════════════════════════════════════════════════════════
 elif page == "📋 レース結果":
     st.markdown("## 📋 レース結果")
@@ -368,7 +488,7 @@ elif page == "📋 レース結果":
 
 
 # ════════════════════════════════════════════════════════════════════════
-# ページ③ 戦略分析
+# ページ④ 戦略分析
 # ════════════════════════════════════════════════════════════════════════
 elif page == "🏆 戦略分析":
     st.markdown("## 🏆 バックテスト戦略分析")
