@@ -17,6 +17,7 @@ import smtplib
 import warnings
 import numpy as np
 import pandas as pd
+from datetime import datetime
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
