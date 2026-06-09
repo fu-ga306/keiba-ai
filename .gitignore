@@ -21,3 +21,5 @@ __pycache__/
 *.pyc
 *.log
 update_log.txt
+
+catboost_info/
