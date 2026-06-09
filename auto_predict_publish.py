@@ -182,12 +182,52 @@ def setup_schedule():
 
 
 # ── メイン ────────────────────────────────────────────────────────────────
+def run_keiba_auto():
+    """keiba_auto.py をサブプロセスで起動（メール送信・個別予想）"""
+    print(f"\n[{datetime.now().strftime('%H:%M')}] keiba_auto.py 起動")
+    try:
+        result = subprocess.Popen(
+            [PYTHON, os.path.join(BASE_DIR, "keiba_auto.py")],
+            cwd=BASE_DIR,
+        )
+        print(f"  keiba_auto.py 起動完了 (PID: {result.pid})")
+        # PIDを保存（停止時に使用）
+        pid_file = os.path.join(BASE_DIR, "keiba_auto.pid")
+        with open(pid_file, "w") as f:
+            f.write(str(result.pid))
+    except Exception as e:
+        print(f"  keiba_auto.py 起動エラー: {e}")
+
+
+def stop_keiba_auto():
+    """keiba_auto.py を停止"""
+    pid_file = os.path.join(BASE_DIR, "keiba_auto.pid")
+    if not os.path.exists(pid_file):
+        print("  keiba_auto.pid なし → スキップ")
+        return
+    try:
+        with open(pid_file) as f:
+            pid = int(f.read().strip())
+        import signal
+        os.kill(pid, signal.SIGTERM)
+        os.remove(pid_file)
+        print(f"  keiba_auto.py 停止完了 (PID: {pid})")
+    except Exception as e:
+        print(f"  keiba_auto.py 停止エラー: {e}")
+
+
 def main():
     print(f"=== 自動予想・公開システム 起動 [{datetime.now().strftime('%Y/%m/%d %H:%M')}] ===\n")
 
     # 午前7時の一括予想をスケジュール
     schedule.every().day.at("07:00").do(run_morning_prediction)
     print("  [済] 朝7時の一括予想をスケジュール登録")
+
+    # keiba_auto.py の自動起動（6:58）・停止（21時）
+    # keiba_auto.pyは各レース7分前にメール送信するため早めに起動
+    schedule.every().day.at("06:58").do(run_keiba_auto)
+    schedule.every().day.at("21:00").do(stop_keiba_auto)
+    print("  [済] keiba_auto.py 自動起動(06:58)・停止(21:00)をスケジュール登録")
 
     # 当日レースの個別予想スケジュールを設定
     now = datetime.now()
