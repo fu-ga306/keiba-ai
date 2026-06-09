@@ -23,3 +23,5 @@ __pycache__/
 update_log.txt
 
 catboost_info/
+
+test.py
