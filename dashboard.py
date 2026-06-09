@@ -11,6 +11,13 @@ import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime
 
+# GitHubのRAWファイルから直接読み込む
+GITHUB_USER = "fu-ga306"
+GITHUB_REPO = "keiba-ai"
+GITHUB_BRANCH = "main"
+RECORD_FILE_URL = f"https://raw.githubusercontent.com/{GITHUB_USER}/{GITHUB_REPO}/{GITHUB_BRANCH}/prediction_record_v2.csv"
+
+# ローカル実行時のフォールバック
 BASE_DIR    = r"c:\Users\別府飛河\OneDrive\デスクトップ\keiba_ai"
 RECORD_FILE = os.path.join(BASE_DIR, "prediction_record_v2.csv")
 
@@ -119,10 +126,16 @@ section[data-testid="stSidebar"] { background: #0d1117; }
 # ── データ読み込み ────────────────────────────────────────────────────────
 @st.cache_data(ttl=300)
 def load_data():
-    if not os.path.exists(RECORD_FILE):
-        return pd.DataFrame()
-    df = pd.read_csv(RECORD_FILE)
-    return df
+    # まずGitHubから取得を試みる
+    try:
+        df = pd.read_csv(RECORD_FILE_URL)
+        return df
+    except Exception:
+        pass
+    # フォールバック：ローカルファイル
+    if os.path.exists(RECORD_FILE):
+        return pd.read_csv(RECORD_FILE)
+    return pd.DataFrame()
 
 def get_result_df(df):
     if df.empty or "hit" not in df.columns:
