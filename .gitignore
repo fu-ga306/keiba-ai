@@ -1,7 +1,7 @@
-ï»¿# æ©Ÿå¯†æƒ…å ±
+# ‹@–§î•ñ
 .env
 
-# é‡ã„ãƒ‡ãƒ¼ã‚¿ãƒ•ã‚¡ã‚¤ãƒ«
+# d‚¢ƒf[ƒ^ƒtƒ@ƒCƒ‹
 race_data_large.csv
 race_data_clean.csv
 race_features.csv
@@ -9,15 +9,14 @@ race_data_new_tmp_*.csv
 model_mf_result.csv
 horse_master.csv
 
-# ãƒ¢ãƒ‡ãƒ«ãƒ•ã‚¡ã‚¤ãƒ«
+# ƒ‚ƒfƒ‹ƒtƒ@ƒCƒ‹
 model.pkl
 model_mf.pkl
 
-# äºˆæƒ³è¨˜éŒ²ï¼ˆãƒ­ãƒ¼ã‚«ãƒ«ç®¡ç†ï¼‰
+# —\‘z‹L˜^iƒ[ƒJƒ‹ŠÇ—j
 prediction_record.csv
-prediction_record_v2.csv
 
-# ä¸€æ™‚ãƒ•ã‚¡ã‚¤ãƒ«
+# ˆêƒtƒ@ƒCƒ‹
 __pycache__/
 *.pyc
 *.log
