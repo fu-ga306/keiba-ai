@@ -1,0 +1,24 @@
+﻿# 機密情報
+.env
+
+# 重いデータファイル
+race_data_large.csv
+race_data_clean.csv
+race_features.csv
+race_data_new_tmp_*.csv
+model_mf_result.csv
+horse_master.csv
+
+# モデルファイル
+model.pkl
+model_mf.pkl
+
+# 予想記録（ローカル管理）
+prediction_record.csv
+prediction_record_v2.csv
+
+# 一時ファイル
+__pycache__/
+*.pyc
+*.log
+update_log.txt
