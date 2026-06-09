@@ -494,7 +494,7 @@ def predict_race(race_id: str):
                 and row["予測順位"] == 1 and row["単勝期待値"] >= 0.2:
             s.append("戦略D")
         if (pd.notna(row.get("乖離スコア"))
-                and row.get("乖離スコア", 0) >= 3
+                and row.get("乖離スコア", 0) >= 5
                 and row.get("MF予測順位", 99) == 1):
             s.append("戦略E(市場見落とし)")
         return " / ".join(s) if s else ""

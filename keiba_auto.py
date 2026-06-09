@@ -235,58 +235,129 @@ def get_race_data(race_id):
         return None
 
     # ── オッズ・人気取得（Selenium）──
-    # 【バグ修正】finally で必ず quit() するよう変更
-    odds_driver = _make_chrome_driver()
-    try:
-        odds_url = (
-            f"https://race.netkeiba.com/odds/index.html"
-            f"?race_id={race_id}&type=b1"
-        )
-        odds_driver.get(odds_url)
-        time.sleep(4)
-        odds_soup = BeautifulSoup(odds_driver.page_source, "html.parser")
-    finally:
-        odds_driver.quit()
+    # ── オッズ取得（単勝・複勝・ワイド・馬連）────────────────────────────
+    def fetch_odds_page(race_id, odds_type, sleep_sec=3):
+        """netkeibaのオッズページをSeleniumで取得"""
+        driver = _make_chrome_driver()
+        try:
+            url = (
+                f"https://race.netkeiba.com/odds/index.html"
+                f"?race_id={race_id}&type={odds_type}"
+            )
+            driver.get(url)
+            time.sleep(sleep_sec)
+            return BeautifulSoup(driver.page_source, "html.parser")
+        finally:
+            driver.quit()
 
+    # ── 単勝・人気取得 ──
     try:
-        odds_tables = odds_soup.find_all("table", class_="RaceOdds_HorseList_Table")
-        odds_table = odds_tables[0] if odds_tables else None
-
+        soup_tan = fetch_odds_page(race_id, "b1")
+        tables = soup_tan.find_all("table", class_="RaceOdds_HorseList_Table")
+        odds_table = tables[0] if tables else None
         if odds_table:
             temp = []
             for tr in odds_table.find_all("tr")[1:]:
                 td = tr.find_all("td")
                 if len(td) >= 6:
-                    umaban   = td[1].get_text(strip=True)
-                    odds_str = td[5].get_text(strip=True)
+                    umaban = td[1].get_text(strip=True)
                     try:
-                        odds_val = float(odds_str)
+                        odds_val = float(td[5].get_text(strip=True))
                     except ValueError:
                         odds_val = np.nan
                     temp.append((umaban, odds_val))
-
             valid = [(u, o) for u, o in temp if not np.isnan(o)]
             valid_sorted = sorted(valid, key=lambda x: x[1])
-            ninki_map = {u: i + 1 for i, (u, _) in enumerate(valid_sorted)}
+            ninki_map = {u: i+1 for i, (u, _) in enumerate(valid_sorted)}
             odds_map  = {u: (o, ninki_map.get(u, np.nan)) for u, o in temp}
-
-            df["単勝オッズ"] = df["馬番"].astype(str).map(
-                lambda x: odds_map.get(x, (np.nan, np.nan))[0]
-            )
-            df["人気"] = df["馬番"].astype(str).map(
-                lambda x: odds_map.get(x, (np.nan, np.nan))[1]
-            )
-            print(f"  オッズ取得成功: {len(valid)}頭分")
+            df["単勝オッズ"] = df["馬番"].astype(str).map(lambda x: odds_map.get(x, (np.nan, np.nan))[0])
+            df["人気"]      = df["馬番"].astype(str).map(lambda x: odds_map.get(x, (np.nan, np.nan))[1])
+            print(f"  単勝オッズ取得成功: {len(valid)}頭分")
         else:
             df["単勝オッズ"] = np.nan
             df["人気"]      = np.nan
-
     except Exception as e:
-        import traceback
-        print(f"オッズ解析エラー: {race_id}")
-        traceback.print_exc()
+        print(f"  単勝オッズ取得エラー: {e}")
         df["単勝オッズ"] = np.nan
         df["人気"]      = np.nan
+
+    # ── 複勝オッズ取得 ──
+    try:
+        soup_fuku = fetch_odds_page(race_id, "b2")
+        tables = soup_fuku.find_all("table", class_="RaceOdds_HorseList_Table")
+        fuku_table = tables[0] if tables else None
+        fuku_map = {}
+        if fuku_table:
+            for tr in fuku_table.find_all("tr")[1:]:
+                td = tr.find_all("td")
+                if len(td) >= 6:
+                    umaban = td[1].get_text(strip=True)
+                    # 複勝は最低・最高オッズの範囲で表示される場合あり
+                    odds_text = td[5].get_text(strip=True)
+                    try:
+                        # "1.5 - 2.3" のような形式に対応
+                        odds_vals = [float(x) for x in odds_text.replace("－", "-").split("-") if x.strip()]
+                        fuku_min = min(odds_vals)
+                        fuku_max = max(odds_vals)
+                        fuku_map[umaban] = (fuku_min, fuku_max)
+                    except:
+                        fuku_map[umaban] = (np.nan, np.nan)
+        df["複勝オッズ_min"] = df["馬番"].astype(str).map(lambda x: fuku_map.get(x, (np.nan, np.nan))[0])
+        df["複勝オッズ_max"] = df["馬番"].astype(str).map(lambda x: fuku_map.get(x, (np.nan, np.nan))[1])
+        print(f"  複勝オッズ取得成功: {len(fuku_map)}頭分")
+    except Exception as e:
+        print(f"  複勝オッズ取得エラー: {e}")
+        df["複勝オッズ_min"] = np.nan
+        df["複勝オッズ_max"] = np.nan
+
+    # ── ワイド・馬連オッズ取得（組み合わせ形式） ──
+    try:
+        soup_wide = fetch_odds_page(race_id, "b4")
+        # ワイドは馬番ペアごとのオッズ
+        wide_map = {}
+        wide_table = soup_wide.find("table", id="odds_wide_block")
+        if wide_table is None:
+            wide_tables = soup_wide.find_all("table", class_="RaceOdds_HorseList_Table")
+            wide_table = wide_tables[0] if wide_tables else None
+        if wide_table:
+            for tr in wide_table.find_all("tr")[1:]:
+                td = tr.find_all("td")
+                if len(td) >= 4:
+                    try:
+                        uma1 = td[0].get_text(strip=True)
+                        uma2 = td[1].get_text(strip=True)
+                        odds_text = td[3].get_text(strip=True)
+                        odds_vals = [float(x) for x in odds_text.replace("－","-").split("-") if x.strip()]
+                        wide_map[(uma1, uma2)] = (min(odds_vals), max(odds_vals))
+                    except:
+                        pass
+        df["_wide_map"] = [wide_map] * len(df)
+        print(f"  ワイドオッズ取得成功: {len(wide_map)}組み合わせ")
+    except Exception as e:
+        print(f"  ワイドオッズ取得エラー: {e}")
+        df["_wide_map"] = [{}] * len(df)
+
+    try:
+        soup_umaren = fetch_odds_page(race_id, "b5")
+        umaren_map = {}
+        umaren_tables = soup_umaren.find_all("table", class_="RaceOdds_HorseList_Table")
+        umaren_table = umaren_tables[0] if umaren_tables else None
+        if umaren_table:
+            for tr in umaren_table.find_all("tr")[1:]:
+                td = tr.find_all("td")
+                if len(td) >= 4:
+                    try:
+                        uma1 = td[0].get_text(strip=True)
+                        uma2 = td[1].get_text(strip=True)
+                        odds_val = float(td[3].get_text(strip=True))
+                        umaren_map[(uma1, uma2)] = odds_val
+                    except:
+                        pass
+        df["_umaren_map"] = [umaren_map] * len(df)
+        print(f"  馬連オッズ取得成功: {len(umaren_map)}組み合わせ")
+    except Exception as e:
+        print(f"  馬連オッズ取得エラー: {e}")
+        df["_umaren_map"] = [{}] * len(df)
 
     return df
 
@@ -641,7 +712,93 @@ def make_email_body(race_id, pdf):
             )
 
     lines.append("\n※複勝オッズはハーヴィルモデルで推定。実際と異なる場合があります。")
-    lines.append("※AIによる予測です。投資は自己責任でお願いします。")
+
+    # ── 馬券種別 買い目提案 ──────────────────────────────────────────
+    lines.append("\n" + "=" * 40)
+    lines.append("🎯 買い目提案")
+    lines.append("=" * 40)
+
+    # 単勝推奨
+    lines.append("\n【単勝】")
+    strategy_horses = pdf[pdf["該当戦略"] != ""].sort_values("単勝期待値", ascending=False)
+    if not strategy_horses.empty:
+        for _, row in strategy_horses.head(2).iterrows():
+            ev  = row.get("単勝期待値", np.nan)
+            odd = row.get("単勝オッズ", np.nan)
+            kelly = row.get("推奨賭け率", np.nan)
+            kelly_s = f"{kelly*100:.1f}%" if pd.notna(kelly) and kelly > 0 else "-"
+            lines.append(
+                f"  ✅ {row['馬名']} {odd}倍 "
+                f"期待値{ev:+.2f} Kelly:{kelly_s} "
+                f"({row['該当戦略']})"
+            )
+    else:
+        lines.append("  （戦略該当馬なし）")
+
+    # 複勝推奨
+    lines.append("\n【複勝】")
+    valid_fuku = pdf[pdf["複勝確率"] >= 0.35].copy()
+    if "複勝期待値_実" in pdf.columns:
+        valid_fuku = valid_fuku[valid_fuku["複勝期待値_実"] >= 0.1]
+        valid_fuku = valid_fuku.sort_values("複勝期待値_実", ascending=False)
+        col = "複勝期待値_実"
+    else:
+        valid_fuku = valid_fuku.sort_values("複勝確率", ascending=False)
+        col = "複勝確率"
+    if not valid_fuku.empty:
+        for _, row in valid_fuku.head(3).iterrows():
+            fuku_min = row.get("複勝オッズ_min", np.nan)
+            fuku_max = row.get("複勝オッズ_max", np.nan)
+            if pd.notna(fuku_min):
+                odds_s = f"{fuku_min}〜{fuku_max}倍"
+            else:
+                odds_s = "オッズ確定前"
+            pp = row["複勝確率"]
+            ev = row.get(col, np.nan)
+            lines.append(
+                f"  ✅ {row['馬名']} {odds_s} "
+                f"複勝確率{pp*100:.1f}% 期待値{ev:+.2f}"
+            )
+    else:
+        lines.append("  （推奨馬なし）")
+
+    # ワイド買い目
+    wide_bets = pdf["_wide_bets"].iloc[0] if "_wide_bets" in pdf.columns else []
+    if wide_bets:
+        lines.append("\n【ワイド】")
+        sorted_wide = sorted(wide_bets, key=lambda x: x["ワイド期待値"], reverse=True)
+        for bet in sorted_wide[:3]:
+            u1 = bet["馬番1"]
+            u2 = bet["馬番2"]
+            n1 = pdf[pdf["馬番"].astype(str) == u1]["馬名"].iloc[0] if len(pdf[pdf["馬番"].astype(str) == u1]) > 0 else u1
+            n2 = pdf[pdf["馬番"].astype(str) == u2]["馬名"].iloc[0] if len(pdf[pdf["馬番"].astype(str) == u2]) > 0 else u2
+            ev = bet["ワイド期待値"]
+            mark = "✅" if ev >= 0 else "△"
+            lines.append(
+                f"  {mark} {n1} × {n2} "
+                f"{bet['ワイドオッズ_min']}〜{bet['ワイドオッズ_max']}倍 "
+                f"的中率{bet['ワイド的中確率']*100:.1f}% 期待値{ev:+.2f}"
+            )
+
+    # 馬連買い目
+    umaren_bets = pdf["_umaren_bets"].iloc[0] if "_umaren_bets" in pdf.columns else []
+    if umaren_bets:
+        lines.append("\n【馬連】")
+        sorted_umaren = sorted(umaren_bets, key=lambda x: x["馬連期待値"], reverse=True)
+        for bet in sorted_umaren[:3]:
+            u1 = bet["馬番1"]
+            u2 = bet["馬番2"]
+            n1 = pdf[pdf["馬番"].astype(str) == u1]["馬名"].iloc[0] if len(pdf[pdf["馬番"].astype(str) == u1]) > 0 else u1
+            n2 = pdf[pdf["馬番"].astype(str) == u2]["馬名"].iloc[0] if len(pdf[pdf["馬番"].astype(str) == u2]) > 0 else u2
+            ev = bet["馬連期待値"]
+            mark = "✅" if ev >= 0 else "△"
+            lines.append(
+                f"  {mark} {n1} × {n2} "
+                f"{bet['馬連オッズ']}倍 "
+                f"的中率{bet['馬連的中確率']*100:.1f}% 期待値{ev:+.2f}"
+            )
+
+    lines.append("\n※AIによる予測です。投資は自己責任でお願いします。")
     return "\n".join(lines)
 
 
@@ -722,6 +879,78 @@ def run_single_race(race_id, models, use_cols, history_df, mf_models=None, mf_co
         axis=1,
     )
 
+    # ── 複勝期待値（実オッズベース） ──────────────────────────────────
+    if "複勝オッズ_min" in pdf.columns:
+        # 実オッズが取れた場合は実オッズで計算
+        pdf["複勝期待値_実"] = pdf["複勝確率"] * pdf["複勝オッズ_min"] - 1
+    else:
+        pdf["複勝期待値_実"] = pdf["複勝期待値"]  # ハーヴィル推定値を使用
+
+    # ── ワイド・馬連の期待値と買い目提案 ────────────────────────────
+    wide_map   = pdf["_wide_map"].iloc[0]   if "_wide_map"   in pdf.columns else {}
+    umaren_map = pdf["_umaren_map"].iloc[0] if "_umaren_map" in pdf.columns else {}
+
+    # 上位3頭の馬番を取得
+    top3 = pdf.sort_values("勝ち確率", ascending=False).head(3)
+    top3_umaban = top3["馬番"].astype(str).tolist()
+
+    # ワイド期待値計算（◎×○ / ◎×▲ / ○×▲）
+    wide_bets = []
+    if wide_map and len(top3_umaban) >= 2:
+        for i in range(len(top3_umaban)):
+            for j in range(i+1, len(top3_umaban)):
+                u1, u2 = top3_umaban[i], top3_umaban[j]
+                key1 = (u1, u2)
+                key2 = (u2, u1)
+                wide_odds = wide_map.get(key1, wide_map.get(key2, (np.nan, np.nan)))
+                if isinstance(wide_odds, tuple) and pd.notna(wide_odds[0]):
+                    # ワイド的中確率 = 2頭が共に3着以内に入る確率（近似）
+                    r1 = pdf[pdf["馬番"].astype(str) == u1]
+                    r2 = pdf[pdf["馬番"].astype(str) == u2]
+                    if len(r1) > 0 and len(r2) > 0:
+                        p1 = float(r1["複勝確率"].iloc[0])
+                        p2 = float(r2["複勝確率"].iloc[0])
+                        # 近似：両方3着以内の確率
+                        wide_prob = p1 * p2 * 1.5  # ハーヴィル近似係数
+                        wide_prob = min(wide_prob, 0.95)
+                        wide_ev = wide_prob * wide_odds[0] - 1
+                        wide_bets.append({
+                            "馬番1": u1, "馬番2": u2,
+                            "ワイドオッズ_min": wide_odds[0],
+                            "ワイドオッズ_max": wide_odds[1] if len(wide_odds) > 1 else wide_odds[0],
+                            "ワイド的中確率": wide_prob,
+                            "ワイド期待値": wide_ev,
+                        })
+
+    # 馬連期待値計算
+    umaren_bets = []
+    if umaren_map and len(top3_umaban) >= 2:
+        for i in range(len(top3_umaban)):
+            for j in range(i+1, len(top3_umaban)):
+                u1, u2 = top3_umaban[i], top3_umaban[j]
+                key1 = (u1, u2)
+                key2 = (u2, u1)
+                umaren_odds = umaren_map.get(key1, umaren_map.get(key2, np.nan))
+                if pd.notna(umaren_odds):
+                    r1 = pdf[pdf["馬番"].astype(str) == u1]
+                    r2 = pdf[pdf["馬番"].astype(str) == u2]
+                    if len(r1) > 0 and len(r2) > 0:
+                        p1 = float(r1["勝ち確率"].iloc[0])
+                        p2 = float(r2["勝ち確率"].iloc[0])
+                        # 馬連的中確率 = どちらかが1着でもう一方が2着
+                        umaren_prob = p1 * (p2 / (1 - p1 + 1e-9)) + p2 * (p1 / (1 - p2 + 1e-9))
+                        umaren_prob = min(umaren_prob, 0.95)
+                        umaren_ev = umaren_prob * umaren_odds - 1
+                        umaren_bets.append({
+                            "馬番1": u1, "馬番2": u2,
+                            "馬連オッズ": umaren_odds,
+                            "馬連的中確率": umaren_prob,
+                            "馬連期待値": umaren_ev,
+                        })
+
+    pdf["_wide_bets"]   = [wide_bets]   * len(pdf)
+    pdf["_umaren_bets"] = [umaren_bets] * len(pdf)
+
     # 市場フリーモデルによる乖離スコア計算
     pdf["MF予測順位"] = np.nan
     pdf["乖離スコア"] = np.nan
@@ -756,11 +985,34 @@ def run_single_race(race_id, models, use_cols, history_df, mf_models=None, mf_co
                 and row["予測順位"] == 1
                 and row["単勝期待値"] >= 0.2):
             strategies.append("戦略D(好ローテ)")
-        # 戦略E：市場乖離スコア≥3 × MF予測1位（回収率133.3%）
+        # 戦略E：市場乖離スコア≥5 × MF予測1位（回収率168.1%）
         if (pd.notna(row.get("乖離スコア"))
-                and row.get("乖離スコア", 0) >= 3
+                and row.get("乖離スコア", 0) >= 5
                 and row.get("MF予測順位", 99) == 1):
             strategies.append("戦略E(市場見落とし)")
+        # 戦略F：中京・東京 × 予測1位 × 期待値≥0.3（回収率197.2%）
+        # 競馬場cd: 5=東京, 7=中京
+        jyo_cd = int(str(row.get("race_id", "000000000000"))[4:6])
+        if (jyo_cd in [5, 7]
+                and row["予測順位"] == 1
+                and row["単勝期待値"] >= 0.3
+                and 1.5 <= row["単勝オッズ"] <= 20):
+            strategies.append("戦略F(東京・中京)")
+        # 戦略H：中山・小倉 × 予測1位 × 期待値≥0.3（回収率128.9%）
+        # 競馬場cd: 6=中山, 10=小倉
+        if (jyo_cd in [6, 10]
+                and row["予測順位"] == 1
+                and row["単勝期待値"] >= 0.3
+                and 1.5 <= row["単勝オッズ"] <= 20):
+            strategies.append("戦略H(中山・小倉)")
+        # 戦略FG：中京・東京 × 短距離(〜1400m) × 予測1位 × 期待値≥0.3（回収率265.0%）
+        if (jyo_cd in [5, 7]
+                and pd.notna(row.get("距離"))
+                and row.get("距離", 9999) <= 1400
+                and row["予測順位"] == 1
+                and row["単勝期待値"] >= 0.3
+                and 1.5 <= row["単勝オッズ"] <= 20):
+            strategies.append("戦略FG(東京・中京×短距離)")
         if strategies:
             pdf.at[idx, "該当戦略"] = " / ".join(strategies)
 

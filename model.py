@@ -9,7 +9,19 @@ warnings.filterwarnings("ignore")
 import sklearn
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.model_selection import train_test_split
-import sklearn
+
+# XGBoost・CatBoost（インストール済みの場合のみ使用）
+try:
+    import xgboost as xgb
+    HAS_XGB = True
+except ImportError:
+    HAS_XGB = False
+
+try:
+    from catboost import CatBoostClassifier
+    HAS_CAT = True
+except ImportError:
+    HAS_CAT = False
 
 FEATURE_COLS = [
     "枠番",
@@ -208,20 +220,107 @@ def train_model(csv_path="race_features.csv"):
     best_iter = base_model.best_iteration_
     print(f"  アーリーストッピング: {best_iter}本で停止")
 
-    # ── isotonic回帰でキャリブレーション ──
-    # sklearn 1.8+ では cv="prefit" が廃止され cv=None が同等動作
-    # cv=None = 渡した estimator がすでに fit 済みであることを前提にキャリブレーションのみ実行
-    print("確率キャリブレーション中（isotonic / cv=None）...")
-    calibrated_model = CalibratedClassifierCV(
+    # ── LightGBM キャリブレーション ──
+    print("確率キャリブレーション中（LightGBM）...")
+    calibrated_lgb = CalibratedClassifierCV(
         estimator=base_model, method="isotonic", cv=None
     )
-    calibrated_model.fit(X_cal, y_cal)
+    calibrated_lgb.fit(X_cal, y_cal)
+    models = [calibrated_lgb]
 
-    # ── テストデータで評価 ──
+    # ── XGBoost（インストール済みの場合） ──
+    if HAS_XGB:
+        print("XGBoostモデルを学習中...")
+        # step1: early_stoppingでベストイテレーション取得
+        xgb_tmp = xgb.XGBClassifier(
+            objective="binary:logistic",
+            learning_rate=0.03,
+            max_depth=5,
+            n_estimators=1000,
+            subsample=0.8,
+            colsample_bytree=0.8,
+            scale_pos_weight=2.0,
+            eval_metric="logloss",
+            early_stopping_rounds=100,
+            verbosity=0,
+            random_state=42,
+        )
+        xgb_tmp.fit(
+            X_train_main, y_train_main,
+            eval_set=[(X_cal, y_cal)],
+            verbose=False,
+        )
+        best_iter = xgb_tmp.best_iteration
+        # step2: fixed iterationsで再学習（early_stopping不要）
+        xgb_model = xgb.XGBClassifier(
+            objective="binary:logistic",
+            learning_rate=0.03,
+            max_depth=5,
+            n_estimators=best_iter,
+            subsample=0.8,
+            colsample_bytree=0.8,
+            scale_pos_weight=2.0,
+            verbosity=0,
+            random_state=42,
+        )
+        xgb_model.fit(X_train_main, y_train_main, verbose=False)
+        calibrated_xgb = CalibratedClassifierCV(
+            estimator=xgb_model, method="isotonic", cv=None
+        )
+        calibrated_xgb.fit(X_cal, y_cal)
+        models.append(calibrated_xgb)
+        print(f"  XGBoost完了: {best_iter}本")
+    else:
+        print("  XGBoostスキップ（pip install xgboost）")
+
+    # ── CatBoost（インストール済みの場合） ──
+    if HAS_CAT:
+        print("CatBoostモデルを学習中...")
+        # step1: early_stoppingでベストイテレーション取得
+        cat_tmp = CatBoostClassifier(
+            iterations=1000,
+            learning_rate=0.03,
+            depth=5,
+            loss_function="Logloss",
+            eval_metric="Logloss",
+            early_stopping_rounds=100,
+            verbose=False,
+            random_seed=42,
+        )
+        cat_tmp.fit(
+            X_train_main, y_train_main,
+            eval_set=(X_cal, y_cal),
+            sample_weight=w_main,
+        )
+        best_iter_cat = cat_tmp.best_iteration_
+        # step2: fixed iterationsで再学習（early_stopping・class_weights不要）
+        cat_model = CatBoostClassifier(
+            iterations=best_iter_cat,
+            learning_rate=0.03,
+            depth=5,
+            loss_function="Logloss",
+            verbose=False,
+            random_seed=42,
+        )
+        cat_model.fit(X_train_main, y_train_main, sample_weight=w_main)
+        calibrated_cat = CalibratedClassifierCV(
+            estimator=cat_model, method="isotonic", cv=None
+        )
+        calibrated_cat.fit(X_cal, y_cal)
+        models.append(calibrated_cat)
+        print(f"  CatBoost完了: {best_iter_cat}本")
+    else:
+        print("  CatBoostスキップ（pip install catboost）")
+
+    print(f"\nアンサンブル: {len(models)}モデルの平均で予測")
+
+    # ── テストデータで評価（アンサンブル） ──
     test_df = test_df.copy()
-    test_df["予測勝率スコア"] = calibrated_model.predict_proba(X_test)[:, 1]
+    test_df["予測勝率スコア"] = np.mean(
+        [m.predict_proba(X_test)[:, 1] for m in models], axis=0
+    )
 
-    models = [calibrated_model]
+    models_list = models
 
     test_df["予測順位"] = test_df.groupby("race_id")["予測勝率スコア"].rank(
         ascending=False
@@ -260,7 +359,7 @@ def train_model(csv_path="race_features.csv"):
     out.to_csv("model_result.csv", index=False, encoding="utf-8-sig")
 
     with open("model.pkl", "wb") as f:
-        pickle.dump({"models": models, "use_cols": use_cols}, f)
+        pickle.dump({"models": models_list, "use_cols": use_cols}, f)
     print("モデル保存完了 → model.pkl")
 
     return models, test_df, use_cols
@@ -329,3 +428,149 @@ if __name__ == "__main__":
             print(f"的中数:   {len(wins_d)}回")
             print(f"的中率:   {len(wins_d)/len(bets_d)*100:.1f}%")
             print(f"回収率:   {wins_d['単勝オッズ'].sum() / len(bets_d) * 100:.1f}%")
+
+    # ── ② 競馬場別バックテスト ──────────────────────────────────────────
+    print(f"\n{'='*40}\n📍 競馬場別バックテスト（戦略A）\n{'='*40}")
+    JYO_MAP = {1:"札幌",2:"函館",3:"福島",4:"新潟",5:"東京",6:"中山",7:"中京",8:"京都",9:"阪神",10:"小倉"}
+    if "競馬場cd" in df.columns:
+        jyo_results = []
+        for jyo_cd, jyo_df in df.groupby("競馬場cd"):
+            bets = jyo_df[
+                (jyo_df["予測順位"] == 1) & (jyo_df["単勝期待値"] >= 0.3)
+                & (jyo_df["単勝オッズ"] >= 1.5) & (jyo_df["単勝オッズ"] <= 20.0)
+            ]
+            if len(bets) < 5:
+                continue
+            wins = bets[bets["着順_num"] == 1]
+            roi  = wins["単勝オッズ"].sum() / len(bets) * 100
+            jyo_results.append((JYO_MAP.get(jyo_cd, str(jyo_cd)), len(bets), len(wins)/len(bets)*100, roi))
+        for name, n, rate, roi in sorted(jyo_results, key=lambda x: x[3], reverse=True):
+            mark = "🟢" if roi >= 120 else "🟡" if roi >= 100 else "🔴"
+            print(f"  {mark} {name:4} {n:3}回 {rate:.1f}% 回収率{roi:.1f}%")
+
+    # ── ③ 距離別バックテスト ────────────────────────────────────────────
+    print(f"\n{'='*40}\n📏 距離別バックテスト（戦略A）\n{'='*40}")
+    DIST_MAP = {1:"短距離(〜1400m)", 2:"中距離(1600〜2000m)", 3:"長距離(2001m〜)"}
+    if "距離カテゴリ" in df.columns:
+        for cat, label in DIST_MAP.items():
+            bets = df[
+                (df["距離カテゴリ"] == cat) & (df["予測順位"] == 1)
+                & (df["単勝期待値"] >= 0.3) & (df["単勝オッズ"] >= 1.5) & (df["単勝オッズ"] <= 20.0)
+            ]
+            if len(bets) < 5:
+                continue
+            wins = bets[bets["着順_num"] == 1]
+            roi  = wins["単勝オッズ"].sum() / len(bets) * 100
+            mark = "🟢" if roi >= 120 else "🟡" if roi >= 100 else "🔴"
+            print(f"  {mark} {label}: {len(bets)}回 {len(wins)/len(bets)*100:.1f}% 回収率{roi:.1f}%")
+
+    # ── ④ 芝・ダート別バックテスト ──────────────────────────────────────
+    print(f"\n{'='*40}\n🌿 芝・ダート別バックテスト（戦略A）\n{'='*40}")
+    if "is_turf" in df.columns:
+        for turf_val, label in [(1,"芝"), (0,"ダート")]:
+            bets = df[
+                (df["is_turf"] == turf_val) & (df["予測順位"] == 1)
+                & (df["単勝期待値"] >= 0.3) & (df["単勝オッズ"] >= 1.5) & (df["単勝オッズ"] <= 20.0)
+            ]
+            if len(bets) < 5:
+                continue
+            wins = bets[bets["着順_num"] == 1]
+            roi  = wins["単勝オッズ"].sum() / len(bets) * 100
+            mark = "🟢" if roi >= 120 else "🟡" if roi >= 100 else "🔴"
+            print(f"  {mark} {label}: {len(bets)}回 {len(wins)/len(bets)*100:.1f}% 回収率{roi:.1f}%")
+
+    # ── ⑤ クラス別バックテスト ──────────────────────────────────────────
+    print(f"\n{'='*40}\n🏆 クラス別バックテスト（戦略A）\n{'='*40}")
+    CLASS_MAP = {1:"新馬",2:"未勝利",3:"1勝クラス",4:"2勝クラス",5:"3勝クラス",6:"OP",7:"G3",8:"G2",9:"G1"}
+    if "クラス_num" in df.columns:
+        cls_results = []
+        for cls_val, cls_label in CLASS_MAP.items():
+            bets = df[
+                (df["クラス_num"] == cls_val) & (df["予測順位"] == 1)
+                & (df["単勝期待値"] >= 0.3) & (df["単勝オッズ"] >= 1.5) & (df["単勝オッズ"] <= 20.0)
+            ]
+            if len(bets) < 5:
+                continue
+            wins = bets[bets["着順_num"] == 1]
+            roi  = wins["単勝オッズ"].sum() / len(bets) * 100
+            cls_results.append((cls_label, len(bets), len(wins)/len(bets)*100, roi))
+        for label, n, rate, roi in sorted(cls_results, key=lambda x: x[3], reverse=True):
+            mark = "🟢" if roi >= 120 else "🟡" if roi >= 100 else "🔴"
+            print(f"  {mark} {label:8}: {n:3}回 {rate:.1f}% 回収率{roi:.1f}%")
+
+    # ── ⑥ 新戦略F・G・FG ────────────────────────────────────────────────
+    print(f"\n{'='*40}\n🆕 新戦略バックテスト\n{'='*40}")
+
+    # 戦略F：中京・東京限定 × 戦略A
+    # 競馬場cd: 5=東京, 7=中京
+    if "競馬場cd" in df.columns:
+        bets_f = df[
+            (df["競馬場cd"].isin([5, 7]))
+            & (df["予測順位"] == 1)
+            & (df["単勝期待値"] >= 0.3)
+            & (df["単勝オッズ"] >= 1.5)
+            & (df["単勝オッズ"] <= 20.0)
+        ]
+        if len(bets_f) > 0:
+            wins_f = bets_f[bets_f["着順_num"] == 1]
+            roi_f  = wins_f["単勝オッズ"].sum() / len(bets_f) * 100
+            print(f"\n── 戦略F: 中京・東京 × 予測1位 × 期待値>=0.3 ──")
+            print(f"ベット数: {len(bets_f)}回")
+            print(f"的中数:   {len(wins_f)}回")
+            print(f"的中率:   {len(wins_f)/len(bets_f)*100:.1f}%")
+            print(f"回収率:   {roi_f:.1f}%")
+
+    # 戦略G：短距離限定（〜1400m）× 戦略A
+    if "距離" in df.columns:
+        bets_g = df[
+            (df["距離"] <= 1400)
+            & (df["予測順位"] == 1)
+            & (df["単勝期待値"] >= 0.3)
+            & (df["単勝オッズ"] >= 1.5)
+            & (df["単勝オッズ"] <= 20.0)
+        ]
+        if len(bets_g) > 0:
+            wins_g = bets_g[bets_g["着順_num"] == 1]
+            roi_g  = wins_g["単勝オッズ"].sum() / len(bets_g) * 100
+            print(f"\n── 戦略G: 短距離(〜1400m) × 予測1位 × 期待値>=0.3 ──")
+            print(f"ベット数: {len(bets_g)}回")
+            print(f"的中数:   {len(wins_g)}回")
+            print(f"的中率:   {len(wins_g)/len(bets_g)*100:.1f}%")
+            print(f"回収率:   {roi_g:.1f}%")
+
+    # 戦略FG：中京・東京 × 短距離（最強組み合わせ）
+    if "競馬場cd" in df.columns and "距離" in df.columns:
+        bets_fg = df[
+            (df["競馬場cd"].isin([5, 7]))
+            & (df["距離"] <= 1400)
+            & (df["予測順位"] == 1)
+            & (df["単勝期待値"] >= 0.3)
+            & (df["単勝オッズ"] >= 1.5)
+            & (df["単勝オッズ"] <= 20.0)
+        ]
+        if len(bets_fg) > 0:
+            wins_fg = bets_fg[bets_fg["着順_num"] == 1]
+            roi_fg  = wins_fg["単勝オッズ"].sum() / len(bets_fg) * 100
+            print(f"\n── 戦略FG: 中京・東京 × 短距離 × 予測1位 × 期待値>=0.3 ──")
+            print(f"ベット数: {len(bets_fg)}回")
+            print(f"的中数:   {len(wins_fg)}回")
+            print(f"的中率:   {len(wins_fg)/len(bets_fg)*100:.1f}%")
+            print(f"回収率:   {roi_fg:.1f}%")
+
+    # 戦略H：小倉・中山 × 戦略A
+    if "競馬場cd" in df.columns:
+        bets_h = df[
+            (df["競馬場cd"].isin([6, 10]))
+            & (df["予測順位"] == 1)
+            & (df["単勝期待値"] >= 0.3)
+            & (df["単勝オッズ"] >= 1.5)
+            & (df["単勝オッズ"] <= 20.0)
+        ]
+        if len(bets_h) > 0:
+            wins_h = bets_h[bets_h["着順_num"] == 1]
+            roi_h  = wins_h["単勝オッズ"].sum() / len(bets_h) * 100
+            print(f"\n── 戦略H: 中山・小倉 × 予測1位 × 期待値>=0.3 ──")
+            print(f"ベット数: {len(bets_h)}回")
+            print(f"的中数:   {len(wins_h)}回")
+            print(f"的中率:   {len(wins_h)/len(bets_h)*100:.1f}%")
+            print(f"回収率:   {roi_h:.1f}%")
