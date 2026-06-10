@@ -493,10 +493,11 @@ def predict_race(race_id: str):
         if pd.notna(row.get("前走間隔")) and 2 <= row["前走間隔"] <= 4 \
                 and row["予測順位"] == 1 and row["単勝期待値"] >= 0.2:
             s.append("戦略D")
-        if (pd.notna(row.get("乖離スコア"))
-                and row.get("乖離スコア", 0) >= 5
-                and row.get("MF予測順位", 99) == 1):
-            s.append("戦略E(市場見落とし)")
+        # 戦略E：一時無効化（交互作用特徴量追加後、乖離スコアの有効性が崩壊したため）
+        # if (pd.notna(row.get("乖離スコア"))
+        #         and row.get("乖離スコア", 0) >= 5
+        #         and row.get("MF予測順位", 99) == 1):
+        #     s.append("戦略E(市場見落とし)")
         return " / ".join(s) if s else ""
 
     pdf["該当戦略"] = pdf.apply(check_strategy, axis=1)

@@ -265,18 +265,29 @@ def train_model(csv_path="race_features.csv"):
                 probs  = 1 / (1 + np.exp(-scores / max(std, 1e-9)))
                 return np.column_stack([1 - probs, probs])
 
-        models.append(LambdaRankWrapper(rank_booster))
+        # LambdaRankはアンサンブルに含めず別途参考スコアとして保持
+        lambda_wrapper = LambdaRankWrapper(rank_booster)
         print(f"  LambdaRank完了（{rank_booster.best_iteration}本）")
     except Exception as e:
+        lambda_wrapper = None
         print(f"  LambdaRankスキップ: {e}")
         import traceback; traceback.print_exc()
 
-    print(f"\nアンサンブル: {len(models)}モデルの平均で予測")
-    print(f"  ※LambdaRankを含む場合は着順ランキング学習も反映")
+    print(f"\nアンサンブル: {len(models)}モデルの平均で予測（LGB+XGB+CatBoost）")
+    if lambda_wrapper:
+        print(f"  ※LambdaRankは参考スコアとして別途計算")
 
     # ── テストデータで評価 ──
     test_df = test_df.copy()
     test_df["予測勝率スコア"] = np.mean([m.predict_proba(X_test)[:, 1] for m in models], axis=0)
+
+    # LambdaRankの参考スコアを追加
+    if lambda_wrapper:
+        try:
+            lambda_scores = lambda_wrapper.predict_proba(X_test)[:, 1]
+            test_df["lambda_score"] = lambda_scores
+        except Exception as e:
+            print(f"  LambdaRankスコア計算エラー: {e}")
     test_df["予測順位"] = test_df.groupby("race_id")["予測勝率スコア"].rank(ascending=False)
 
     def normalize(group):
@@ -291,9 +302,15 @@ def train_model(csv_path="race_features.csv"):
     out = out.sort_values(["race_id", "予測順位"])
     out.to_csv("model_result.csv", index=False, encoding="utf-8-sig")
 
+    # pickle保存（LGB+XGB+CatBoostの3モデル）
+    save_dict = {"models": models, "use_cols": use_cols}
+    if lambda_wrapper is not None:
+        save_dict["lambda_booster"] = lambda_wrapper.booster
+
     with open("model.pkl", "wb") as f:
-        pickle.dump({"models": models, "use_cols": use_cols}, f)
-    print("モデル保存完了 → model.pkl")
+        pickle.dump(save_dict, f)
+    print(f"モデル保存完了 → model.pkl（{len(models)}モデル" +
+          (" + LambdaRank参考スコア）" if lambda_wrapper else "）"))
 
     return models, test_df, use_cols
 

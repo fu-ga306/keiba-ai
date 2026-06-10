@@ -985,11 +985,12 @@ def run_single_race(race_id, models, use_cols, history_df, mf_models=None, mf_co
                 and row["予測順位"] == 1
                 and row["単勝期待値"] >= 0.2):
             strategies.append("戦略D(好ローテ)")
-        # 戦略E：市場乖離スコア≥5 × MF予測1位（回収率168.1%）
-        if (pd.notna(row.get("乖離スコア"))
-                and row.get("乖離スコア", 0) >= 5
-                and row.get("MF予測順位", 99) == 1):
-            strategies.append("戦略E(市場見落とし)")
+        # 戦略E：一時無効化（交互作用特徴量追加後、乖離スコアの有効性が崩壊したため）
+        # 旧: 乖離スコア≥5 × MF予測1位（回収率168.1%→0.0%に悪化）
+        # if (pd.notna(row.get("乖離スコア"))
+        #         and row.get("乖離スコア", 0) >= 5
+        #         and row.get("MF予測順位", 99) == 1):
+        #     strategies.append("戦略E(市場見落とし)")
         # 戦略F：中京・東京 × 予測1位 × 期待値≥0.3（回収率197.2%）
         # 競馬場cd: 5=東京, 7=中京
         jyo_cd = int(str(row.get("race_id", "000000000000"))[4:6])
