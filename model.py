@@ -69,6 +69,20 @@ LGB_PARAMS = {
 }
 
 
+LGB_RANK_PARAMS = {
+    "objective": "lambdarank",
+    "metric": "ndcg",
+    "ndcg_eval_at": [3, 5],
+    "learning_rate": 0.03,
+    "num_leaves": 31,
+    "min_child_samples": 20,
+    "feature_fraction": 0.8,
+    "bagging_fraction": 0.8,
+    "bagging_freq": 1,
+    "verbose": -1,
+    "min_gain_to_split": 0.1,
+}
+
 def add_extra_features(df):
     df = df.sort_values(["馬名", "race_id"]).reset_index(drop=True)
     df["斤量変化"]  = df.groupby("馬名")["斤量"].diff()
@@ -168,20 +182,34 @@ def train_model(csv_path="race_features.csv"):
         print("CatBoostモデルを学習中...")
         # step1: early_stoppingでベストイテレーション取得
         cat_tmp = CatBoostClassifier(
-            iterations=1000, learning_rate=0.03, depth=5,
-            loss_function="Logloss", eval_metric="Logloss",
-            early_stopping_rounds=100, verbose=False, random_seed=42,
+            iterations=1000,
+            learning_rate=0.03,
+            depth=5,
+            loss_function="Logloss",
+            eval_metric="Logloss",
+            early_stopping_rounds=100,
+            verbose=False,
+            random_seed=42,
         )
-        cat_tmp.fit(X_train_main, y_train_main, eval_set=(X_cal, y_cal), sample_weight=w_main)
+        cat_tmp.fit(
+            X_train_main, y_train_main,
+            eval_set=(X_cal, y_cal),
+            sample_weight=w_main,
+        )
         best_iter_cat = cat_tmp.best_iteration_
-        print(f"  CatBoost ベストイテレーション: {best_iter_cat}本")
-        # step2: fixed iterationsで再学習（early_stopping不要）
+        # step2: fixed iterationsで再学習（early_stopping・class_weights不要）
         cat_model = CatBoostClassifier(
-            iterations=best_iter_cat, learning_rate=0.03, depth=5,
-            loss_function="Logloss", verbose=False, random_seed=42,
+            iterations=best_iter_cat,
+            learning_rate=0.03,
+            depth=5,
+            loss_function="Logloss",
+            verbose=False,
+            random_seed=42,
         )
         cat_model.fit(X_train_main, y_train_main, sample_weight=w_main)
-        calibrated_cat = CalibratedClassifierCV(estimator=cat_model, method="isotonic", cv=None)
+        calibrated_cat = CalibratedClassifierCV(
+            estimator=cat_model, method="isotonic", cv=None
+        )
         calibrated_cat.fit(X_cal, y_cal)
         models.append(calibrated_cat)
         print(f"  CatBoost完了: {best_iter_cat}本")
