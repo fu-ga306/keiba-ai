@@ -97,35 +97,47 @@ def prob_bar_html(val, color, width=60):
 
 st.sidebar.markdown("### 🏇 競馬AI")
 st.sidebar.markdown("---")
-page = st.sidebar.radio("ページ", ["🏇 当日予想", "📊 成績サマリー", "📋 レース結果", "🏆 戦略分析"])
+# session_stateでページ管理
+if "page" not in st.session_state:
+    st.session_state.page = "🏇 当日予想"
+
+page = st.sidebar.radio(
+    "ページ",
+    ["🏇 当日予想", "📊 成績サマリー", "📋 レース結果", "🏆 戦略分析"],
+    index=["🏇 当日予想", "📊 成績サマリー", "📋 レース結果", "🏆 戦略分析"].index(st.session_state.page)
+)
+st.session_state.page = page
 st.sidebar.markdown("---")
 if st.sidebar.button("🔄 更新"):
     st.cache_data.clear()
     st.rerun()
 st.sidebar.caption(f"更新: {datetime.now().strftime('%H:%M')}")
 
-# モバイル用ページ選択（メイン画面上部に表示）
-col_nav1, col_nav2, col_nav3, col_nav4 = st.columns(4)
-nav_pages = ["🏇 当日", "📊 成績", "📋 結果", "🏆 戦略"]
-nav_map   = {
-    "🏇 当日": "🏇 当日予想",
-    "📊 成績": "📊 成績サマリー",
-    "📋 結果": "📋 レース結果",
-    "🏆 戦略": "🏆 戦略分析",
-}
-for col, nav in zip([col_nav1, col_nav2, col_nav3, col_nav4], nav_pages):
-    is_active = nav_map[nav] == page
-    bg = "rgba(240,180,41,0.15)" if is_active else "var(--color-background-secondary)"
-    border = "1px solid #f0b429" if is_active else "0.5px solid var(--color-border-tertiary)"
-    if col.button(nav, key=f"nav_{nav}", use_container_width=True):
-        page = nav_map[nav]
+# モバイル用ナビゲーションボタン（メイン画面上部）
+nav_cols = st.columns(4)
+nav_items = [
+    ("🏇 当日", "🏇 当日予想"),
+    ("📊 成績", "📊 成績サマリー"),
+    ("📋 結果", "📋 レース結果"),
+    ("🏆 戦略", "🏆 戦略分析"),
+]
+for col, (label, full_page) in zip(nav_cols, nav_items):
+    is_active = full_page == page
+    if col.button(
+        f"**{label}**" if is_active else label,
+        key=f"nav_{label}",
+        use_container_width=True,
+        type="primary" if is_active else "secondary",
+    ):
+        st.session_state.page = full_page
+        st.rerun()
 st.markdown("---")
 
 df_all    = load_data()
 df_result = get_result_df(df_all)
 
 # ════════════════════════════════════════════════════════════════════════
-if page == "🏇 当日予想":
+if st.session_state.page == "🏇 当日予想":
     st.markdown("## 🏇 当日予想")
     df_today = load_today()
 
@@ -145,6 +157,10 @@ if page == "🏇 当日予想":
 
     if rdf.empty:
         st.warning("選択レースのデータなし")
+        st.stop()
+
+    if len(rdf) == 0:
+        st.warning("選択レースのデータが空です")
         st.stop()
 
     r0 = rdf.iloc[0]
@@ -211,7 +227,7 @@ if page == "🏇 当日予想":
     st.caption(f"予想日時: {rdf['予想日時'].iloc[0] if '予想日時' in rdf.columns else '-'}")
 
 # ════════════════════════════════════════════════════════════════════════
-elif page == "📊 成績サマリー":
+elif st.session_state.page == "📊 成績サマリー":
     st.markdown("## 📊 成績サマリー")
 
     if df_result.empty:
@@ -281,7 +297,7 @@ elif page == "📊 成績サマリー":
                 col.plotly_chart(fig,use_container_width=True)
 
 # ════════════════════════════════════════════════════════════════════════
-elif page == "📋 レース結果":
+elif st.session_state.page == "📋 レース結果":
     st.markdown("## 📋 レース結果")
 
     if df_all.empty:
@@ -327,7 +343,7 @@ elif page == "📋 レース結果":
     st.caption("🟢 緑行=的中  ⏳=結果未更新")
 
 # ════════════════════════════════════════════════════════════════════════
-elif page == "🏆 戦略分析":
+elif st.session_state.page == "🏆 戦略分析":
     st.markdown("## 🏆 バックテスト戦略分析")
 
     bt = pd.DataFrame([
