@@ -416,6 +416,77 @@ def add_extra_advanced_features(df):
     return df
 
 
+def add_interaction_features(df):
+    """
+    交互作用特徴量を追加（高精度化）：
+    ① 距離×馬場状態 過去成績
+    ② 距離×クラス 過去成績
+    ③ 馬場状態×脚質 相性
+    ④ 前走着順×人気 乖離（前走好走なのに人気薄）
+    ⑤ 斤量×年齢 負担指数
+    """
+    df = df.sort_values(["馬名", "race_id"]).reset_index(drop=True)
+    df["_win"] = (df["着順_num"] == 1).astype(float)
+
+    # ── ① 距離カテゴリ×馬場状態 過去成績 ──────────────────────────
+    grp_dist_baba = df.groupby(["馬名", "距離カテゴリ", "馬場状態_num"])
+    df["距離×馬場_過去勝率"] = grp_dist_baba["_win"].transform(
+        lambda x: x.shift(1).expanding().mean()
+    )
+    df["距離×馬場_過去平均着順"] = grp_dist_baba["着順_num"].transform(
+        lambda x: x.shift(1).expanding().mean()
+    )
+
+    # ── ② 距離カテゴリ×クラス 過去成績 ──────────────────────────────
+    grp_dist_cls = df.groupby(["馬名", "距離カテゴリ", "クラス_num"])
+    df["距離×クラス_過去勝率"] = grp_dist_cls["_win"].transform(
+        lambda x: x.shift(1).expanding().mean()
+    )
+
+    # ── ③ 芝ダート×脚質 相性（先行馬の芝ダート別成績） ─────────────
+    if "先行指数" in df.columns:
+        grp_turf_style = df.groupby(["馬名", "is_turf"])
+        df["芝ダート×先行_過去勝率"] = grp_turf_style["_win"].transform(
+            lambda x: x.shift(1).expanding().mean()
+        )
+    else:
+        df["芝ダート×先行_過去勝率"] = np.nan
+
+    # ── ④ 前走着順×人気 乖離スコア ────────────────────────────────
+    # 前走好走（3着以内）なのに今回人気薄 → 高期待値候補
+    if "前走着順" in df.columns and "人気" in df.columns:
+        prev_good = (df["前走着順"] <= 3).astype(float)
+        pop_low   = (df["人気"] >= 5).astype(float)
+        df["前走好走×人気薄"] = prev_good * pop_low
+        # 前走着順と人気の差（前走着順が良いのに人気が低い = プラス）
+        df["前走着順×人気_乖離"] = df["人気"] - df["前走着順"].fillna(df["人気"])
+    else:
+        df["前走好走×人気薄"]   = np.nan
+        df["前走着順×人気_乖離"] = np.nan
+
+    # ── ⑤ 斤量×年齢 負担指数 ────────────────────────────────────────
+    # 若い馬（2〜3歳）は斤量増に弱い
+    df["斤量×年齢_負担"] = df["斤量"] * (1 + 1 / df["年齢"].clip(lower=2))
+
+    # ── ⑥ 距離変化×前走着順 相性 ─────────────────────────────────────
+    # 距離延長で前走好走の馬は好走しやすい
+    if "距離変化" in df.columns and "前走着順" in df.columns:
+        df["距離延長×前走好走"] = (
+            (df["距離変化"] > 0).astype(float) *
+            (df["前走着順"] <= 3).fillna(0).astype(float)
+        )
+        df["距離短縮×前走好走"] = (
+            (df["距離変化"] < 0).astype(float) *
+            (df["前走着順"] <= 3).fillna(0).astype(float)
+        )
+    else:
+        df["距離延長×前走好走"] = np.nan
+        df["距離短縮×前走好走"] = np.nan
+
+    df = df.drop(columns=["_win"], errors="ignore")
+    return df
+
+
 def build_features(csv_path="race_data_clean.csv", out_path="race_features.csv"):
     print("データ読み込み中...")
     df = load_and_prepare(csv_path)
@@ -445,6 +516,8 @@ def build_features(csv_path="race_data_clean.csv", out_path="race_features.csv")
 
     print("追加特徴量（競馬場適性・脚質・時期）を生成中...")
     df = add_extra_advanced_features(df)
+    print("交互作用特徴量を生成中...")
+    df = add_interaction_features(df)
 
     # 距離を数値に
     if "距離" in df.columns:
@@ -486,6 +559,13 @@ def build_features(csv_path="race_data_clean.csv", out_path="race_features.csv")
         "平均タイム差",
         # 騎手×競馬場
         "騎手競馬場勝率",
+        # 交互作用特徴量
+        "距離×馬場_過去勝率", "距離×馬場_過去平均着順",
+        "距離×クラス_過去勝率",
+        "芝ダート×先行_過去勝率",
+        "前走好走×人気薄", "前走着順×人気_乖離",
+        "斤量×年齢_負担",
+        "距離延長×前走好走", "距離短縮×前走好走",
     ]
 
     out = df[[c for c in FEATURE_COLS if c in df.columns]]

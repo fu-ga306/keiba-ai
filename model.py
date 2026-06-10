@@ -46,6 +46,13 @@ FEATURE_COLS = [
     "前走着順", "前走上り", "前走距離", "距離変化",
     "連続複勝フラグ", "連続勝利フラグ", "近走改善度",
     "平均タイム差", "騎手競馬場勝率",
+    # 交互作用特徴量
+    "距離×馬場_過去勝率", "距離×馬場_過去平均着順",
+    "距離×クラス_過去勝率",
+    "芝ダート×先行_過去勝率",
+    "前走好走×人気薄", "前走着順×人気_乖離",
+    "斤量×年齢_負担",
+    "距離延長×前走好走", "距離短縮×前走好走",
 ]
 
 LGB_PARAMS = {
@@ -181,7 +188,63 @@ def train_model(csv_path="race_features.csv"):
     else:
         print("  CatBoostスキップ（pip install catboost）")
 
+    # ── LightGBM LambdaRank（着順ランキング学習） ──
+    print("LambdaRankモデルを学習中...")
+    try:
+        idx_train = X_train_main.index
+        idx_cal   = X_cal.index
+
+        race_id_train = train_df.loc[idx_train, "race_id"].values
+        race_id_cal   = train_df.loc[idx_cal,   "race_id"].values
+
+        sort_train = np.argsort(race_id_train, kind="stable")
+        sort_cal   = np.argsort(race_id_cal,   kind="stable")
+
+        X_rank_train = X_train_main.values[sort_train]
+        X_rank_cal   = X_cal.values[sort_cal]
+
+        chakujun_train = train_df.loc[idx_train, "着順_num"].values[sort_train]
+        chakujun_cal   = train_df.loc[idx_cal,   "着順_num"].values[sort_cal]
+        shutsu_train   = train_df.loc[idx_train, "出走頭数"].fillna(18).astype(int).values[sort_train]
+        shutsu_cal     = train_df.loc[idx_cal,   "出走頭数"].fillna(18).astype(int).values[sort_cal]
+
+        y_rank_train = np.clip(shutsu_train - chakujun_train, 0, None).astype(int)
+        y_rank_cal   = np.clip(shutsu_cal   - chakujun_cal,   0, None).astype(int)
+
+        _, group_train = np.unique(race_id_train[sort_train], return_counts=True)
+        _, group_cal   = np.unique(race_id_cal[sort_cal],     return_counts=True)
+
+        train_data_rank = lgb.Dataset(X_rank_train, label=y_rank_train, group=group_train)
+        val_data_rank   = lgb.Dataset(X_rank_cal,   label=y_rank_cal,   group=group_cal,
+                                      reference=train_data_rank)
+
+        rank_booster = lgb.train(
+            LGB_RANK_PARAMS,
+            train_data_rank,
+            num_boost_round=3000,
+            valid_sets=[val_data_rank],
+            callbacks=[lgb.early_stopping(100, verbose=False), lgb.log_evaluation(period=200)],
+        )
+
+        class LambdaRankWrapper:
+            def __init__(self, booster):
+                self.booster = booster
+            def predict_proba(self, X):
+                if hasattr(X, "values"):
+                    X = X.values
+                scores = self.booster.predict(X)
+                std    = scores.std()
+                probs  = 1 / (1 + np.exp(-scores / max(std, 1e-9)))
+                return np.column_stack([1 - probs, probs])
+
+        models.append(LambdaRankWrapper(rank_booster))
+        print(f"  LambdaRank完了（{rank_booster.best_iteration}本）")
+    except Exception as e:
+        print(f"  LambdaRankスキップ: {e}")
+        import traceback; traceback.print_exc()
+
     print(f"\nアンサンブル: {len(models)}モデルの平均で予測")
+    print(f"  ※LambdaRankを含む場合は着順ランキング学習も反映")
 
     # ── テストデータで評価 ──
     test_df = test_df.copy()
