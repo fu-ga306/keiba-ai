@@ -33,9 +33,59 @@ def load_and_prepare(csv_path="race_data_clean.csv"):
 
 
 def add_horse_history_features(df):
-    """各馬の過去成績を特徴量として追加（当日データ混入なし）"""
+    """各馬の過去成績を特徴量として追加（当日データ混入なし・高速化版）"""
 
     df = df.sort_values(["馬名", "race_id"]).reset_index(drop=True)
+
+    # ── 高速化：よく使う集計をgroupby一括処理（shift(1)でリーク防止） ──
+    g = df.groupby("馬名")
+    df["_win"]   = (df["着順_num"] == 1).astype(float)
+    df["_top3"]  = (df["着順_num"] <= 3).astype(float)
+
+    # 過去平均着順・勝率・複勝率（expanding + shift）
+    df["過去出走数"]       = g["着順_num"].transform(lambda x: x.shift(1).expanding().count())
+    df["過去平均着順"]     = g["着順_num"].transform(lambda x: x.shift(1).expanding().mean())
+    df["過去勝率"]         = g["_win"].transform(lambda x: x.shift(1).expanding().mean())
+    df["過去複勝率"]       = g["_top3"].transform(lambda x: x.shift(1).expanding().mean())
+    df["直近3走平均着順"]  = g["着順_num"].transform(lambda x: x.shift(1).rolling(3, min_periods=1).mean())
+    df["過去平均上り"]     = g["上り"].transform(lambda x: x.shift(1).expanding().mean())
+    df["直近3走平均上り"]  = g["上り"].transform(lambda x: x.shift(1).rolling(3, min_periods=1).mean())
+    df["過去最速上り"]     = g["上り"].transform(lambda x: x.shift(1).expanding().min())
+    df["上り偏差"]         = g["上り"].transform(lambda x: x.shift(1).expanding().std())
+    df["過去平均体重増減"] = g["体重増減"].transform(lambda x: x.shift(1).expanding().mean())
+
+    # 前走情報
+    df["前走着順"]   = g["着順_num"].transform(lambda x: x.shift(1))
+    df["前走上り"]   = g["上り"].transform(lambda x: x.shift(1))
+
+    # タイム系
+    if "タイム秒" in df.columns:
+        df["過去平均タイム秒"]      = g["タイム秒"].transform(lambda x: x.shift(1).expanding().mean())
+        df["直近3走平均タイム秒"]   = g["タイム秒"].transform(lambda x: x.shift(1).rolling(3, min_periods=1).mean())
+        df["過去最速タイム秒"]      = g["タイム秒"].transform(lambda x: x.shift(1).expanding().min())
+    else:
+        for col in ["過去平均タイム秒", "直近3走平均タイム秒", "過去最速タイム秒"]:
+            df[col] = np.nan
+
+    # 連続好走フラグ
+    df["連続複勝フラグ"] = g["_top3"].transform(
+        lambda x: x.shift(1).rolling(2, min_periods=2).min()
+    )
+    df["連続勝利フラグ"] = g["_win"].transform(
+        lambda x: x.shift(1).rolling(2, min_periods=2).min()
+    )
+
+    # 近走改善度
+    df["_last3_avg"] = g["着順_num"].transform(lambda x: x.shift(1).rolling(3, min_periods=1).mean())
+    df["_all_avg"]   = g["着順_num"].transform(lambda x: x.shift(1).expanding().mean())
+    df["近走改善度"] = df["_all_avg"] - df["_last3_avg"]
+
+    # 距離変化
+    df["前走距離"] = g["距離"].transform(lambda x: pd.to_numeric(x, errors="coerce").shift(1))
+    df["距離変化"] = pd.to_numeric(df["距離"], errors="coerce") - df["前走距離"]
+
+    df = df.drop(columns=["_win", "_top3", "_last3_avg", "_all_avg"], errors="ignore")
+
     result_rows = []
 
     for horse, group in df.groupby("馬名"):
@@ -293,36 +343,28 @@ def add_jockey_trainer_features(df):
 
 def add_extra_advanced_features(df):
     """
-    精度向上のための追加特徴量：
-    ① 競馬場×距離 過去成績
+    精度向上のための追加特徴量（高速化版）：
+    ① 競馬場×距離 過去成績（groupby一括処理）
     ② 脚質（先行/差し/追込）
     ③ 開催時期（月・季節）
     """
     df = df.sort_values(["馬名", "race_id"]).reset_index(drop=True)
 
     # ── ① 脚質を通過順位から計算 ──────────────────────────────────────
-    # 通過順位例: "1-1-1-1" → 先行, "8-8-8-3" → 追込
     def calc_running_style(passage):
-        """通過順位文字列から脚質スコアを計算（小さいほど先行）"""
         try:
             if pd.isna(passage) or str(passage).strip() == "":
                 return np.nan
             positions = [int(x) for x in str(passage).split("-") if x.isdigit()]
-            if not positions:
-                return np.nan
-            # 最初の通過順位を脚質の基準とする
-            return float(positions[0])
+            return float(positions[0]) if positions else np.nan
         except:
             return np.nan
 
     if "通過" in df.columns:
         df["先行指数"] = df["通過"].apply(calc_running_style)
-
-        # 馬ごとの過去平均先行指数（リーク防止）
         df["過去平均先行指数"] = df.groupby("馬名")["先行指数"].transform(
             lambda x: x.shift(1).expanding().mean()
         )
-        # 先行馬フラグ（過去平均先行指数が出走頭数の1/3以内）
         df["先行馬フラグ"] = (
             df["過去平均先行指数"] <= df["出走頭数"] / 3
         ).astype(float)
@@ -330,62 +372,45 @@ def add_extra_advanced_features(df):
         df["過去平均先行指数"] = np.nan
         df["先行馬フラグ"]     = np.nan
 
-    # ── ② 競馬場×距離 過去成績 ──────────────────────────────────────
-    # race_id の4-6桁目が競馬場cd
+    # ── ② 競馬場×距離 過去成績（高速化：groupby一括処理） ────────────
     if "競馬場cd" not in df.columns:
         df["競馬場cd"] = df["race_id"].astype(str).str[4:6].astype(int)
+    df["距離_num"] = pd.to_numeric(df["距離"], errors="coerce")
 
-    result_rows = []
-    for horse, group in df.groupby("馬名"):
-        group = group.copy().reset_index(drop=True)
-        jyo_dist_win  = []
-        jyo_dist_avg  = []
-        jyo_win       = []
-        jyo_avg       = []
+    # 距離カテゴリ（±200m をカテゴリで近似）
+    df["距離カテゴリ_jyo"] = (df["距離_num"] / 200).round().astype("Int64")
 
-        for i in range(len(group)):
-            row  = group.iloc[i]
-            past = group.iloc[:i].dropna(subset=["着順_num"])
+    # 競馬場×距離カテゴリ でグループ化して累積勝率・平均着順を計算
+    df["_win"] = (df["着順_num"] == 1).astype(float)
 
-            cur_jyo  = row.get("競馬場cd", np.nan)
-            cur_dist = row.get("距離", np.nan)
+    # 競馬場×距離カテゴリ 別（±200m近似）
+    grp_jyo_dist = df.groupby(["馬名", "競馬場cd", "距離カテゴリ_jyo"])
+    df["競馬場距離過去勝率"] = grp_jyo_dist["_win"].transform(
+        lambda x: x.shift(1).expanding().mean()
+    )
+    df["競馬場距離過去平均着順"] = grp_jyo_dist["着順_num"].transform(
+        lambda x: x.shift(1).expanding().mean()
+    )
 
-            # 同競馬場×同距離（±200m）の過去成績
-            if len(past) > 0 and pd.notna(cur_jyo) and pd.notna(cur_dist):
-                same = past[
-                    (past["競馬場cd"] == cur_jyo) &
-                    (pd.to_numeric(past["距離"], errors="coerce") >= cur_dist - 200) &
-                    (pd.to_numeric(past["距離"], errors="coerce") <= cur_dist + 200)
-                ]
-                jyo_dist_win.append((same["着順_num"] == 1).mean() if len(same) > 0 else np.nan)
-                jyo_dist_avg.append(same["着順_num"].mean() if len(same) > 0 else np.nan)
+    # 競馬場別（距離問わず）
+    grp_jyo = df.groupby(["馬名", "競馬場cd"])
+    df["競馬場過去勝率"] = grp_jyo["_win"].transform(
+        lambda x: x.shift(1).expanding().mean()
+    )
+    df["競馬場過去平均着順"] = grp_jyo["着順_num"].transform(
+        lambda x: x.shift(1).expanding().mean()
+    )
 
-                # 同競馬場の過去成績（距離問わず）
-                same_jyo = past[past["競馬場cd"] == cur_jyo]
-                jyo_win.append((same_jyo["着順_num"] == 1).mean() if len(same_jyo) > 0 else np.nan)
-                jyo_avg.append(same_jyo["着順_num"].mean() if len(same_jyo) > 0 else np.nan)
-            else:
-                jyo_dist_win.append(np.nan)
-                jyo_dist_avg.append(np.nan)
-                jyo_win.append(np.nan)
-                jyo_avg.append(np.nan)
-
-        group["競馬場距離過去勝率"]   = jyo_dist_win
-        group["競馬場距離過去平均着順"] = jyo_dist_avg
-        group["競馬場過去勝率"]        = jyo_win
-        group["競馬場過去平均着順"]    = jyo_avg
-        result_rows.append(group)
-
-    df = pd.concat(result_rows, ignore_index=True)
+    # 不要な一時列を削除
+    df = df.drop(columns=["_win", "距離カテゴリ_jyo", "距離_num"], errors="ignore")
 
     # ── ③ 開催時期（月・季節） ────────────────────────────────────────
-    # race_id の先頭8桁から年月を取得
     race_date = df["race_id"].astype(str).str[:8]
     df["開催月"] = pd.to_numeric(race_date.str[4:6], errors="coerce")
     df["開催季節"] = pd.cut(
         df["開催月"],
         bins=[0, 3, 6, 9, 12],
-        labels=[1, 2, 3, 4],  # 1=冬 2=春 3=夏 4=秋
+        labels=[1, 2, 3, 4],
     ).astype(float)
 
     return df
