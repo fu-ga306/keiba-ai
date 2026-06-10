@@ -24,18 +24,19 @@ st.set_page_config(
     page_title="競馬AI",
     page_icon="🏇",
     layout="wide",
+    initial_sidebar_state="collapsed",
 )
 
 st.markdown("""
 <style>
+/* ベース */
 .race-header{background:var(--color-background-secondary);border-radius:12px;padding:14px 18px;margin-bottom:12px;border:0.5px solid var(--color-border-tertiary)}
 .kpi-card{background:var(--color-background-secondary);border-radius:8px;padding:14px;text-align:center;border:0.5px solid var(--color-border-tertiary)}
 .kpi-val{font-size:1.8rem;font-weight:500;color:var(--color-text-primary)}
 .kpi-lbl{font-size:0.78rem;color:var(--color-text-secondary);margin-top:2px}
-.mark-row{border-radius:8px;padding:10px 14px;margin-bottom:6px;border-left:3px solid}
-.mark-honmei{border-left-color:#f0b429;background:rgba(240,180,41,0.06)}
-.mark-taiko{border-left-color:#3b82f6;background:rgba(59,130,246,0.06)}
-.mark-ana{border-left-color:#10b981;background:rgba(16,185,129,0.06)}
+.mark-honmei{border-left-color:#f0b429;background:rgba(240,180,41,0.06);border-left:3px solid #f0b429;border-radius:8px;padding:10px 14px;margin-bottom:6px}
+.mark-taiko{border-left-color:#3b82f6;background:rgba(59,130,246,0.06);border-left:3px solid #3b82f6;border-radius:8px;padding:10px 14px;margin-bottom:6px}
+.mark-ana{border-left-color:#10b981;background:rgba(16,185,129,0.06);border-left:3px solid #10b981;border-radius:8px;padding:10px 14px;margin-bottom:6px}
 .mark-name{font-size:1.05rem;font-weight:500;color:var(--color-text-primary)}
 .mark-sub{font-size:0.8rem;color:var(--color-text-secondary);margin-top:2px}
 .strat-badge{display:inline-block;background:rgba(124,58,237,0.15);color:#7c3aed;border-radius:4px;padding:1px 7px;font-size:0.72rem;margin-top:3px}
@@ -44,6 +45,18 @@ st.markdown("""
 .bar-wrap{background:var(--color-border-tertiary);border-radius:4px;height:6px;width:100%;display:inline-block;vertical-align:middle}
 .bar-inner{height:6px;border-radius:4px}
 section[data-testid="stSidebar"]{background:var(--color-background-secondary)}
+
+/* モバイル対応 */
+@media (max-width: 768px) {
+    .kpi-val{font-size:1.3rem}
+    .kpi-card{padding:10px 8px}
+    .mark-name{font-size:0.95rem}
+    .mark-sub{font-size:0.75rem}
+    h1{font-size:1.4rem!important}
+    h2{font-size:1.2rem!important}
+    h3{font-size:1.0rem!important}
+    .block-container{padding-left:0.5rem!important;padding-right:0.5rem!important}
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -90,6 +103,23 @@ if st.sidebar.button("🔄 更新"):
     st.cache_data.clear()
     st.rerun()
 st.sidebar.caption(f"更新: {datetime.now().strftime('%H:%M')}")
+
+# モバイル用ページ選択（メイン画面上部に表示）
+col_nav1, col_nav2, col_nav3, col_nav4 = st.columns(4)
+nav_pages = ["🏇 当日", "📊 成績", "📋 結果", "🏆 戦略"]
+nav_map   = {
+    "🏇 当日": "🏇 当日予想",
+    "📊 成績": "📊 成績サマリー",
+    "📋 結果": "📋 レース結果",
+    "🏆 戦略": "🏆 戦略分析",
+}
+for col, nav in zip([col_nav1, col_nav2, col_nav3, col_nav4], nav_pages):
+    is_active = nav_map[nav] == page
+    bg = "rgba(240,180,41,0.15)" if is_active else "var(--color-background-secondary)"
+    border = "1px solid #f0b429" if is_active else "0.5px solid var(--color-border-tertiary)"
+    if col.button(nav, key=f"nav_{nav}", use_container_width=True):
+        page = nav_map[nav]
+st.markdown("---")
 
 df_all    = load_data()
 df_result = get_result_df(df_all)
