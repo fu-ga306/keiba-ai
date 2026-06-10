@@ -11,6 +11,7 @@ import os
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime
+from result_tracker import record_from_prediction
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
@@ -1063,27 +1064,10 @@ def run_single_race(race_id, models, use_cols, history_df, mf_models=None, mf_co
     jyo_name = JYO_NAMES.get(jyo_cd, str(jyo_cd))
 
     # 記録保存（prediction_record_v2.csv のみに一元化）
+    # result_tracker.record_from_prediction で update_results/dashboard と
+    # 互換性のあるカラム形式（jyo, race, honmei, hit, honmei_actual等）で保存する
     try:
-        uma_honmei = pdf[pdf["印"] == "◎"].iloc[0]
-        uma_taiko  = pdf[pdf["印"] == "○"].iloc[0] if not pdf[pdf["印"] == "○"].empty else uma_honmei
-        uma_ana    = pdf[pdf["印"] == "▲"].iloc[0] if not pdf[pdf["印"] == "▲"].empty else uma_honmei
-
-        csv_path_v2 = os.path.join(BASE_DIR, "prediction_record_v2.csv")
-        write_header = not os.path.exists(csv_path_v2) or os.path.getsize(csv_path_v2) == 0
-        with open(csv_path_v2, "a", encoding="utf-8") as f:
-            if write_header:
-                f.write(
-                    "race_id,jyo,race,honmei,taiko,ana,"
-                    "honmei_win_p,taiko_win_p,ana_win_p\n"
-                )
-            f.write(
-                f"{race_id},{jyo_name},{race_no},"
-                f"{uma_honmei['馬名']},{uma_taiko['馬名']},{uma_ana['馬名']},"
-                f"{uma_honmei['勝ち確率']:.3f},"
-                f"{uma_taiko['勝ち確率']:.3f},"
-                f"{uma_ana['勝ち確率']:.3f}\n"
-            )
-        print("  [記録保存成功]")
+        record_from_prediction(race_id, pdf)
     except Exception as e:
         print(f"  記録保存エラー: {e}")
 

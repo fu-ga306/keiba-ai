@@ -78,26 +78,29 @@ def load_records():
     if os.path.exists(RECORD_FILE):
         return pd.read_csv(RECORD_FILE)
     return pd.DataFrame(columns=[
-        "日付", "race_id", "競馬場", "レース番号",
-        "予測1位馬名", "予測1位オッズ", "予測1位人気",
-        "予測1位期待値", "実際の着順", "的中", "収支",
-        "予測2位馬名", "予測2位実際着順",
-        "予測3位馬名", "予測3位実際着順",
+        "日付", "race_id", "jyo", "race",
+        "honmei", "honmei_win_p", "taiko", "taiko_win_p",
+        "ana", "ana_win_p",
+        "honmei_odds", "honmei_ninki", "honmei_ev",
+        "honmei_actual", "hit", "taiko_actual", "ana_actual",
     ])
 
 
 def save_record(record):
     df = load_records()
+    # race_id重複は更新（同じレースを複数回予想した場合は上書き）
+    if "race_id" in df.columns and len(df) > 0:
+        df = df[df["race_id"].astype(str) != str(record["race_id"])]
     df = pd.concat([df, pd.DataFrame([record])], ignore_index=True)
     df.to_csv(RECORD_FILE, index=False, encoding="utf-8-sig")
     print(f"記録保存 → {RECORD_FILE}")
 
 
-# 【修正】関数の重複定義を削除し、1つに統合
 def record_from_prediction(race_id, pdf):
     """
     予測結果DataFrameからレコードを作成して保存。
     keiba_auto.py の run_single_race から呼び出す。
+    update_results / show_summary / dashboard.py と同じカラム形式で保存する。
     """
     top3  = pdf.sort_values("予測順位").head(3)
     top1  = top3.iloc[0]
@@ -111,20 +114,21 @@ def record_from_prediction(race_id, pdf):
     record = {
         "日付":          datetime.now().strftime("%Y/%m/%d"),
         "race_id":       race_id,
-        "競馬場":        jyo_name,
-        "レース番号":    race_no,
-        "予測1位馬名":   top1["馬名"],
-        "予測1位オッズ": top1.get("単勝オッズ", np.nan),
-        "予測1位人気":   top1.get("人気", np.nan),
-        "予測1位期待値": float(top1.get("単勝期待値", np.nan))
-                         if pd.notna(top1.get("単勝期待値")) else None,
-        "実際の着順":    None,
-        "的中":          None,
-        "収支":          None,
-        "予測2位馬名":   top2["馬名"] if top2 is not None else None,
-        "予測2位実際着順": None,
-        "予測3位馬名":   top3h["馬名"] if top3h is not None else None,
-        "予測3位実際着順": None,
+        "jyo":           jyo_name,
+        "race":          race_no,
+        "honmei":        top1["馬名"],
+        "honmei_win_p":  float(top1.get("勝ち確率", np.nan)) if pd.notna(top1.get("勝ち確率")) else None,
+        "taiko":         top2["馬名"] if top2 is not None else None,
+        "taiko_win_p":   float(top2.get("勝ち確率", np.nan)) if (top2 is not None and pd.notna(top2.get("勝ち確率"))) else None,
+        "ana":           top3h["馬名"] if top3h is not None else None,
+        "ana_win_p":     float(top3h.get("勝ち確率", np.nan)) if (top3h is not None and pd.notna(top3h.get("勝ち確率"))) else None,
+        "honmei_odds":   top1.get("単勝オッズ", np.nan),
+        "honmei_ninki":  top1.get("人気", np.nan),
+        "honmei_ev":     float(top1.get("単勝期待値", np.nan)) if pd.notna(top1.get("単勝期待値")) else None,
+        "honmei_actual": np.nan,
+        "hit":           np.nan,
+        "taiko_actual":  np.nan,
+        "ana_actual":    np.nan,
     }
     save_record(record)
     print(f"  記録保存: {jyo_name} {race_no}R → {top1['馬名']}")
