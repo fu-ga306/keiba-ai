@@ -49,13 +49,22 @@ def get_horse_profile(horse_id: str) -> dict | None:
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--log-level=3")
+    import random as _r
+    _ua_list = [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    ]
+    options.add_argument(f"--user-agent={_r.choice(_ua_list)}")
 
     driver = webdriver.Chrome(
         service=Service(ChromeDriverManager().install()), options=options
     )
     try:
         driver.get(url)
-        time.sleep(3.0)
+        import random as _r
+        time.sleep(_r.uniform(2.5, 4.5))
         soup = BeautifulSoup(driver.page_source, "html.parser")
     finally:
         driver.quit()
@@ -171,7 +180,15 @@ def build_horse_master():
             })
             print("- (ページなし・地方馬等)")
 
-        time.sleep(3.0)
+        # ランダム待機（bot検知回避）
+        import random as _r
+        time.sleep(_r.uniform(5.0, 9.0))
+
+        # 100頭ごとに長めの休憩
+        if (i + 1) % 100 == 0:
+            rest = _r.uniform(60, 120)
+            print(f"  [{i+1}頭完了] {rest:.0f}秒休憩中...")
+            time.sleep(rest)
 
         # 200件ごとに中間保存
         if len(results) % 200 == 0 and results:
