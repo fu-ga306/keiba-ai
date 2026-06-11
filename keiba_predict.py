@@ -302,19 +302,18 @@ def build_report(pdf, race_id, jyo_name, race_no,
     lines.append(header("🏆 最終予想（総合判定）", "═"))
     lines.append("  【判定ロジック】")
     lines.append("  ① 両方選出 × 戦略該当  → 最強推奨（◎）")
-    lines.append("  ② 両方選出             → 強く推奨（○）")
-    lines.append("  ③ AI予想のみ × 期待値+ → 本命候補（▲）")
-    lines.append("  ④ 期待値のみ × 高期待値→ 穴馬候補（△）")
+    lines.append("  ② AI予測順位が上位（期待値はマイナスでも可）")
+    lines.append("  ③ 該当戦略があれば加点して優先度UP")
+    lines.append("  ※ 期待値・オッズは参考情報として表示（印の決定には使用しません）")
     lines.append("")
 
     # スコアリング（100点満点）
-    # 勝ち確率ランク 40点 + 期待値ランク 40点 + 戦略ボーナス 20点
+    # AI予測順位（勝ち確率）80点 + 戦略該当ボーナス20点
+    # 期待値は印の決定には使わず、参考情報として表示するのみ
     pdf["_ai_rank"]  = pdf["勝ち確率"].rank(ascending=False)
-    pdf["_ev_rank"]  = pdf["単勝期待値"].rank(ascending=False)
     n = len(pdf)
     pdf["_score"] = (
-        (1 - (pdf["_ai_rank"] - 1) / n) * 40 +
-        (1 - (pdf["_ev_rank"] - 1) / n) * 40 +
+        (1 - (pdf["_ai_rank"] - 1) / n) * 80 +
         pdf["該当戦略"].apply(lambda s: 20 if s else 0)
     )
     final_top = pdf.sort_values("_score", ascending=False).head(5)
@@ -570,11 +569,9 @@ def predict_race(race_id: str):
     try:
         # 総合スコア計算（build_reportと同じロジック）
         pdf["_ai_rank"] = pdf["勝ち確率"].rank(ascending=False)
-        pdf["_ev_rank"] = pdf["単勝期待値"].rank(ascending=False)
         n = len(pdf)
         pdf["総合スコア"] = (
-            (1 - (pdf["_ai_rank"] - 1) / n) * 40 +
-            (1 - (pdf["_ev_rank"] - 1) / n) * 40 +
+            (1 - (pdf["_ai_rank"] - 1) / n) * 80 +
             pdf["該当戦略"].apply(lambda s: 20 if s else 0)
         )
         final_top = pdf.sort_values("総合スコア", ascending=False).head(5)
