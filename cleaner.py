@@ -1,4 +1,5 @@
 import pandas as pd
+import numpy as np
 import re
 
 
@@ -65,13 +66,41 @@ def clean_race_data(
         df["is_turf"] = (df["馬場種別"] == "芝").astype(float)
 
     # レースクラスを数値に
+    # netkeibaの表記ゆれ（新表記/旧表記/年齢条件付き等）に対応するため
+    # 完全一致ではなく部分一致（キーワード検索）で判定する
     if "レースクラス" in df.columns:
-        class_map = {
-            "新馬": 1, "未勝利": 2, "1勝クラス": 3,
-            "2勝クラス": 4, "3勝クラス": 5,
-            "オープン": 6, "G3": 7, "G2": 8, "G1": 9,
-        }
-        df["クラス_num"] = df["レースクラス"].map(class_map)
+        def _classify(s):
+            if pd.isna(s):
+                return np.nan
+            s = str(s)
+            # グレードレース（G1/G2/G3、JpnI等も含む）
+            if "G1" in s or "GI" in s.replace("Ⅰ","I").replace("Ｉ","I") or "Jpn1" in s or "JpnI" in s:
+                return 9
+            if "G2" in s or "GII" in s.replace("Ⅱ","II") or "Jpn2" in s or "JpnII" in s:
+                return 8
+            if "G3" in s or "GIII" in s.replace("Ⅲ","III") or "Jpn3" in s or "JpnIII" in s:
+                return 7
+            # オープン・リステッド
+            if "オープン" in s or "OP" in s or "L" == s.strip() or "リステッド" in s:
+                return 6
+            # 新表記（条件クラス）
+            if "3勝クラス" in s or "1600万" in s:
+                return 5
+            if "2勝クラス" in s or "1000万" in s:
+                return 4
+            if "1勝クラス" in s or "500万" in s:
+                return 3
+            if "未勝利" in s:
+                return 2
+            if "新馬" in s:
+                return 1
+            return np.nan
+
+        df["クラス_num"] = df["レースクラス"].apply(_classify)
+        unmapped = df["クラス_num"].isna().sum()
+        if unmapped > 0:
+            print(f"  クラス_num: 未分類 {unmapped}行 "
+                  f"(例: {df.loc[df['クラス_num'].isna(), 'レースクラス'].dropna().unique()[:5]})")
 
     # 不要列を除外
     drop_cols = [

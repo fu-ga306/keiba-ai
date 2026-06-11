@@ -34,9 +34,12 @@ def get_race_result(race_id):
                         race_info["馬場状態"] = condition
                         break
 
-            race_class_tag = race_data_div.find("p")
-            if race_class_tag:
-                race_info["レースクラス"] = race_class_tag.get_text(strip=True)
+            # レース名（クラス情報を含む）は <dl class="racedata fc"><h1> にある
+            race_name_tag = soup.find("dl", class_="racedata fc")
+            if race_name_tag:
+                h1 = race_name_tag.find("h1")
+                if h1:
+                    race_info["レースクラス"] = h1.get_text(strip=True)
 
         table = soup.find("table", class_="race_table_01")
         if table is None:
