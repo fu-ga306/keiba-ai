@@ -364,7 +364,7 @@ def build_report(pdf, race_id, jyo_name, race_no,
     lines.append("  └─────────────────────────────────────────────────────────┘")
     lines.append("")
 
-    # 買い目サマリー
+    # ── 買い目サマリー（複勝・馬連・ワイド・馬単・3連複） ──────────────
     lines.append("  【買い目サマリー】")
     honmei = final_top.iloc[0]
     taiko  = final_top.iloc[1] if len(final_top) > 1 else None
@@ -372,18 +372,61 @@ def build_report(pdf, race_id, jyo_name, race_no,
 
     h_odds = honmei.get("単勝オッズ", np.nan)
     lines.append(
-        f"  単勝   : ◎{honmei['馬名']}  "
-        f"（{h_odds:.1f}倍 / EV{honmei['単勝期待値']:+.2f}）"
+        (f"  単勝   : ◎{honmei['馬名']}  "
+         f"（{h_odds:.1f}倍 / EV{honmei['単勝期待値']:+.2f}）")
         if pd.notna(h_odds) else f"  単勝   : ◎{honmei['馬名']}"
     )
-    if taiko is not None:
+
+    # 複勝：◎の複勝確率×想定複勝オッズ(単勝オッズの目安1/3〜1/4)で期待値推定
+    h_place_p = honmei.get("複勝確率", np.nan)
+    if pd.notna(h_place_p) and pd.notna(h_odds):
+        est_fuku_odds = max(h_odds / 4, 1.05)  # 簡易推定（実オッズはkeiba_auto側で実測）
+        fuku_ev = h_place_p * est_fuku_odds - 1
         lines.append(
-            f"  馬連   : ◎{honmei['馬名']} ─ ○{taiko['馬名']}"
+            f"  複勝   : ◎{honmei['馬名']}  "
+            f"（複勝率{h_place_p*100:.1f}% / 推定オッズ約{est_fuku_odds:.1f}倍 / 推定EV{fuku_ev:+.2f}）"
         )
+
+    if taiko is not None:
+        h_p2 = honmei.get("連対確率", np.nan)
+        t_p1 = taiko.get("勝ち確率", np.nan)
+        t_p2 = taiko.get("連対確率", np.nan)
+        h_p1 = honmei.get("勝ち確率", np.nan)
+
+        # ワイド的中確率（◎○ともに3着以内）の近似 = 複勝確率の積に補正係数
+        h_pl = honmei.get("複勝確率", np.nan)
+        t_pl = taiko.get("複勝確率", np.nan)
+        if pd.notna(h_pl) and pd.notna(t_pl):
+            wide_p = min(h_pl * t_pl * 1.5, 0.95)
+            lines.append(
+                f"  ワイド : ◎{honmei['馬名']} ─ ○{taiko['馬名']}  "
+                f"（的中率約{wide_p*100:.1f}%）"
+            )
+
+        # 馬連的中確率 = P(◎1着,○2着) + P(○1着,◎2着) の近似
+        if pd.notna(h_p1) and pd.notna(t_p1) and pd.notna(h_p2) and pd.notna(t_p2):
+            umaren_p = h_p1 * (t_p2 / max(1 - h_p1, 1e-6)) + t_p1 * (h_p2 / max(1 - t_p1, 1e-6))
+            umaren_p = min(umaren_p, 0.95)
+            lines.append(
+                f"  馬連   : ◎{honmei['馬名']} ─ ○{taiko['馬名']}  "
+                f"（的中率約{umaren_p*100:.1f}%）"
+            )
+
+        # 馬単的中確率 = P(◎1着 → ○2着) のみ（順序固定）
+        if pd.notna(h_p1) and pd.notna(t_p2):
+            umatan_p = h_p1 * (t_p2 / max(1 - h_p1, 1e-6))
+            umatan_p = min(umatan_p, 0.95)
+            lines.append(
+                f"  馬単   : ◎{honmei['馬名']} → ○{taiko['馬名']}  "
+                f"（的中率約{umatan_p*100:.1f}%）"
+            )
+
     if ana is not None:
         lines.append(
             f"  3連複  : ◎{honmei['馬名']} ─ ○{taiko['馬名']} ─ ▲{ana['馬名']}"
         )
+    lines.append("  ※ ワイド・馬連・馬単の的中率は確率モデルによる近似値です。")
+    lines.append("  ※ 複勝オッズは実オッズと異なる場合があります（keiba_auto.pyは実オッズ使用）。")
     lines.append("")
 
     lines.append(sep("─"))
@@ -472,12 +515,16 @@ def predict_race(race_id: str):
     # 市場フリーモデルで乖離スコアを計算
     pdf["MF予測順位"] = np.nan
     pdf["乖離スコア"] = np.nan
+    pdf["MF勝ち確率"] = np.nan
     if mf_models is not None and mf_cols is not None:
         try:
             X_mf  = pdf.reindex(columns=mf_cols)
             mf_preds = np.mean([m.predict_proba(X_mf)[:, 1] for m in mf_models], axis=0)
             pdf["MF予測順位"] = pd.Series(mf_preds).rank(ascending=False).values
             pdf["乖離スコア"] = pdf["予測順位"] - pdf["MF予測順位"]
+            # 純粋AI勝ち確率（レース内で正規化）
+            mf_raw = np.clip(np.nan_to_num(mf_preds, nan=0.0), 0, None)
+            pdf["MF勝ち確率"] = mf_raw / mf_raw.sum() if mf_raw.sum() > 0 else np.ones(len(mf_raw)) / len(mf_raw)
             print("  市場フリー予測成功")
         except Exception as e:
             print(f"  市場フリー予測エラー（スキップ）: {e}")
@@ -543,7 +590,7 @@ def predict_race(race_id: str):
             "単勝オッズ", "人気",
             "勝ち確率", "複勝確率", "3着内確率",
             "単勝期待値", "推奨賭け率",
-            "乖離スコア", "MF予測順位",
+            "乖離スコア", "MF予測順位", "MF勝ち確率",
             "該当戦略", "推奨ランク", "総合スコア",
             "予測順位", "過去勝率", "過去出走数", "前走間隔",
         ]

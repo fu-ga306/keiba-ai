@@ -360,6 +360,29 @@ def get_race_data(race_id):
         print(f"  馬連オッズ取得エラー: {e}")
         df["_umaren_map"] = [{}] * len(df)
 
+    # ── 馬単オッズ取得（順序あり：1着→2着） ──
+    try:
+        soup_umatan = fetch_odds_page(race_id, "b6")
+        umatan_map = {}
+        umatan_tables = soup_umatan.find_all("table", class_="RaceOdds_HorseList_Table")
+        umatan_table = umatan_tables[0] if umatan_tables else None
+        if umatan_table:
+            for tr in umatan_table.find_all("tr")[1:]:
+                td = tr.find_all("td")
+                if len(td) >= 4:
+                    try:
+                        uma1 = td[0].get_text(strip=True)
+                        uma2 = td[1].get_text(strip=True)
+                        odds_val = float(td[3].get_text(strip=True))
+                        umatan_map[(uma1, uma2)] = odds_val  # (1着馬番, 2着馬番) -> オッズ
+                    except:
+                        pass
+        df["_umatan_map"] = [umatan_map] * len(df)
+        print(f"  馬単オッズ取得成功: {len(umatan_map)}組み合わせ")
+    except Exception as e:
+        print(f"  馬単オッズ取得エラー: {e}")
+        df["_umatan_map"] = [{}] * len(df)
+
     return df
 
 
@@ -799,6 +822,24 @@ def make_email_body(race_id, pdf):
                 f"的中率{bet['馬連的中確率']*100:.1f}% 期待値{ev:+.2f}"
             )
 
+    # 馬単買い目
+    umatan_bets = pdf["_umatan_bets"].iloc[0] if "_umatan_bets" in pdf.columns else []
+    if umatan_bets:
+        lines.append("\n【馬単】")
+        sorted_umatan = sorted(umatan_bets, key=lambda x: x["馬単期待値"], reverse=True)
+        for bet in sorted_umatan[:3]:
+            u1 = bet["馬番1着"]
+            u2 = bet["馬番2着"]
+            n1 = pdf[pdf["馬番"].astype(str) == u1]["馬名"].iloc[0] if len(pdf[pdf["馬番"].astype(str) == u1]) > 0 else u1
+            n2 = pdf[pdf["馬番"].astype(str) == u2]["馬名"].iloc[0] if len(pdf[pdf["馬番"].astype(str) == u2]) > 0 else u2
+            ev = bet["馬単期待値"]
+            mark = "✅" if ev >= 0 else "△"
+            lines.append(
+                f"  {mark} {n1} → {n2} "
+                f"{bet['馬単オッズ']}倍 "
+                f"的中率{bet['馬単的中確率']*100:.1f}% 期待値{ev:+.2f}"
+            )
+
     lines.append("\n※AIによる予測です。投資は自己責任でお願いします。")
     return "\n".join(lines)
 
@@ -949,8 +990,36 @@ def run_single_race(race_id, models, use_cols, history_df, mf_models=None, mf_co
                             "馬連期待値": umaren_ev,
                         })
 
+    # 馬単（順序あり：上位2頭の正逆2パターン）
+    umatan_map = pdf["_umatan_map"].iloc[0] if "_umatan_map" in pdf.columns else {}
+    umatan_bets = []
+    if umatan_map and len(top3_umaban) >= 2:
+        for i in range(len(top3_umaban)):
+            for j in range(len(top3_umaban)):
+                if i == j:
+                    continue
+                u1, u2 = top3_umaban[i], top3_umaban[j]  # u1=1着, u2=2着
+                umatan_odds = umatan_map.get((u1, u2), np.nan)
+                if pd.notna(umatan_odds):
+                    r1 = pdf[pdf["馬番"].astype(str) == u1]
+                    r2 = pdf[pdf["馬番"].astype(str) == u2]
+                    if len(r1) > 0 and len(r2) > 0:
+                        p1 = float(r1["勝ち確率"].iloc[0])
+                        p2 = float(r2["勝ち確率"].iloc[0])
+                        # 馬単的中確率 = u1が1着 × u2が(u1以外で)2着
+                        umatan_prob = p1 * (p2 / (1 - p1 + 1e-9))
+                        umatan_prob = min(umatan_prob, 0.95)
+                        umatan_ev = umatan_prob * umatan_odds - 1
+                        umatan_bets.append({
+                            "馬番1着": u1, "馬番2着": u2,
+                            "馬単オッズ": umatan_odds,
+                            "馬単的中確率": umatan_prob,
+                            "馬単期待値": umatan_ev,
+                        })
+
     pdf["_wide_bets"]   = [wide_bets]   * len(pdf)
     pdf["_umaren_bets"] = [umaren_bets] * len(pdf)
+    pdf["_umatan_bets"] = [umatan_bets] * len(pdf)
 
     # 市場フリーモデルによる乖離スコア計算
     pdf["MF予測順位"] = np.nan
