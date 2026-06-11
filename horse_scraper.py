@@ -27,29 +27,19 @@ INPUT_CSV    = os.path.join(BASE_DIR, "race_data_clean.csv")
 OUTPUT_CSV   = os.path.join(BASE_DIR, "horse_master.csv")
 
 
-def get_horse_profile(horse_id: str) -> dict | None:
-    """
-    netkeiba の馬ページから父馬・母父馬情報を取得する。
-    Selenium を使用（requests では 403 になるため）。
-    blood_table の構造:
-      td[0]=父馬  td[1]=父父馬
-      td[2]=母馬  td[3]=母父馬
-    """
+def create_driver():
+    """Chromeドライバーを1つ生成する（使い回し用）。"""
     from selenium import webdriver
     from selenium.webdriver.chrome.service import Service
     from selenium.webdriver.chrome.options import Options
     from webdriver_manager.chrome import ChromeDriverManager
-
-    # horse_id の .0 を除去して整数文字列に変換
-    horse_id_str = str(horse_id).replace(".0", "").strip()
-    url = f"https://db.netkeiba.com/horse/{horse_id_str}/"
+    import random as _r
 
     options = Options()
     options.add_argument("--headless")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--log-level=3")
-    import random as _r
     _ua_list = [
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
@@ -57,17 +47,28 @@ def get_horse_profile(horse_id: str) -> dict | None:
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     ]
     options.add_argument(f"--user-agent={_r.choice(_ua_list)}")
-
-    driver = webdriver.Chrome(
+    return webdriver.Chrome(
         service=Service(ChromeDriverManager().install()), options=options
     )
-    try:
-        driver.get(url)
-        import random as _r
-        time.sleep(_r.uniform(2.5, 4.5))
-        soup = BeautifulSoup(driver.page_source, "html.parser")
-    finally:
-        driver.quit()
+
+
+def get_horse_profile(driver, horse_id: str) -> dict | None:
+    """
+    netkeiba の馬ページから父馬・母父馬情報を取得する。
+    Selenium を使用（requests では 403 になるため）。
+    driverは呼び出し側で使い回す（毎回起動するとオーバーヘッドが大きいため）。
+    blood_table の構造:
+      td[0]=父馬  td[1]=父父馬
+      td[2]=母馬  td[3]=母父馬
+    """
+    # horse_id の .0 を除去して整数文字列に変換
+    horse_id_str = str(horse_id).replace(".0", "").strip()
+    url = f"https://db.netkeiba.com/horse/{horse_id_str}/"
+
+    driver.get(url)
+    import random as _r
+    time.sleep(_r.uniform(1.0, 2.0))
+    soup = BeautifulSoup(driver.page_source, "html.parser")
 
     try:
         # 404・エラーページの検出（「このページは動作していません」など）
@@ -161,12 +162,24 @@ def build_horse_master():
     results = []
     errors  = 0
 
+    print("Chromeドライバー起動中（使い回しで高速化）...")
+    driver = create_driver()
+
     for i, (_, row) in enumerate(target.iterrows()):
         horse_id = str(row["horse_id"])
         uma_name = str(row["馬名"])
         print(f"[{i+1}/{len(target)}] {uma_name} ({horse_id})", end=" ")
 
-        profile = get_horse_profile(horse_id)
+        try:
+            profile = get_horse_profile(driver, horse_id)
+        except Exception as e:
+            print(f"  ドライバーエラー、再起動します: {e}")
+            try:
+                driver.quit()
+            except Exception:
+                pass
+            driver = create_driver()
+            profile = get_horse_profile(driver, horse_id)
         if profile and profile.get("父馬") is not None:
             results.append(profile)
             print(f"✓ 父:{profile['父馬']}  母父:{profile['母父馬']}")
@@ -180,13 +193,13 @@ def build_horse_master():
             })
             print("- (ページなし・地方馬等)")
 
-        # ランダム待機（bot検知回避）
+        # ランダム待機（bot検知回避・短縮版）
         import random as _r
-        time.sleep(_r.uniform(5.0, 9.0))
+        time.sleep(_r.uniform(1.5, 3.0))
 
-        # 100頭ごとに長めの休憩
-        if (i + 1) % 100 == 0:
-            rest = _r.uniform(60, 120)
+        # 200頭ごとに短めの休憩
+        if (i + 1) % 200 == 0:
+            rest = _r.uniform(20, 40)
             print(f"  [{i+1}頭完了] {rest:.0f}秒休憩中...")
             time.sleep(rest)
 
@@ -199,6 +212,11 @@ def build_horse_master():
     # 残りを保存
     if results:
         _save(results, append=True)
+
+    try:
+        driver.quit()
+    except Exception:
+        pass
 
     print(f"\n完了！エラー: {errors}件")
     print(f"保存先: {OUTPUT_CSV}")

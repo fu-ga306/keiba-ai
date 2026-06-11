@@ -164,15 +164,145 @@ if st.session_state.page == "🏇 当日予想":
         st.stop()
 
     r0 = rdf.iloc[0]
-    c1,c2,c3,c4 = st.columns(4)
-    for col,val,lbl in [(c1,f"{r0.get('馬場','')}{r0.get('距離','')}m","コース"),
-                        (c2,str(r0.get('馬場状態','-')),"馬場状態"),
-                        (c3,str(r0.get('クラス','-')),"クラス"),
-                        (c4,f"{len(rdf)}頭","出走頭数")]:
-        col.markdown(f"<div class='kpi-card'><div class='kpi-val'>{val}</div><div class='kpi-lbl'>{lbl}</div></div>",unsafe_allow_html=True)
+    dist_s   = f"{int(r0.get('距離',0))}m" if pd.notna(r0.get('距離')) else ""
+    turf_s   = r0.get('馬場','')
+    n_horse  = len(rdf)
+    jyo_s    = r0.get('jyo','')
+    race_no  = int(r0.get('race_no', 0)) if pd.notna(r0.get('race_no')) else 0
 
+    # 推奨馬の最強ピック（ヘッダーバッジ用）
+    best_roi = ""
+    if "推奨ランク" in rdf.columns:
+        honmei = rdf[rdf["推奨ランク"]=="◎"]
+        if not honmei.empty:
+            ev = honmei.iloc[0].get("単勝期待値", np.nan)
+            if pd.notna(ev) and ev > 0:
+                odds = honmei.iloc[0].get("単勝オッズ", np.nan)
+                roi = (1+ev) * 100
+                best_roi = f"<span style='background:rgba(231,126,34,0.15);color:#e67e22;border-radius:6px;padding:3px 10px;font-size:0.8rem;font-weight:600'>🔥 期待値+{ev:.2f} 推定回収{roi:.0f}%</span>"
+
+    # ── レースヘッダーバー ──
+    st.markdown(
+        f"<div class='race-header' style='display:flex;align-items:center;gap:16px'>"
+        f"<div style='background:#3b3f5c;color:#fff;border-radius:10px;padding:8px 14px;text-align:center;min-width:54px'>"
+        f"<div style='font-size:1.3rem;font-weight:700;line-height:1'>{race_no}</div>"
+        f"<div style='font-size:0.65rem;opacity:0.8'>{jyo_s}</div></div>"
+        f"<div style='flex:1'>"
+        f"<div style='font-size:1.1rem;font-weight:600;color:var(--color-text-primary)'>{jyo_s} {race_no}R</div>"
+        f"<div style='font-size:0.8rem;color:var(--color-text-secondary);margin-top:2px'>"
+        f"{turf_s} {dist_s} / {n_horse}頭 &nbsp;|&nbsp; 馬場:{r0.get('馬場状態','-')} &nbsp;|&nbsp; クラス:{r0.get('クラス','-')}</div>"
+        f"</div>"
+        f"{best_roi}"
+        f"</div>",
+        unsafe_allow_html=True
+    )
+
+    # ── 全頭テーブル（画像2スタイル） ──
+    WAKU_COLORS = {
+        1: "#ffffff", 2: "#000000", 3: "#dc2626", 4: "#3b82f6",
+        5: "#fbbf24", 6: "#10b981", 7: "#f97316", 8: "#ec4899",
+    }
+    WAKU_TEXT = {1: "#000000", 5: "#000000"}  # 白・黄枠は文字を黒に
+
+    sort_col = "予測順位" if "予測順位" in rdf.columns else ("勝ち確率" if "勝ち確率" in rdf.columns else "単勝オッズ")
+    sort_asc = sort_col != "勝ち確率"
+    tdf = rdf.sort_values(sort_col, ascending=sort_asc).copy()
+
+    rows_html = ""
+    for _, row in tdf.iterrows():
+        waku   = int(row.get("枠番", 0)) if pd.notna(row.get("枠番")) else 0
+        umaban = int(row.get("馬番", 0)) if pd.notna(row.get("馬番")) else 0
+        name   = row.get("馬名", "")
+        odds   = row.get("単勝オッズ", np.nan)
+        pop    = row.get("人気", np.nan)
+        wp     = row.get("勝ち確率", np.nan)
+        mfp    = row.get("MF勝ち確率", np.nan)
+        pp     = row.get("複勝確率", np.nan)
+        ev     = row.get("単勝期待値", np.nan)
+        mark   = row.get("推奨ランク", "")
+        strat  = row.get("該当戦略", "")
+
+        odds_s = f"{odds:.1f}" if pd.notna(odds) else "-"
+        pop_s  = f"{int(pop)}人気" if pd.notna(pop) else "-"
+        wp_s   = f"{wp*100:.1f}%" if pd.notna(wp) else "-"
+        mfp_s  = f"{mfp*100:.1f}%" if pd.notna(mfp) else "-"
+        pp_s   = f"{pp*100:.1f}%" if pd.notna(pp) else "-"
+
+        # 枠番の色付き丸
+        wcolor = WAKU_COLORS.get(waku, "#888888")
+        wtext  = WAKU_TEXT.get(waku, "#ffffff")
+        waku_html = f"<span style='display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;background:{wcolor};color:{wtext};font-size:0.75rem;font-weight:700;border:1px solid rgba(128,128,128,0.3)'>{waku}</span>"
+
+        # 印
+        mark_color = {"◎":"#f0b429","○":"#3b82f6","▲":"#10b981","△":"#8892a4","×":"#e74c3c"}.get(mark,"")
+        mark_html  = f"<span style='color:{mark_color};font-weight:700;font-size:1.05rem'>{mark}</span>" if mark else ""
+
+        # シグナル（戦略該当 / 期待値プラス で色分け）
+        if strat:
+            sig_html = "<span style='background:#dc2626;color:#fff;border-radius:4px;padding:2px 8px;font-size:0.7rem;font-weight:600'>戦略該当</span>"
+        elif pd.notna(ev) and ev >= 0.3:
+            sig_html = "<span style='background:#f97316;color:#fff;border-radius:4px;padding:2px 8px;font-size:0.7rem;font-weight:600'>注目</span>"
+        elif pd.notna(ev) and ev >= 0:
+            sig_html = "<span style='background:#6b7280;color:#fff;border-radius:4px;padding:2px 8px;font-size:0.7rem'>様子見</span>"
+        else:
+            sig_html = "<span style='color:var(--color-text-secondary);font-size:0.7rem'>-</span>"
+
+        # 純粋AI能力値バー（0-100スケール想定でMF勝ち確率を強調表示）
+        ability_pct = mfp*100 if pd.notna(mfp) else 0
+        bar_color = "#dc2626" if ability_pct >= 15 else ("#f97316" if ability_pct >= 8 else "#3b82f6")
+        bar_w = min(ability_pct * 4, 100)  # スケール調整
+        ability_html = (
+            f"<div style='display:flex;align-items:center;gap:6px'>"
+            f"<span style='font-size:0.78rem;min-width:42px'>{mfp_s}</span>"
+            f"<span class='bar-wrap' style='width:50px'><span class='bar-inner' style='width:{bar_w:.0f}%;background:{bar_color}'></span></span>"
+            f"</div>"
+        )
+
+        row_bg = "background:rgba(240,180,41,0.06);" if mark == "◎" else ""
+        ev_color = "#10b981" if pd.notna(ev) and ev >= 0 else "var(--color-text-secondary)"
+        ev_s = f"<span style='color:{ev_color};font-weight:600'>{ev:+.2f}</span>" if pd.notna(ev) else "-"
+
+        rows_html += (
+            f"<tr style='{row_bg}'>"
+            f"<td style='text-align:center'>{odds_s}</td>"
+            f"<td style='text-align:center'>{pop_s}</td>"
+            f"<td style='text-align:center'>{waku_html}</td>"
+            f"<td style='text-align:center'>{umaban}</td>"
+            f"<td style='text-align:center'>{mark_html}</td>"
+            f"<td>{name}</td>"
+            f"<td style='text-align:center'>{sig_html}</td>"
+            f"<td>{ability_html}</td>"
+            f"<td style='text-align:center'>{wp_s}</td>"
+            f"<td style='text-align:center'>{pp_s}</td>"
+            f"<td style='text-align:center'>{ev_s}</td>"
+            f"</tr>"
+        )
+
+    st.markdown(f"""
+    <style>
+    .race-table {{width:100%;border-collapse:collapse;font-size:13px;margin-top:14px}}
+    .race-table th {{background:var(--color-background-secondary);color:var(--color-text-secondary);
+        padding:8px 6px;text-align:center;border-bottom:1px solid var(--color-border-tertiary);
+        white-space:nowrap;font-weight:500;font-size:0.75rem}}
+    .race-table td {{padding:7px 6px;border-bottom:0.5px solid var(--color-border-tertiary);
+        white-space:nowrap;color:var(--color-text-primary);vertical-align:middle}}
+    .race-table tr:hover td {{background:var(--color-background-secondary)}}
+    </style>
+    <table class='race-table'>
+    <thead><tr>
+        <th>オッズ</th><th>人気</th><th>枠</th><th>馬番</th><th>印</th><th>馬名</th>
+        <th>シグナル</th><th>純粋AI評価</th><th>勝率</th><th>複勝率</th><th>期待値</th>
+    </tr></thead>
+    <tbody>{rows_html}</tbody>
+    </table>
+    """, unsafe_allow_html=True)
+
+    st.caption(f"予想日時: {rdf['予想日時'].iloc[0] if '予想日時' in rdf.columns else '-'}")
+    st.caption("純粋AI評価=人気・オッズを見ない市場フリーモデルの勝率 / 勝率・複勝率は通常モデル（人気・オッズ考慮）")
+
+    # ── 推奨馬の詳細カード ──
     st.markdown("---")
-    st.subheader("推奨馬")
+    st.subheader("推奨馬 詳細")
 
     marks = [("◎","最強推奨","#f0b429","mark-honmei"),
              ("○","強く推奨","#3b82f6","mark-taiko"),
@@ -206,25 +336,6 @@ if st.session_state.page == "🏇 当日予想":
                 f"{'<br>'+badge if badge else ''}</div>",
                 unsafe_allow_html=True
             )
-
-    st.markdown("---")
-    st.subheader("全馬評価")
-
-    show_cols = ["推奨ランク","馬番","馬名","単勝オッズ","人気",
-                 "勝ち確率","複勝確率","単勝期待値","乖離スコア","該当戦略"]
-    show_cols = [c for c in show_cols if c in rdf.columns]
-    disp = rdf[show_cols].sort_values("予測順位" if "予測順位" in rdf.columns else show_cols[0]).copy()
-
-    for col in ["勝ち確率","複勝確率"]:
-        if col in disp.columns:
-            disp[col] = disp[col].apply(lambda x: f"{x*100:.1f}%" if pd.notna(x) else "-")
-    if "単勝期待値" in disp.columns:
-        disp["単勝期待値"] = disp["単勝期待値"].apply(lambda x: f"{x:+.2f}" if pd.notna(x) else "-")
-    if "乖離スコア" in disp.columns:
-        disp["乖離スコア"] = disp["乖離スコア"].apply(lambda x: f"{x:+.0f}" if pd.notna(x) else "-")
-
-    st.dataframe(disp, hide_index=True, use_container_width=True)
-    st.caption(f"予想日時: {rdf['予想日時'].iloc[0] if '予想日時' in rdf.columns else '-'}")
 
 # ════════════════════════════════════════════════════════════════════════
 elif st.session_state.page == "📊 成績サマリー":
