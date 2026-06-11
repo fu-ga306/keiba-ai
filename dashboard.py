@@ -204,9 +204,19 @@ if st.session_state.page == "🏇 当日予想":
     }
     WAKU_TEXT = {1: "#000000", 5: "#000000"}  # 白・黄枠は文字を黒に
 
-    sort_col = "予測順位" if "予測順位" in rdf.columns else ("勝ち確率" if "勝ち確率" in rdf.columns else "単勝オッズ")
-    sort_asc = sort_col != "勝ち確率"
-    tdf = rdf.sort_values(sort_col, ascending=sort_asc).copy()
+    sort_options = {
+        "AI予測順位": ("勝ち確率", False),
+        "オッズ順": ("単勝オッズ", True),
+        "人気順": ("人気", True),
+        "期待値順": ("単勝期待値", False),
+        "純粋AI評価順": ("MF勝ち確率", False),
+        "連対率順": ("連対確率", False),
+        "複勝率順": ("複勝確率", False),
+    }
+    sort_options = {k: v for k, v in sort_options.items() if v[0] in rdf.columns}
+    sort_label = st.radio("並び替え", list(sort_options.keys()), horizontal=True, key=f"sort_{rdf['race_id'].iloc[0]}")
+    sort_col, sort_asc = sort_options.get(sort_label, ("勝ち確率", False))
+    tdf = rdf.sort_values(sort_col, ascending=sort_asc, na_position="last").copy()
 
     rows_html = ""
     for _, row in tdf.iterrows():
@@ -221,7 +231,11 @@ if st.session_state.page == "🏇 当日予想":
         pp     = row.get("複勝確率", np.nan)
         ev     = row.get("単勝期待値", np.nan)
         mark   = row.get("推奨ランク", "")
+        if pd.isna(mark):
+            mark = ""
         strat  = row.get("該当戦略", "")
+        if pd.isna(strat):
+            strat = ""
 
         odds_s = f"{odds:.1f}" if pd.notna(odds) else "-"
         pop_s  = f"{int(pop)}人気" if pd.notna(pop) else "-"
@@ -242,9 +256,12 @@ if st.session_state.page == "🏇 当日予想":
         # シグナル（戦略該当 / 期待値プラス で色分け）
         if strat:
             sig_html = "<span style='background:#dc2626;color:#fff;border-radius:4px;padding:2px 8px;font-size:0.7rem;font-weight:600'>戦略該当</span>"
-        elif pd.notna(ev) and ev >= 0.3:
+        elif pd.notna(ev) and ev >= 0.3 and pd.notna(odds) and 1.5 <= odds <= 20:
             sig_html = "<span style='background:#f97316;color:#fff;border-radius:4px;padding:2px 8px;font-size:0.7rem;font-weight:600'>注目</span>"
-        elif pd.notna(ev) and ev >= 0:
+        elif pd.notna(ev) and ev >= 0.3 and pd.notna(mfp) and mfp >= 0.08:
+            # オッズ20倍超の大穴でも、純粋AI評価(MF勝ち確率)が一定以上なら注目
+            sig_html = "<span style='background:#f97316;color:#fff;border-radius:4px;padding:2px 8px;font-size:0.7rem;font-weight:600'>注目</span>"
+        elif pd.notna(ev) and ev >= 0 and pd.notna(odds) and 1.5 <= odds <= 20:
             sig_html = "<span style='background:#6b7280;color:#fff;border-radius:4px;padding:2px 8px;font-size:0.7rem'>様子見</span>"
         else:
             sig_html = "<span style='color:var(--color-text-secondary);font-size:0.7rem'>-</span>"
@@ -326,6 +343,8 @@ if st.session_state.page == "🏇 当日予想":
             pp    = row.get("複勝確率",np.nan)
             ev    = row.get("単勝期待値",np.nan)
             strat = row.get("該当戦略","")
+            if pd.isna(strat):
+                strat = ""
             odds_s = f"{odds:.1f}倍" if pd.notna(odds) else "-"
             pop_s  = f"{int(pop)}番人気" if pd.notna(pop) else "-"
             wp_s   = f"{wp*100:.1f}%" if pd.notna(wp) else "-"
@@ -348,6 +367,29 @@ elif st.session_state.page == "📊 成績サマリー":
 
     if df_result.empty:
         st.warning("結果データがありません。`result_tracker.py update` を実行してください。")
+        st.stop()
+
+    # ── 日付フィルタ（モデル更新前後などで絞り込み） ──
+    if "日付" in df_result.columns:
+        dates = pd.to_datetime(df_result["日付"], errors="coerce")
+        valid_dates = dates.dropna()
+        if not valid_dates.empty:
+            min_d, max_d = valid_dates.min().date(), valid_dates.max().date()
+            date_range = st.date_input(
+                "対象期間（モデル更新日以降などで絞り込み）",
+                value=(min_d, max_d),
+                min_value=min_d, max_value=max_d,
+            )
+            if isinstance(date_range, tuple) and len(date_range) == 2:
+                start_d, end_d = date_range
+                mask = (dates.dt.date >= start_d) & (dates.dt.date <= end_d)
+                n_nodate = dates.isna().sum()
+                if n_nodate > 0:
+                    st.caption(f"※ 日付不明のデータ{n_nodate}件は期間絞り込みの対象外（除外）です")
+                df_result = df_result[mask].reset_index(drop=True)
+
+    if df_result.empty:
+        st.info("選択した期間にデータがありません。")
         st.stop()
 
     total = len(df_result)
