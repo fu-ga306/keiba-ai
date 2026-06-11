@@ -69,6 +69,22 @@ LGB_PARAMS = {
 }
 
 
+
+class LambdaRankWrapper:
+    """LambdaRankモデルをsklearn風にラップ（pickle対応）"""
+    def __init__(self, booster):
+        self.booster = booster
+
+    def predict_proba(self, X):
+        import numpy as _np
+        if hasattr(X, "values"):
+            X = X.values
+        scores = self.booster.predict(X)
+        std    = scores.std()
+        probs  = 1 / (1 + _np.exp(-scores / max(std, 1e-9)))
+        return _np.column_stack([1 - probs, probs])
+
+
 LGB_RANK_PARAMS = {
     "objective": "lambdarank",
     "metric": "ndcg",
@@ -130,10 +146,21 @@ def train_model(csv_path="race_features.csv"):
     X_test      = test_df[use_cols].copy()
     y_test      = test_df["着順_num"]
 
-    X_train_main, X_cal, y_train_main, y_cal = train_test_split(
-        X_train_all, y_train_all, test_size=0.2, random_state=42
+    # ── 時系列重み（直近年ほど重みを大きくする） ──────────────────────
+    # 2019年=基準1.0、2024年=最大重み
+    # 線形に増加：年差0→1.0, 年差5→TIME_WEIGHT_MAX
+    TIME_WEIGHT_MAX = 1.0
+    year_min = train_df["年"].min()
+    year_max = train_df["年"].max()
+    year_range = max(year_max - year_min, 1)
+    train_df["時系列重み"] = 1.0 + (train_df["年"] - year_min) / year_range * (TIME_WEIGHT_MAX - 1.0)
+
+    X_train_main, X_cal, y_train_main, y_cal, w_time_main, w_time_cal = train_test_split(
+        X_train_all, y_train_all, train_df["時系列重み"], test_size=0.2, random_state=42
     )
-    w_main = np.where(y_train_main == 1, 2.0, 1.0)
+    # 着順重み（1着を重視）× 時系列重み（直近年を重視）
+    w_main = np.where(y_train_main == 1, 2.0, 1.0) * w_time_main.values
+    print(f"  時系列重み: {year_min}年=1.0倍 〜 {year_max}年={TIME_WEIGHT_MAX}倍")
 
     # ── LightGBM ──
     print("ベースLightGBMモデルを学習中（アーリーストッピング付き）...")
@@ -160,7 +187,8 @@ def train_model(csv_path="race_features.csv"):
             scale_pos_weight=2.0, eval_metric="logloss",
             early_stopping_rounds=100, verbosity=0, random_state=42,
         )
-        xgb_tmp.fit(X_train_main, y_train_main, eval_set=[(X_cal, y_cal)], verbose=False)
+        xgb_tmp.fit(X_train_main, y_train_main, eval_set=[(X_cal, y_cal)],
+                    sample_weight=w_time_main.values, verbose=False)
         best_iter_xgb = xgb_tmp.best_iteration
         print(f"  XGBoost ベストイテレーション: {best_iter_xgb}本")
         # step2: fixed iterationsで再学習（early_stopping不要）
@@ -169,7 +197,7 @@ def train_model(csv_path="race_features.csv"):
             n_estimators=best_iter_xgb, subsample=0.8, colsample_bytree=0.8,
             scale_pos_weight=2.0, verbosity=0, random_state=42,
         )
-        xgb_model.fit(X_train_main, y_train_main, verbose=False)
+        xgb_model.fit(X_train_main, y_train_main, sample_weight=w_time_main.values, verbose=False)
         calibrated_xgb = CalibratedClassifierCV(estimator=xgb_model, method="isotonic", cv=None)
         calibrated_xgb.fit(X_cal, y_cal)
         models.append(calibrated_xgb)
@@ -182,34 +210,20 @@ def train_model(csv_path="race_features.csv"):
         print("CatBoostモデルを学習中...")
         # step1: early_stoppingでベストイテレーション取得
         cat_tmp = CatBoostClassifier(
-            iterations=1000,
-            learning_rate=0.03,
-            depth=5,
-            loss_function="Logloss",
-            eval_metric="Logloss",
-            early_stopping_rounds=100,
-            verbose=False,
-            random_seed=42,
+            iterations=1000, learning_rate=0.03, depth=5,
+            loss_function="Logloss", eval_metric="Logloss",
+            early_stopping_rounds=100, verbose=False, random_seed=42,
         )
-        cat_tmp.fit(
-            X_train_main, y_train_main,
-            eval_set=(X_cal, y_cal),
-            sample_weight=w_main,
-        )
+        cat_tmp.fit(X_train_main, y_train_main, eval_set=(X_cal, y_cal), sample_weight=w_main)
         best_iter_cat = cat_tmp.best_iteration_
-        # step2: fixed iterationsで再学習（early_stopping・class_weights不要）
+        print(f"  CatBoost ベストイテレーション: {best_iter_cat}本")
+        # step2: fixed iterationsで再学習（early_stopping不要）
         cat_model = CatBoostClassifier(
-            iterations=best_iter_cat,
-            learning_rate=0.03,
-            depth=5,
-            loss_function="Logloss",
-            verbose=False,
-            random_seed=42,
+            iterations=best_iter_cat, learning_rate=0.03, depth=5,
+            loss_function="Logloss", verbose=False, random_seed=42,
         )
         cat_model.fit(X_train_main, y_train_main, sample_weight=w_main)
-        calibrated_cat = CalibratedClassifierCV(
-            estimator=cat_model, method="isotonic", cv=None
-        )
+        calibrated_cat = CalibratedClassifierCV(estimator=cat_model, method="isotonic", cv=None)
         calibrated_cat.fit(X_cal, y_cal)
         models.append(calibrated_cat)
         print(f"  CatBoost完了: {best_iter_cat}本")
@@ -254,18 +268,6 @@ def train_model(csv_path="race_features.csv"):
             callbacks=[lgb.early_stopping(100, verbose=False), lgb.log_evaluation(period=200)],
         )
 
-        class LambdaRankWrapper:
-            def __init__(self, booster):
-                self.booster = booster
-            def predict_proba(self, X):
-                if hasattr(X, "values"):
-                    X = X.values
-                scores = self.booster.predict(X)
-                std    = scores.std()
-                probs  = 1 / (1 + np.exp(-scores / max(std, 1e-9)))
-                return np.column_stack([1 - probs, probs])
-
-        # LambdaRankはアンサンブルに含めず別途参考スコアとして保持
         lambda_wrapper = LambdaRankWrapper(rank_booster)
         print(f"  LambdaRank完了（{rank_booster.best_iteration}本）")
     except Exception as e:
@@ -277,17 +279,13 @@ def train_model(csv_path="race_features.csv"):
     if lambda_wrapper:
         print(f"  ※LambdaRankは参考スコアとして別途計算")
 
-    # ── テストデータで評価 ──
+    print(f"\nアンサンブル: {len(models)}モデルの平均で予測（LGB+XGB+CatBoost）")
+    if lambda_wrapper:
+        print(f"  ※LambdaRankは参考スコアとして別途計算")
+
+        # ── テストデータで評価 ──
     test_df = test_df.copy()
     test_df["予測勝率スコア"] = np.mean([m.predict_proba(X_test)[:, 1] for m in models], axis=0)
-
-    # LambdaRankの参考スコアを追加
-    if lambda_wrapper:
-        try:
-            lambda_scores = lambda_wrapper.predict_proba(X_test)[:, 1]
-            test_df["lambda_score"] = lambda_scores
-        except Exception as e:
-            print(f"  LambdaRankスコア計算エラー: {e}")
     test_df["予測順位"] = test_df.groupby("race_id")["予測勝率スコア"].rank(ascending=False)
 
     def normalize(group):
@@ -302,7 +300,6 @@ def train_model(csv_path="race_features.csv"):
     out = out.sort_values(["race_id", "予測順位"])
     out.to_csv("model_result.csv", index=False, encoding="utf-8-sig")
 
-    # pickle保存（LGB+XGB+CatBoostの3モデル）
     save_dict = {"models": models, "use_cols": use_cols}
     if lambda_wrapper is not None:
         save_dict["lambda_booster"] = lambda_wrapper.booster
