@@ -621,10 +621,17 @@ def predict_race(race_id: str):
     send_email(subject, report)
 
 
+def _run_predict_safe(race_id):
+    try:
+        predict_race(race_id)
+    except Exception as e:
+        print(f"  {race_id} エラー: {e}")
+
+
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "today":
-        # 当日の全レースを予想してCSVに保存
-        # keiba_auto.pyと同じロジックで当日レース一覧を取得
+        # 当日の全レースを一括予想してCSVに保存
+        # auto_predict_publish.py の朝7時一括予想から呼び出される
         from keiba_auto import get_today_races
         print("当日レース一覧を取得中...")
         race_info = get_today_races()
@@ -633,11 +640,9 @@ if __name__ == "__main__":
             sys.exit(1)
         print(f"{len(race_info)}レースを予想します")
         for rid in sorted(race_info.keys()):
-            try:
-                predict_race(rid)
-            except Exception as e:
-                print(f"  {rid} エラー: {e}")
+            _run_predict_safe(rid)
         print("\n全レース予想完了 → today_predictions.csv")
     else:
+        # 個別レース予想（auto_predict_publish.py の発走40分前実行から呼び出される）
         race_id = sys.argv[1] if len(sys.argv) > 1 else TARGET_RACE_ID
         predict_race(race_id)
