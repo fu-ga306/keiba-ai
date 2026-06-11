@@ -217,6 +217,7 @@ if st.session_state.page == "🏇 当日予想":
         pop    = row.get("人気", np.nan)
         wp     = row.get("勝ち確率", np.nan)
         mfp    = row.get("MF勝ち確率", np.nan)
+        p2     = row.get("連対確率", np.nan)
         pp     = row.get("複勝確率", np.nan)
         ev     = row.get("単勝期待値", np.nan)
         mark   = row.get("推奨ランク", "")
@@ -226,6 +227,7 @@ if st.session_state.page == "🏇 当日予想":
         pop_s  = f"{int(pop)}人気" if pd.notna(pop) else "-"
         wp_s   = f"{wp*100:.1f}%" if pd.notna(wp) else "-"
         mfp_s  = f"{mfp*100:.1f}%" if pd.notna(mfp) else "-"
+        p2_s   = f"{p2*100:.1f}%" if pd.notna(p2) else "-"
         pp_s   = f"{pp*100:.1f}%" if pd.notna(pp) else "-"
 
         # 枠番の色付き丸
@@ -273,6 +275,7 @@ if st.session_state.page == "🏇 当日予想":
             f"<td style='text-align:center'>{sig_html}</td>"
             f"<td>{ability_html}</td>"
             f"<td style='text-align:center'>{wp_s}</td>"
+            f"<td style='text-align:center'>{p2_s}</td>"
             f"<td style='text-align:center'>{pp_s}</td>"
             f"<td style='text-align:center'>{ev_s}</td>"
             f"</tr>"
@@ -291,7 +294,7 @@ if st.session_state.page == "🏇 当日予想":
     <table class='race-table'>
     <thead><tr>
         <th>オッズ</th><th>人気</th><th>枠</th><th>馬番</th><th>印</th><th>馬名</th>
-        <th>シグナル</th><th>純粋AI評価</th><th>勝率</th><th>複勝率</th><th>期待値</th>
+        <th>シグナル</th><th>純粋AI評価</th><th>勝率</th><th>連対率</th><th>複勝率</th><th>期待値</th>
     </tr></thead>
     <tbody>{rows_html}</tbody>
     </table>
@@ -319,12 +322,14 @@ if st.session_state.page == "🏇 当日予想":
             odds  = row.get("単勝オッズ",np.nan)
             pop   = row.get("人気",np.nan)
             wp    = row.get("勝ち確率",np.nan)
+            p2    = row.get("連対確率",np.nan)
             pp    = row.get("複勝確率",np.nan)
             ev    = row.get("単勝期待値",np.nan)
             strat = row.get("該当戦略","")
             odds_s = f"{odds:.1f}倍" if pd.notna(odds) else "-"
             pop_s  = f"{int(pop)}番人気" if pd.notna(pop) else "-"
             wp_s   = f"{wp*100:.1f}%" if pd.notna(wp) else "-"
+            p2_s   = f"{p2*100:.1f}%" if pd.notna(p2) else "-"
             pp_s   = f"{pp*100:.1f}%" if pd.notna(pp) else "-"
             ev_s   = f"{ev:+.2f}" if pd.notna(ev) else "-"
             badge  = f"<span class='strat-badge'>{strat}</span>" if strat else ""
@@ -332,7 +337,7 @@ if st.session_state.page == "🏇 当日予想":
                 f"<div class='{cls}'>"
                 f"<span style='color:{color};font-size:1.2rem;font-weight:500'>{mk}</span>"
                 f"<span class='mark-name' style='margin-left:8px'>【{lbl}】馬番{int(row['馬番'])}番 {row['馬名']}</span><br>"
-                f"<span class='mark-sub'>{odds_s} / {pop_s} &nbsp;|&nbsp; 勝率{wp_s} &nbsp;複勝率{pp_s} &nbsp;期待値{ev_s}</span>"
+                f"<span class='mark-sub'>{odds_s} / {pop_s} &nbsp;|&nbsp; 勝率{wp_s} &nbsp;連対率{p2_s} &nbsp;複勝率{pp_s} &nbsp;期待値{ev_s}</span>"
                 f"{'<br>'+badge if badge else ''}</div>",
                 unsafe_allow_html=True
             )
