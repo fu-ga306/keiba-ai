@@ -127,11 +127,19 @@ def train_market_free_model(csv_path="race_features.csv"):
     y_train_all = (train_df["着順_num"] == 1).astype(int)
     X_test      = test_df[use_cols].copy()
 
+    # ── 時系列重み（直近年ほど重みを大きくする） ──────────────────────
+    TIME_WEIGHT_MAX = 1.3
+    year_min = train_df["年"].min()
+    year_max = train_df["年"].max()
+    year_range = max(year_max - year_min, 1)
+    train_df["時系列重み"] = 1.0 + (train_df["年"] - year_min) / year_range * (TIME_WEIGHT_MAX - 1.0)
+
     # prefit方式でキャリブレーション
-    X_train_main, X_cal, y_train_main, y_cal = train_test_split(
-        X_train_all, y_train_all, test_size=0.2, random_state=42
+    X_train_main, X_cal, y_train_main, y_cal, w_time_main, w_time_cal = train_test_split(
+        X_train_all, y_train_all, train_df["時系列重み"], test_size=0.2, random_state=42
     )
-    w_main = np.where(y_train_main == 1, 2.0, 1.0)
+    w_main = np.where(y_train_main == 1, 2.0, 1.0) * w_time_main.values
+    print(f"  時系列重み: {year_min}年=1.0倍 〜 {year_max}年={TIME_WEIGHT_MAX}倍")
 
     print("ベースLightGBMモデルを学習中（アーリーストッピング付き）...")
     base_model = lgb.LGBMClassifier(**LGB_PARAMS, n_estimators=5000)
