@@ -48,6 +48,7 @@ FEATURE_COLS_MF = [
     "競馬場過去勝率", "競馬場過去平均着順",
     # 脚質
     "過去平均先行指数", "先行馬フラグ",
+    "想定先行馬数", "想定先行馬率", "他馬想定先行馬数", "差し馬×ハイペース想定",
     # 開催時期
     "開催月", "開催季節",
     # 前走情報
@@ -128,7 +129,7 @@ def train_market_free_model(csv_path="race_features.csv"):
     X_test      = test_df[use_cols].copy()
 
     # ── 時系列重み（直近年ほど重みを大きくする） ──────────────────────
-    TIME_WEIGHT_MAX = 1.3
+    TIME_WEIGHT_MAX = 1.0
     year_min = train_df["年"].min()
     year_max = train_df["年"].max()
     year_range = max(year_max - year_min, 1)

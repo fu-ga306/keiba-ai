@@ -368,9 +368,29 @@ def add_extra_advanced_features(df):
         df["先行馬フラグ"] = (
             df["過去平均先行指数"] <= df["出走頭数"] / 3
         ).astype(float)
+
+        # ── ⑤ ペース想定特徴量（レース内の先行馬構成から想定ペースを推定） ──
+        # レース内で「先行馬フラグ=1」の馬が何頭・何割いるか集計。
+        # 先行馬が多いほどハイペースになりやすく、差し馬に有利な展開を示唆する。
+        race_pace = df.groupby("race_id")["先行馬フラグ"].agg(
+            想定先行馬数="sum", 出走頭数_tmp="count"
+        ).reset_index()
+        race_pace["想定先行馬率"] = race_pace["想定先行馬数"] / race_pace["出走頭数_tmp"].replace(0, np.nan)
+        df = df.merge(race_pace[["race_id", "想定先行馬数", "想定先行馬率"]], on="race_id", how="left")
+
+        # 各馬にとって「自分以外の先行馬がどれだけいるか」（差し馬視点での恩恵度）
+        df["他馬想定先行馬数"] = df["想定先行馬数"] - df["先行馬フラグ"].fillna(0)
+        # 差し馬(先行馬フラグ=0)が、他に先行馬が多いレースに出る場合に有利
+        df["差し馬×ハイペース想定"] = (
+            (df["先行馬フラグ"] == 0).astype(float) * df["他馬想定先行馬数"]
+        )
     else:
         df["過去平均先行指数"] = np.nan
         df["先行馬フラグ"]     = np.nan
+        df["想定先行馬数"]     = np.nan
+        df["想定先行馬率"]     = np.nan
+        df["他馬想定先行馬数"] = np.nan
+        df["差し馬×ハイペース想定"] = np.nan
 
     # ── ② 競馬場×距離 過去成績（高速化：groupby一括処理） ────────────
     if "競馬場cd" not in df.columns:
@@ -549,6 +569,7 @@ def build_features(csv_path="race_data_clean.csv", out_path="race_features.csv")
         "競馬場過去勝率", "競馬場過去平均着順",
         # 脚質
         "過去平均先行指数", "先行馬フラグ",
+        "想定先行馬数", "想定先行馬率", "他馬想定先行馬数", "差し馬×ハイペース想定",
         # 開催時期
         "開催月", "開催季節",
         # 前走情報
