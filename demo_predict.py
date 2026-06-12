@@ -178,6 +178,12 @@ def main():
         if os.path.exists(out_path):
             existing = pd.read_csv(out_path)
             existing = existing[existing["race_id"].astype(str) != str(race_id)]
+            # 列構成が異なる古いデモデータが混在するとconcat時にNaN化する列が
+            # 出るため、デモではexistingの列をsave_dfに合わせて揃える
+            for col in save_df.columns:
+                if col not in existing.columns:
+                    existing[col] = np.nan
+            existing = existing[save_df.columns]
             save_df = pd.concat([existing, save_df], ignore_index=True)
         save_df.to_csv(out_path, index=False, encoding="utf-8-sig")
         print(f"\n  デモ予想データ保存完了 → {out_path}")
