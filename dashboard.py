@@ -253,16 +253,12 @@ if st.session_state.page == "🏇 当日予想":
         mark_color = {"◎":"#f0b429","○":"#3b82f6","▲":"#10b981","△":"#8892a4","×":"#e74c3c"}.get(mark,"")
         mark_html  = f"<span style='color:{mark_color};font-weight:700;font-size:1.05rem'>{mark}</span>" if mark else ""
 
-        # シグナル（戦略該当 / 期待値プラス で色分け）
+        # 買い推奨（案B）: 🔥買い=戦略該当 / ◯検討=印◎○▲ かつ EV>=0 / それ以外は空欄
+        is_top_mark = mark in ("◎", "○", "▲")
         if strat:
-            sig_html = "<span style='background:#dc2626;color:#fff;border-radius:4px;padding:2px 8px;font-size:0.7rem;font-weight:600'>戦略該当</span>"
-        elif pd.notna(ev) and ev >= 0.3 and pd.notna(odds) and 1.5 <= odds <= 20:
-            sig_html = "<span style='background:#f97316;color:#fff;border-radius:4px;padding:2px 8px;font-size:0.7rem;font-weight:600'>注目</span>"
-        elif pd.notna(ev) and ev >= 0.3 and pd.notna(mfp) and mfp >= 0.08:
-            # オッズ20倍超の大穴でも、純粋AI評価(MF勝ち確率)が一定以上なら注目
-            sig_html = "<span style='background:#f97316;color:#fff;border-radius:4px;padding:2px 8px;font-size:0.7rem;font-weight:600'>注目</span>"
-        elif pd.notna(ev) and ev >= 0 and pd.notna(odds) and 1.5 <= odds <= 20:
-            sig_html = "<span style='background:#6b7280;color:#fff;border-radius:4px;padding:2px 8px;font-size:0.7rem'>様子見</span>"
+            sig_html = "<span style='background:#dc2626;color:#fff;border-radius:4px;padding:2px 8px;font-size:0.7rem;font-weight:600'>🔥買い</span>"
+        elif is_top_mark and pd.notna(ev) and ev >= 0:
+            sig_html = "<span style='background:#3b82f6;color:#fff;border-radius:4px;padding:2px 8px;font-size:0.7rem;font-weight:600'>◯検討</span>"
         else:
             sig_html = "<span style='color:var(--color-text-secondary);font-size:0.7rem'>-</span>"
 
@@ -311,7 +307,7 @@ if st.session_state.page == "🏇 当日予想":
     <table class='race-table'>
     <thead><tr>
         <th>オッズ</th><th>人気</th><th>枠</th><th>馬番</th><th>印</th><th>馬名</th>
-        <th>シグナル</th><th>純粋AI評価</th><th>勝率</th><th>連対率</th><th>複勝率</th><th>期待値</th>
+        <th>買い推奨</th><th>純粋AI評価</th><th>勝率</th><th>連対率</th><th>複勝率</th><th>期待値</th>
     </tr></thead>
     <tbody>{rows_html}</tbody>
     </table>
