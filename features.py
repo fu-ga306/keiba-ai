@@ -53,6 +53,18 @@ def add_horse_history_features(df):
     df["過去最速上り"]     = g["上り"].transform(lambda x: x.shift(1).expanding().min())
     df["上り偏差"]         = g["上り"].transform(lambda x: x.shift(1).expanding().std())
     df["過去平均体重増減"] = g["体重増減"].transform(lambda x: x.shift(1).expanding().mean())
+    # ── ⑥ 馬体重変化の個体差特徴量 ──────────────────────────────────
+    # 馬ごとに体重増減の標準偏差(個体の変動範囲)を計算し、
+    # 今回の増減がその馬にとって「いつも通りか異常か」をzスコアで表す。
+    df["体重増減_過去標準偏差"] = g["体重増減"].transform(
+        lambda x: x.shift(1).expanding().std()
+    )
+    df["体重増減_異常度"] = (
+        (df["体重増減"] - df["過去平均体重増減"])
+        / df["体重増減_過去標準偏差"].replace(0, np.nan)
+    )
+    # 標準偏差が極端に小さい/データ不足でinf・NaNになる場合はクリップ
+    df["体重増減_異常度"] = df["体重増減_異常度"].clip(-5, 5)
 
     # 前走情報
     df["前走着順"]   = g["着順_num"].transform(lambda x: x.shift(1))
@@ -556,6 +568,7 @@ def build_features(csv_path="race_data_clean.csv", out_path="race_features.csv")
         "過去平均上り", "直近3走平均着順",
         "過去平均タイム秒", "直近3走平均タイム秒", "過去最速タイム秒",
         "直近3走平均上り", "過去平均体重増減",
+        "体重増減_過去標準偏差", "体重増減_異常度",
         "距離カテゴリ", "距離別過去平均着順",
         "騎手勝率", "騎手複勝率", "調教師勝率", "調教師複勝率",
         "距離", "馬場状態_num", "is_turf", "クラス_num",
