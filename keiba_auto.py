@@ -1234,38 +1234,5 @@ def main():
 
 
 if __name__ == "__main__":
-    # 自動スケジュール待機モード
-    # main()
-
-    # 特定日のテスト実行
-    print("モデル読み込み中...")
-    with open(os.path.join(BASE_DIR, "model.pkl"), "rb") as f:
-        saved = pickle.load(f)
-    models   = saved["models"]
-    use_cols = saved["use_cols"]
-
-    mf_models = None
-    mf_cols   = None
-    mf_path   = os.path.join(BASE_DIR, "model_mf.pkl")
-    if os.path.exists(mf_path):
-        try:
-            with open(mf_path, "rb") as f:
-                mf_saved = pickle.load(f)
-            mf_models = mf_saved["models"]
-            mf_cols   = mf_saved["use_cols"]
-            print("市場フリーモデル読み込み完了")
-        except Exception as e:
-            print(f"市場フリーモデル読み込みスキップ: {e}")
-
-    print("履歴データ読み込み中...")
-    history_df = pd.read_csv(
-        os.path.join(BASE_DIR, "race_features.csv"), low_memory=False
-    )
-    print(f"読み込み完了: {len(history_df)}行")
-
-    target_day = "2026050211"
-    race_ids   = [f"{target_day}{str(r).zfill(2)}" for r in range(1, 13)]
-
-    for race_id in race_ids:
-        run_single_race(race_id, models, use_cols, history_df, mf_models, mf_cols)
-        time.sleep(2)
+    # 自動スケジュール待機モード（各レース発走7分前に予想・メール送信）
+    main()
