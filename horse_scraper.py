@@ -68,25 +68,35 @@ def create_driver():
 def is_blocked(soup, page_source: str) -> bool:
     """ページがIPブロック/アクセス制限されているか判定する。
     netkeibaがブロック時に返す特徴的なパターンを検出する。
+    ※巨大なHTMLには "403" 等の数字が偶然含まれるため、
+      数字単体ではなく明確なブロック文言のみで判定する。
     """
-    text = (page_source or "").lower()
-    # ブロック時によく出る兆候
-    block_signals = [
-        "403 forbidden",
-        "access denied",
-        "アクセスが集中",
-        "アクセスを制限",
-        "ただいまアクセスが",
-        "too many requests",
-        "429",
-        "しばらく時間をおいて",
-        "ご利用いただけません",
+    # 正常ページは数十万文字あるので、短すぎる場合のみ中身を見る
+    if page_source is None:
+        return True
+    # 正常に大きなページが返っていれば、まずブロックではない
+    if len(page_source) >= 5000:
+        # 大きいページでも、タイトル等に明確なブロック文言があるか最終確認
+        lower = page_source.lower()
+        hard_signals = [
+            "アクセスが集中して",
+            "アクセスを制限させて",
+            "ただいまアクセスが集中",
+            "too many requests",
+            "service temporarily unavailable",
+        ]
+        return any(sig in lower for sig in hard_signals)
+    # ページが極端に短い = 中身が返っていない = ブロック/エラーの可能性
+    lower = page_source.lower()
+    short_signals = [
+        "403 forbidden", "access denied", "forbidden",
+        "too many requests", "429 ", "service unavailable",
+        "アクセスが集中", "アクセスを制限", "しばらく時間をおいて",
     ]
-    for sig in block_signals:
-        if sig in text:
-            return True
-    # ページが極端に短い（中身が返ってきていない）場合もブロック疑い
-    if len(page_source or "") < 500:
+    if any(sig in lower for sig in short_signals):
+        return True
+    # 500文字未満で中身がほぼない場合もブロック疑い
+    if len(page_source) < 500:
         return True
     return False
 

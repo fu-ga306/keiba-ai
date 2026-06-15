@@ -1,56 +1,31 @@
-"""
-horse_idが引退馬・地方馬などでページ構造が異なる場合にNoneになる原因を調査
-"""
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.chrome.options import Options
-from webdriver_manager.chrome import ChromeDriverManager
-from bs4 import BeautifulSoup
-import time
+with open(r'c:\Users\別府飛河\OneDrive\デスクトップ\keiba_ai\model.py', 'r', encoding='utf-8') as f:
+    content = f.read()
 
-# Noneになっていたhorse_idをいくつかテスト
-test_ids = ["2017101922", "2017100870", "2013102687", "2011103940"]
+RANK_PARAMS = '''
+LGB_RANK_PARAMS = {
+    "objective": "lambdarank",
+    "metric": "ndcg",
+    "ndcg_eval_at": [3, 5],
+    "learning_rate": 0.03,
+    "num_leaves": 31,
+    "min_child_samples": 20,
+    "feature_fraction": 0.8,
+    "bagging_fraction": 0.8,
+    "bagging_freq": 1,
+    "verbose": -1,
+    "min_gain_to_split": 0.1,
+}
+'''
 
-options = Options()
-options.add_argument("--headless")
-options.add_argument("--no-sandbox")
-options.add_argument("--disable-dev-shm-usage")
-options.add_argument("--log-level=3")
+old = '\ndef add_extra_features(df):'
+new = RANK_PARAMS + '\ndef add_extra_features(df):'
 
-driver = webdriver.Chrome(
-    service=Service(ChromeDriverManager().install()), options=options
-)
-
-for horse_id in test_ids:
-    url = f"https://db.netkeiba.com/horse/{horse_id}/"
-    print(f"\n=== {horse_id} ===")
-    print(f"URL: {url}")
-
-    driver.get(url)
-    time.sleep(2)
-    soup = BeautifulSoup(driver.page_source, "html.parser")
-
-    # blood_tableの存在確認
-    blood = soup.find("table", class_="blood_table")
-    print(f"blood_table: {blood is not None}")
-
-    if blood:
-        tds = blood.find_all("td")
-        print(f"td数: {len(tds)}")
-        for i, td in enumerate(tds[:6]):
-            print(f"  td[{i}]: {td.get_text(strip=True)[:30]}")
-    else:
-        # blood_tableがない場合、全テーブルを確認
-        tables = soup.find_all("table")
-        print(f"テーブル数: {len(tables)}")
-        for i, t in enumerate(tables[:5]):
-            cls = t.get("class", [])
-            tds = t.find_all("td")
-            first = tds[0].get_text(strip=True)[:20] if tds else ""
-            print(f"  table[{i}] class={cls}  first_td={first}")
-
-        # ページタイトル確認（404やエラーページの可能性）
-        h1 = soup.find("h1")
-        print(f"h1: {h1.get_text(strip=True) if h1 else 'なし'}")
-
-driver.quit()
+if 'LGB_RANK_PARAMS' in content:
+    print('すでに定義済みです')
+elif old in content:
+    content = content.replace(old, new, 1)
+    with open(r'c:\Users\別府飛河\OneDrive\デスクトップ\keiba_ai\model.py', 'w', encoding='utf-8') as f:
+        f.write(content)
+    print('追加完了')
+else:
+    print('対象なし')
