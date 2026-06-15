@@ -40,6 +40,10 @@ def create_driver():
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--log-level=3")
+    # bot検知回避: webdriverフラグを隠す
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    options.add_experimental_option("useAutomationExtension", False)
     _ua_list = [
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
@@ -47,9 +51,44 @@ def create_driver():
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     ]
     options.add_argument(f"--user-agent={_r.choice(_ua_list)}")
-    return webdriver.Chrome(
+    driver = webdriver.Chrome(
         service=Service(ChromeDriverManager().install()), options=options
     )
+    # navigator.webdriver を偽装（bot検知回避）
+    try:
+        driver.execute_cdp_cmd(
+            "Page.addScriptToEvaluateOnNewDocument",
+            {"source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"},
+        )
+    except Exception:
+        pass
+    return driver
+
+
+def is_blocked(soup, page_source: str) -> bool:
+    """ページがIPブロック/アクセス制限されているか判定する。
+    netkeibaがブロック時に返す特徴的なパターンを検出する。
+    """
+    text = (page_source or "").lower()
+    # ブロック時によく出る兆候
+    block_signals = [
+        "403 forbidden",
+        "access denied",
+        "アクセスが集中",
+        "アクセスを制限",
+        "ただいまアクセスが",
+        "too many requests",
+        "429",
+        "しばらく時間をおいて",
+        "ご利用いただけません",
+    ]
+    for sig in block_signals:
+        if sig in text:
+            return True
+    # ページが極端に短い（中身が返ってきていない）場合もブロック疑い
+    if len(page_source or "") < 500:
+        return True
+    return False
 
 
 def get_horse_profile(driver, horse_id: str) -> dict | None:
@@ -67,8 +106,13 @@ def get_horse_profile(driver, horse_id: str) -> dict | None:
 
     driver.get(url)
     import random as _r
-    time.sleep(_r.uniform(2.5, 4.5))
-    soup = BeautifulSoup(driver.page_source, "html.parser")
+    time.sleep(_r.uniform(3.5, 6.0))
+    page_source = driver.page_source
+    soup = BeautifulSoup(page_source, "html.parser")
+
+    # ── IPブロック検知 ──
+    if is_blocked(soup, page_source):
+        return "BLOCKED"
 
     try:
         # 404・エラーページの検出（「このページは動作していません」など）
@@ -164,6 +208,9 @@ def build_horse_master():
 
     print("Chromeドライバー起動中（使い回しで高速化）...")
     driver = create_driver()
+    import random as _r
+
+    consecutive_blocks = 0  # 連続ブロック回数
 
     for i, (_, row) in enumerate(target.iterrows()):
         horse_id = str(row["horse_id"])
@@ -180,6 +227,42 @@ def build_horse_master():
                 pass
             driver = create_driver()
             profile = get_horse_profile(driver, horse_id)
+
+        # ── IPブロック検知時の対応 ──
+        if profile == "BLOCKED":
+            consecutive_blocks += 1
+            print(f"⚠️ ブロック検知（連続{consecutive_blocks}回目）")
+
+            # 連続3回ブロックされたら、これ以上続けても悪化するだけなので中断
+            if consecutive_blocks >= 3:
+                print("\n" + "=" * 50)
+                print("⚠️ 連続ブロックのため中断します。")
+                print("  取得済みデータは保存済みです。")
+                print("  数時間〜1日空けてから再実行してください。")
+                print("=" * 50)
+                if results:
+                    _save(results, append=True)
+                try:
+                    driver.quit()
+                except Exception:
+                    pass
+                return
+
+            # クールダウン: 長時間休んでドライバーを作り直す（UA・セッション刷新）
+            cooldown = _r.uniform(600, 1200)  # 10〜20分
+            print(f"  {cooldown/60:.0f}分クールダウンします...")
+            try:
+                driver.quit()
+            except Exception:
+                pass
+            time.sleep(cooldown)
+            driver = create_driver()
+            # この馬はスキップして次へ（ブロック中の取得は信用できない）
+            time.sleep(_r.uniform(8.0, 14.0))
+            continue
+        else:
+            consecutive_blocks = 0  # ブロックでなければリセット
+
         if profile and profile.get("父馬") is not None:
             results.append(profile)
             print(f"✓ 父:{profile['父馬']}  母父:{profile['母父馬']}")
@@ -193,13 +276,12 @@ def build_horse_master():
             })
             print("- (ページなし・地方馬等)")
 
-        # ランダム待機（bot検知回避）
-        import random as _r
-        time.sleep(_r.uniform(5.0, 9.0))
+        # ランダム待機（bot検知回避・保守的設定）
+        time.sleep(_r.uniform(8.0, 14.0))
 
-        # 100頭ごとに長めの休憩
-        if (i + 1) % 100 == 0:
-            rest = _r.uniform(60, 120)
+        # 50頭ごとに長めの休憩（頻度を上げて負荷分散）
+        if (i + 1) % 50 == 0:
+            rest = _r.uniform(90, 180)
             print(f"  [{i+1}頭完了] {rest:.0f}秒休憩中...")
             time.sleep(rest)
 
