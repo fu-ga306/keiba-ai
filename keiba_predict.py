@@ -400,6 +400,74 @@ def build_report(pdf, race_id, jyo_name, race_no,
         lines.append("  ※ 連対率・複勝率は専用モデルが各馬独立に予想した値です。")
         lines.append("")
 
+    # ── 💎 妙味重視の狙い目（回収率重視） ────────────────────────────
+    lines.append(header("💎 妙味重視の狙い目（回収率重視）", "─"))
+    lines.append("  市場(人気)を出し抜ける可能性のある買い方。妙味がなければ「見送り推奨」。")
+    lines.append("")
+
+    # ① ◎の手堅い複勝（単勝は難しいが複勝率が高い本命）
+    honmei_row = pdf.sort_values("勝ち確率", ascending=False).iloc[0]
+    h_win  = honmei_row["勝ち確率"]
+    h_fuku = honmei_row["複勝確率"]
+    h_odds = honmei_row.get("単勝オッズ", np.nan)
+    lines.append("  ① 本命の手堅い複勝")
+    if pd.notna(h_fuku) and h_fuku >= 0.45:
+        lines.append(
+            f"     ◎{honmei_row['馬名']} → 複勝率{h_fuku*100:.1f}%。"
+            f"単勝(勝率{h_win*100:.1f}%)は割れても複勝なら手堅い。"
+        )
+    else:
+        lines.append(
+            f"     ◎{honmei_row['馬名']} の複勝率{h_fuku*100:.1f}%。"
+            f"複勝でも確実とは言えず、軸の信頼度は中程度。"
+        )
+    lines.append("")
+
+    # ② 妙味のある人気薄馬（期待値≥0 かつ 人気4番手以下 or 勝率ランク<人気ランク）
+    lines.append("  ② 妙味のある人気薄（市場が見落とした可能性）")
+    pdf_myumi = pdf.copy()
+    pdf_myumi["_勝率ランク"] = pdf_myumi["勝ち確率"].rank(ascending=False)
+    candidates = pdf_myumi[
+        (pdf_myumi["単勝期待値"] >= 0)
+        & (
+            (pdf_myumi["人気"] >= 4)
+            | (pdf_myumi["_勝率ランク"] < pdf_myumi["人気"])
+        )
+    ].sort_values("単勝期待値", ascending=False)
+    if len(candidates) > 0:
+        for _, row in candidates.head(3).iterrows():
+            odds = row.get("単勝オッズ", np.nan)
+            pop  = row.get("人気", np.nan)
+            ev   = row["単勝期待値"]
+            wp   = row["勝ち確率"]
+            fuku = row["複勝確率"]
+            odds_s = f"{odds:.1f}倍" if pd.notna(odds) else "未確定"
+            pop_s  = f"{int(pop)}番人気" if pd.notna(pop) else "-"
+            lines.append(
+                f"     ★ {row['馬名']}（{odds_s} {pop_s}）"
+                f" 勝率{wp*100:.1f}% 複勝率{fuku*100:.1f}% 期待値{_ev(ev)}"
+            )
+        lines.append("     → モデル評価の割にオッズが妙味。単勝or複勝で狙う価値あり。")
+    else:
+        lines.append("     該当なし。このレースは人気薄に妙味がなく、無理は禁物。")
+    lines.append("")
+
+    # ③ 総合判断（このレースを買うべきか）
+    lines.append("  ③ レース総合判断")
+    has_myumi = len(candidates) > 0
+    plus_ev_count = (pdf["単勝期待値"] >= 0.3).sum()
+    if plus_ev_count > 0 or has_myumi:
+        lines.append(
+            f"     妙味あり（期待値0.3以上が{plus_ev_count}頭）。"
+            f"狙い目があるレース。"
+        )
+    else:
+        lines.append(
+            "     全馬の期待値が低く、堅いか妙味のないレース。"
+            "見送り、または本命の複勝で手堅くが無難。"
+        )
+    lines.append("")
+
     # ── 買い目サマリー（複勝・馬連・ワイド・馬単・3連複） ──────────────
     lines.append("  【買い目サマリー】")
     honmei = final_top.iloc[0]
@@ -586,6 +654,11 @@ def predict_race(race_id: str):
         lambda r: kelly_fraction(r["勝ち確率"], r["単勝オッズ"]), axis=1
     )
 
+    # 複勝期待値（複勝率 × 推定複勝オッズ - 1）
+    # 推定複勝オッズ = 単勝オッズの約1/4（実オッズはkeiba_auto側で実測）
+    pdf["複勝推定オッズ"] = (pdf["単勝オッズ"] / 4).clip(lower=1.05)
+    pdf["複勝期待値"] = pdf["複勝確率"] * pdf["複勝推定オッズ"] - 1
+
     # 市場フリーモデルで乖離スコアを計算
     pdf["MF予測順位"] = np.nan
     pdf["乖離スコア"] = np.nan
@@ -667,6 +740,26 @@ def predict_race(race_id: str):
                 break
     except Exception as e:
         print(f"  券種推奨の計算でエラー（スキップ）: {e}")
+
+    # ── 妙味馬判定（回収率重視）──────────────────────────────────
+    # バックテストで実証された高回収率の条件を使う:
+    #   ・戦略C相当: 人気3番手以下 × 単勝期待値プラス → 回収率205%
+    #   ・複勝妙味:   複勝期待値プラス（複勝で手堅く狙える）
+    pdf["妙味_単勝"] = ""
+    pdf["妙味_複勝"] = ""
+    try:
+        for idx, row in pdf.iterrows():
+            pop = row.get("人気", np.nan)
+            ev  = row.get("単勝期待値", np.nan)
+            fev = row.get("複勝期待値", np.nan)
+            # 単勝妙味: 人気3番手以下 かつ 期待値プラス（市場が見落とした実力馬）
+            if pd.notna(pop) and pop >= 3 and pd.notna(ev) and ev >= 0:
+                pdf.at[idx, "妙味_単勝"] = "妙味"
+            # 複勝妙味: 複勝期待値プラス（手堅く回収）
+            if pd.notna(fev) and fev >= 0:
+                pdf.at[idx, "妙味_複勝"] = "妙味"
+    except Exception as e:
+        print(f"  妙味判定でエラー（スキップ）: {e}")
 
     # レース概要
     dist   = int(pdf["距離"].iloc[0]) if pd.notna(pdf["距離"].iloc[0]) else "不明"
