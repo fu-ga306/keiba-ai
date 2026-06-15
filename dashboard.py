@@ -467,6 +467,53 @@ elif st.session_state.page == "📊 成績サマリー":
                     title=dict(text=lbl,font=dict(size=14)))
                 col.plotly_chart(fig,use_container_width=True)
 
+    # ── 戦略該当のみ購入時の回収率 ──────────────────────────────
+    st.markdown("#### 🔥 戦略該当のみ購入時の回収率")
+    if "honmei_strat" in df_result.columns and "honmei_odds" in df_result.columns:
+        strat_df = df_result[
+            df_result["honmei_strat"].notna()
+            & (df_result["honmei_strat"].astype(str) != "")
+            & (df_result["honmei_strat"].astype(str) != "nan")
+        ].copy()
+        if len(strat_df) > 0:
+            strat_df["honmei_odds"] = pd.to_numeric(strat_df["honmei_odds"], errors="coerce")
+            n_bet = len(strat_df)
+            n_hit = int(strat_df["hit"].sum())
+            # 的中時のみオッズ分の払い戻し（単勝100円ベース）
+            payout = strat_df[strat_df["hit"] == 1]["honmei_odds"].sum() * 100
+            invest = n_bet * 100
+            roi = payout / invest * 100 if invest > 0 else 0
+            cc1, cc2, cc3, cc4 = st.columns(4)
+            for col, val, lbl in [
+                (cc1, f"{n_bet}回", "戦略該当ベット"),
+                (cc2, f"{n_hit}回", "的中"),
+                (cc3, f"{n_hit/n_bet*100:.1f}%" if n_bet else "-", "的中率"),
+                (cc4, f"{roi:.1f}%", "単勝回収率"),
+            ]:
+                col.markdown(f"<div class='kpi-card'><div class='kpi-val'>{val}</div><div class='kpi-lbl'>{lbl}</div></div>", unsafe_allow_html=True)
+            # 戦略別内訳
+            st.markdown("###### 戦略別内訳")
+            rows = []
+            for strat_name, g in strat_df.groupby("honmei_strat"):
+                gh = int(g["hit"].sum())
+                gp = g[g["hit"] == 1]["honmei_odds"].sum() * 100
+                gi = len(g) * 100
+                rows.append({
+                    "戦略": strat_name,
+                    "ベット": len(g),
+                    "的中": gh,
+                    "的中率": f"{gh/len(g)*100:.1f}%",
+                    "回収率": f"{gp/gi*100:.1f}%" if gi > 0 else "-",
+                })
+            if rows:
+                st.dataframe(pd.DataFrame(rows).sort_values("ベット", ascending=False),
+                             hide_index=True, use_container_width=True)
+            st.caption("※ 単勝100円固定で計算。複数戦略該当馬は戦略名の組み合わせで集計。")
+        else:
+            st.info("選択期間に戦略該当馬の記録がありません（来週以降データが蓄積されます）。")
+    else:
+        st.info("戦略フラグの記録がありません。新しい予想が記録されると表示されます。")
+
 # ════════════════════════════════════════════════════════════════════════
 elif st.session_state.page == "📋 レース結果":
     st.markdown("## 📋 レース結果")

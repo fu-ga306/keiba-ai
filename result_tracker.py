@@ -82,6 +82,7 @@ def load_records():
         "honmei", "honmei_win_p", "taiko", "taiko_win_p",
         "ana", "ana_win_p",
         "honmei_odds", "honmei_ninki", "honmei_ev",
+        "honmei_strat", "honmei_kenshu",
         "honmei_actual", "hit", "taiko_actual", "ana_actual",
     ])
 
@@ -125,6 +126,8 @@ def record_from_prediction(race_id, pdf):
         "honmei_odds":   top1.get("単勝オッズ", np.nan),
         "honmei_ninki":  top1.get("人気", np.nan),
         "honmei_ev":     float(top1.get("単勝期待値", np.nan)) if pd.notna(top1.get("単勝期待値")) else None,
+        "honmei_strat":  str(top1.get("該当戦略", "")) if pd.notna(top1.get("該当戦略", "")) else "",
+        "honmei_kenshu": str(top1.get("券種推奨", "")) if pd.notna(top1.get("券種推奨", "")) else "",
         "honmei_actual": np.nan,
         "hit":           np.nan,
         "taiko_actual":  np.nan,

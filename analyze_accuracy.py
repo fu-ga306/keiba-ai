@@ -132,6 +132,58 @@ def main():
             win = (g["着順_num"] == 1).mean() * 100
             print(f"  AI1位が{band}: {len(g)}回  勝率{win:.1f}%")
 
+    # ── 6. 3モデルの的中検証(連対モデル・複勝モデルが機能しているか) ──
+    print("\n" + "=" * 55)
+    print("6. 3モデルの的中検証(連対・複勝モデルの実力)")
+    print("=" * 55)
+    # 連対順位1位 → 実際に連対(2着以内)したか
+    if "連対順位" in df.columns:
+        p2top = df[df["連対順位"] == 1]
+        if len(p2top) > 0:
+            ren = (p2top["着順_num"] <= 2).mean() * 100
+            print(f"  連対モデル1位({len(p2top)}レース): 実連対率{ren:.1f}%")
+    # 複勝順位1位 → 実際に複勝(3着以内)したか
+    if "複勝順位" in df.columns:
+        p3top = df[df["複勝順位"] == 1]
+        if len(p3top) > 0:
+            fuku = (p3top["着順_num"] <= 3).mean() * 100
+            print(f"  複勝モデル1位({len(p3top)}レース): 実複勝率{fuku:.1f}%")
+    # 勝ちモデル1位と複勝モデル1位が「別の馬」になっているか
+    if "予測順位" in df.columns and "複勝順位" in df.columns:
+        merged = df[(df["予測順位"] == 1) | (df["複勝順位"] == 1)]
+        diff_races = 0
+        total_races = 0
+        for rid, g in merged.groupby("race_id"):
+            win1 = g[g["予測順位"] == 1]
+            fuku1 = g[g["複勝順位"] == 1]
+            if len(win1) > 0 and len(fuku1) > 0:
+                total_races += 1
+                if win1["馬名"].iloc[0] != fuku1["馬名"].iloc[0]:
+                    diff_races += 1
+        if total_races > 0:
+            print(f"  勝ち1位と複勝1位が別馬: {diff_races}/{total_races}レース "
+                  f"({diff_races/total_races*100:.1f}%)")
+            print("    → 高いほど複勝モデルが独自の視点を持っている証拠")
+
+    # ── 7. 券種推奨の的中検証 ──
+    print("\n" + "=" * 55)
+    print("7. 券種推奨の的中検証(軸◎/相手○/穴▲)")
+    print("=" * 55)
+    if "券種推奨" in df.columns:
+        rec = df[df["券種推奨"].notna() & (df["券種推奨"].astype(str) != "")
+                 & (df["券種推奨"].astype(str) != "nan")]
+        for role in ["軸◎", "軸(人気)", "相手○", "穴▲"]:
+            sub = rec[rec["券種推奨"] == role]
+            if len(sub) == 0:
+                continue
+            win = (sub["着順_num"] == 1).mean() * 100
+            ren = (sub["着順_num"] <= 2).mean() * 100
+            fuku = (sub["着順_num"] <= 3).mean() * 100
+            print(f"  {role}: {len(sub):3d}頭  勝率{win:5.1f}%  "
+                  f"連対率{ren:5.1f}%  複勝率{fuku:5.1f}%")
+    else:
+        print("  券種推奨列なし(新モデルの予想データが必要)")
+
     print("\n分析完了")
 
 
