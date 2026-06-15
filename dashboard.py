@@ -236,6 +236,9 @@ if st.session_state.page == "🏇 当日予想":
         strat  = row.get("該当戦略", "")
         if pd.isna(strat):
             strat = ""
+        ken    = row.get("券種推奨", "")
+        if pd.isna(ken):
+            ken = ""
 
         odds_s = f"{odds:.1f}" if pd.notna(odds) else "-"
         pop_s  = f"{int(pop)}人気" if pd.notna(pop) else "-"
@@ -252,6 +255,19 @@ if st.session_state.page == "🏇 当日予想":
         # 印
         mark_color = {"◎":"#f0b429","○":"#3b82f6","▲":"#10b981","△":"#8892a4","×":"#e74c3c"}.get(mark,"")
         mark_html  = f"<span style='color:{mark_color};font-weight:700;font-size:1.05rem'>{mark}</span>" if mark else ""
+
+        # 券種推奨バッジ（軸◎/軸(人気)/相手○/穴▲）
+        ken_styles = {
+            "軸◎":     ("#dc2626", "#fff"),
+            "軸(人気)": ("#f59e0b", "#1a1a1a"),
+            "相手○":   ("#3b82f6", "#fff"),
+            "穴▲":     ("#8b5cf6", "#fff"),
+        }
+        if ken and ken in ken_styles:
+            bg, fg = ken_styles[ken]
+            ken_html = f"<span style='background:{bg};color:{fg};border-radius:4px;padding:2px 7px;font-size:0.72rem;font-weight:700;white-space:nowrap'>{ken}</span>"
+        else:
+            ken_html = "<span style='color:var(--color-text-secondary);font-size:0.7rem'>-</span>"
 
         # 買い推奨（案B）: 🔥買い=戦略該当 / ◯検討=印◎○▲ かつ EV>=0 / それ以外は空欄
         is_top_mark = mark in ("◎", "○", "▲")
@@ -285,6 +301,7 @@ if st.session_state.page == "🏇 当日予想":
             f"<td style='text-align:center'>{umaban}</td>"
             f"<td style='text-align:center'>{mark_html}</td>"
             f"<td>{name}</td>"
+            f"<td style='text-align:center'>{ken_html}</td>"
             f"<td style='text-align:center'>{sig_html}</td>"
             f"<td>{ability_html}</td>"
             f"<td style='text-align:center'>{wp_s}</td>"
@@ -307,7 +324,7 @@ if st.session_state.page == "🏇 当日予想":
     <table class='race-table'>
     <thead><tr>
         <th>オッズ</th><th>人気</th><th>枠</th><th>馬番</th><th>印</th><th>馬名</th>
-        <th>買い推奨</th><th>純粋AI評価</th><th>勝率</th><th>連対率</th><th>複勝率</th><th>期待値</th>
+        <th>券種推奨</th><th>買い推奨</th><th>純粋AI評価</th><th>勝率</th><th>連対率</th><th>複勝率</th><th>期待値</th>
     </tr></thead>
     <tbody>{rows_html}</tbody>
     </table>

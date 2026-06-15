@@ -864,7 +864,8 @@ def send_email(subject, body):
 
 
 # ── Step6: 1レース実行 ────────────────────────────────────────────────────
-def run_single_race(race_id, models, use_cols, history_df, mf_models=None, mf_cols=None):
+def run_single_race(race_id, models, use_cols, history_df, mf_models=None, mf_cols=None,
+                    place2_pack=None, place3_pack=None):
     print(f"\n[{datetime.now().strftime('%H:%M')}] {race_id} 予測開始...")
 
     print("出馬表取得中...")
@@ -905,8 +906,36 @@ def run_single_race(race_id, models, use_cols, history_df, mf_models=None, mf_co
     win_probs = raw / raw.sum() if raw.sum() > 0 else np.ones(len(raw)) / len(raw)
     pdf["勝ち確率"] = win_probs
 
-    # 【改善】ハーヴィルモデルによる複勝確率
-    pdf["複勝確率"] = calc_place_prob_harvill(win_probs)
+    # ── 連対率・複勝率（3モデルがあれば独立予想、なければハーヴィル） ──
+    use_multi = place2_pack is not None and place3_pack is not None
+    if use_multi:
+        try:
+            p2_models, p2_cols = place2_pack
+            p3_models, p3_cols = place3_pack
+            X_p2 = pdf.reindex(columns=p2_cols)
+            X_p3 = pdf.reindex(columns=p3_cols)
+            p2_raw = np.mean([m.predict_proba(X_p2)[:, 1] for m in p2_models], axis=0)
+            p3_raw = np.mean([m.predict_proba(X_p3)[:, 1] for m in p3_models], axis=0)
+            p2_raw = np.clip(np.nan_to_num(p2_raw, nan=0.0), 0, 1)
+            p3_raw = np.clip(np.nan_to_num(p3_raw, nan=0.0), 0, 1)
+            # 整合性: 複勝率(3着内) >= 連対率(2着内)。勝率は尺度が違うので使わない。
+            place2 = p2_raw
+            place3 = np.clip(np.maximum(p3_raw, place2), 0, 1)
+            pdf["連対確率"] = place2
+            pdf["複勝確率"] = place3
+            pdf["連対順位"] = pd.Series(place2, index=pdf.index).rank(ascending=False)
+            pdf["複勝順位"] = pd.Series(place3, index=pdf.index).rank(ascending=False)
+            print("  連対率・複勝率を独立モデルで予想")
+        except Exception as e:
+            print(f"  3モデル予測エラー→ハーヴィルにフォールバック: {e}")
+            use_multi = False
+
+    if not use_multi:
+        # 【従来】ハーヴィルモデルによる複勝確率
+        pdf["複勝確率"] = calc_place_prob_harvill(win_probs)
+        pdf["連対確率"] = pdf["複勝確率"]  # 簡易: 連対は複勝で代用（旧挙動互換）
+        pdf["連対順位"] = pdf["複勝確率"].rank(ascending=False)
+        pdf["複勝順位"] = pdf["複勝確率"].rank(ascending=False)
 
     # 複勝推定オッズ（ハーヴィル確率ベース、最低1.0倍）
     pdf["複勝推定オッズ"] = (1.0 / pdf["複勝確率"].clip(lower=0.01)).clip(upper=30.0)
@@ -1157,6 +1186,16 @@ def main():
     models   = saved["models"]
     use_cols = saved["use_cols"]
 
+    # 3モデル（win/place2/place3）。新形式なら独立予想、旧形式ならハーヴィル
+    place2_pack = None
+    place3_pack = None
+    if saved.get("format") == "multi_v1" and saved.get("place2") and saved.get("place3"):
+        place2_pack = (saved["place2"]["models"], saved["place2"]["use_cols"])
+        place3_pack = (saved["place3"]["models"], saved["place3"]["use_cols"])
+        print("  3モデル構成(win/place2/place3)を検出 → 独立予想を使用")
+    else:
+        print("  旧モデル構成 → 連対率・複勝率はハーヴィル変換を使用")
+
     # 市場フリーモデルを読み込む（存在する場合のみ）
     mf_models = None
     mf_cols   = None
@@ -1213,6 +1252,8 @@ def main():
             history_df=history_df,
             mf_models=mf_models,
             mf_cols=mf_cols,
+            place2_pack=place2_pack,
+            place3_pack=place3_pack,
         )
         jyo_cd   = int(str(race_id)[4:6])
         race_no  = int(str(race_id)[10:12])

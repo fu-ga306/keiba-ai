@@ -114,11 +114,37 @@ def add_extra_features(df):
     return df
 
 
-def train_model(csv_path="race_features.csv"):
-    print("特徴量データ読み込み中...")
-    df = pd.read_csv(csv_path)
-    df = df.dropna(subset=["着順_num"])
-    df = df[df["着順_num"] >= 1]
+def make_target(chaku_series, target):
+    """目的変数を作る。target に応じて正例の定義を変える。
+      win    : 1着       (着順==1)
+      place2 : 連対(2着以内, 着順<=2)
+      place3 : 複勝(3着以内, 着順<=3)
+    """
+    if target == "win":
+        return (chaku_series == 1).astype(int)
+    elif target == "place2":
+        return (chaku_series <= 2).astype(int)
+    elif target == "place3":
+        return (chaku_series <= 3).astype(int)
+    else:
+        raise ValueError(f"未知のtarget: {target}")
+
+
+# target ごとの「正例を重視する重み」（正例にこの倍率をかける）
+TARGET_POS_WEIGHT = {"win": 2.0, "place2": 1.7, "place3": 1.5}
+
+
+def train_model(csv_path="race_features.csv", target="win", df=None):
+    """1つの目的変数(target)についてアンサンブルモデルを学習して返す。
+    target: "win" / "place2" / "place3"
+    df: 既に読み込み済みのDataFrameがあれば渡す（3回読み込まないため）
+    """
+    if df is None:
+        print("特徴量データ読み込み中...")
+        df = pd.read_csv(csv_path)
+        df = df.dropna(subset=["着順_num"])
+        df = df[df["着順_num"] >= 1]
+    print(f"\n{'#'*50}\n# ターゲット: {target} を学習\n{'#'*50}")
 
     print("レース内相対特徴量を生成中...")
     df["レース内_過去勝率ランク"]         = df.groupby("race_id")["過去勝率"].rank(ascending=False, method="min")
@@ -144,7 +170,7 @@ def train_model(csv_path="race_features.csv"):
     print(f"使用特徴量: {len(use_cols)}列")
 
     X_train_all = train_df[use_cols].copy()
-    y_train_all = (train_df["着順_num"] == 1).astype(int)
+    y_train_all = make_target(train_df["着順_num"], target)
     X_test      = test_df[use_cols].copy()
     y_test      = test_df["着順_num"]
 
@@ -160,9 +186,11 @@ def train_model(csv_path="race_features.csv"):
     X_train_main, X_cal, y_train_main, y_cal, w_time_main, w_time_cal = train_test_split(
         X_train_all, y_train_all, train_df["時系列重み"], test_size=0.2, random_state=42
     )
-    # 着順重み（1着を重視）× 時系列重み（直近年を重視）
-    w_main = np.where(y_train_main == 1, 2.0, 1.0) * w_time_main.values
+    # 着順重み（正例を重視）× 時系列重み（直近年を重視）
+    pos_w = TARGET_POS_WEIGHT.get(target, 2.0)
+    w_main = np.where(y_train_main == 1, pos_w, 1.0) * w_time_main.values
     print(f"  時系列重み: {year_min}年=1.0倍 〜 {year_max}年={TIME_WEIGHT_MAX}倍")
+    print(f"  正例重み({target}): {pos_w}倍")
 
     # ── LightGBM ──
     print("ベースLightGBMモデルを学習中（アーリーストッピング付き）...")
@@ -186,7 +214,7 @@ def train_model(csv_path="race_features.csv"):
         xgb_tmp = xgb.XGBClassifier(
             objective="binary:logistic", learning_rate=0.03, max_depth=5,
             n_estimators=1000, subsample=0.8, colsample_bytree=0.8,
-            scale_pos_weight=2.0, eval_metric="logloss",
+            scale_pos_weight=pos_w, eval_metric="logloss",
             early_stopping_rounds=100, verbosity=0, random_state=42,
         )
         xgb_tmp.fit(X_train_main, y_train_main, eval_set=[(X_cal, y_cal)],
@@ -197,7 +225,7 @@ def train_model(csv_path="race_features.csv"):
         xgb_model = xgb.XGBClassifier(
             objective="binary:logistic", learning_rate=0.03, max_depth=5,
             n_estimators=best_iter_xgb, subsample=0.8, colsample_bytree=0.8,
-            scale_pos_weight=2.0, verbosity=0, random_state=42,
+            scale_pos_weight=pos_w, verbosity=0, random_state=42,
         )
         xgb_model.fit(X_train_main, y_train_main, sample_weight=w_time_main.values, verbose=False)
         calibrated_xgb = CalibratedClassifierCV(estimator=xgb_model, method="isotonic", cv=None)
@@ -232,50 +260,54 @@ def train_model(csv_path="race_features.csv"):
     else:
         print("  CatBoostスキップ（pip install catboost）")
 
-    # ── LightGBM LambdaRank（着順ランキング学習） ──
-    print("LambdaRankモデルを学習中...")
-    try:
-        idx_train = X_train_main.index
-        idx_cal   = X_cal.index
+    # ── LightGBM LambdaRank（着順ランキング学習） ── ※winターゲットのみ
+    lambda_wrapper = None
+    if target == "win":
+        print("LambdaRankモデルを学習中...")
+        try:
+            idx_train = X_train_main.index
+            idx_cal   = X_cal.index
 
-        race_id_train = train_df.loc[idx_train, "race_id"].values
-        race_id_cal   = train_df.loc[idx_cal,   "race_id"].values
+            race_id_train = train_df.loc[idx_train, "race_id"].values
+            race_id_cal   = train_df.loc[idx_cal,   "race_id"].values
 
-        sort_train = np.argsort(race_id_train, kind="stable")
-        sort_cal   = np.argsort(race_id_cal,   kind="stable")
+            sort_train = np.argsort(race_id_train, kind="stable")
+            sort_cal   = np.argsort(race_id_cal,   kind="stable")
 
-        X_rank_train = X_train_main.values[sort_train]
-        X_rank_cal   = X_cal.values[sort_cal]
+            X_rank_train = X_train_main.values[sort_train]
+            X_rank_cal   = X_cal.values[sort_cal]
 
-        chakujun_train = train_df.loc[idx_train, "着順_num"].values[sort_train]
-        chakujun_cal   = train_df.loc[idx_cal,   "着順_num"].values[sort_cal]
-        shutsu_train   = train_df.loc[idx_train, "出走頭数"].fillna(18).astype(int).values[sort_train]
-        shutsu_cal     = train_df.loc[idx_cal,   "出走頭数"].fillna(18).astype(int).values[sort_cal]
+            chakujun_train = train_df.loc[idx_train, "着順_num"].values[sort_train]
+            chakujun_cal   = train_df.loc[idx_cal,   "着順_num"].values[sort_cal]
+            shutsu_train   = train_df.loc[idx_train, "出走頭数"].fillna(18).astype(int).values[sort_train]
+            shutsu_cal     = train_df.loc[idx_cal,   "出走頭数"].fillna(18).astype(int).values[sort_cal]
 
-        y_rank_train = np.clip(shutsu_train - chakujun_train, 0, None).astype(int)
-        y_rank_cal   = np.clip(shutsu_cal   - chakujun_cal,   0, None).astype(int)
+            y_rank_train = np.clip(shutsu_train - chakujun_train, 0, None).astype(int)
+            y_rank_cal   = np.clip(shutsu_cal   - chakujun_cal,   0, None).astype(int)
 
-        _, group_train = np.unique(race_id_train[sort_train], return_counts=True)
-        _, group_cal   = np.unique(race_id_cal[sort_cal],     return_counts=True)
+            _, group_train = np.unique(race_id_train[sort_train], return_counts=True)
+            _, group_cal   = np.unique(race_id_cal[sort_cal],     return_counts=True)
 
-        train_data_rank = lgb.Dataset(X_rank_train, label=y_rank_train, group=group_train)
-        val_data_rank   = lgb.Dataset(X_rank_cal,   label=y_rank_cal,   group=group_cal,
-                                      reference=train_data_rank)
+            train_data_rank = lgb.Dataset(X_rank_train, label=y_rank_train, group=group_train)
+            val_data_rank   = lgb.Dataset(X_rank_cal,   label=y_rank_cal,   group=group_cal,
+                                          reference=train_data_rank)
 
-        rank_booster = lgb.train(
-            LGB_RANK_PARAMS,
-            train_data_rank,
-            num_boost_round=3000,
-            valid_sets=[val_data_rank],
-            callbacks=[lgb.early_stopping(100, verbose=False), lgb.log_evaluation(period=200)],
-        )
+            rank_booster = lgb.train(
+                LGB_RANK_PARAMS,
+                train_data_rank,
+                num_boost_round=3000,
+                valid_sets=[val_data_rank],
+                callbacks=[lgb.early_stopping(100, verbose=False), lgb.log_evaluation(period=200)],
+            )
 
-        lambda_wrapper = LambdaRankWrapper(rank_booster)
-        print(f"  LambdaRank完了（{rank_booster.best_iteration}本）")
-    except Exception as e:
-        lambda_wrapper = None
-        print(f"  LambdaRankスキップ: {e}")
-        import traceback; traceback.print_exc()
+            lambda_wrapper = LambdaRankWrapper(rank_booster)
+            print(f"  LambdaRank完了（{rank_booster.best_iteration}本）")
+        except Exception as e:
+            lambda_wrapper = None
+            print(f"  LambdaRankスキップ: {e}")
+            import traceback; traceback.print_exc()
+    else:
+        print(f"  LambdaRankは{target}では学習しません（winのみ）")
 
     print(f"\nアンサンブル: {len(models)}モデルの平均で予測（LGB+XGB+CatBoost）")
     if lambda_wrapper:
@@ -287,44 +319,105 @@ def train_model(csv_path="race_features.csv"):
 
         # ── テストデータで評価 ──
     test_df = test_df.copy()
-    test_df["予測勝率スコア"] = np.mean([m.predict_proba(X_test)[:, 1] for m in models], axis=0)
-    test_df["予測順位"] = test_df.groupby("race_id")["予測勝率スコア"].rank(ascending=False)
+    # target汎用のスコア列（その目的の確率）
+    test_df["予測スコア"] = np.mean([m.predict_proba(X_test)[:, 1] for m in models], axis=0)
+    test_df["予測順位"] = test_df.groupby("race_id")["予測スコア"].rank(ascending=False)
 
-    def normalize(group):
-        probs = group["予測勝率スコア"].values
-        total = probs.sum()
-        return pd.Series(probs / total if total > 0 else probs, index=group.index)
+    # 正例実績（この target における的中）
+    y_test_bin = make_target(test_df["着順_num"], target)
+    top1 = test_df[test_df["予測順位"] == 1]
+    if len(top1) > 0:
+        hit_rate = make_target(top1["着順_num"], target).mean() * 100
+        print(f"  [{target}] 予測1位の的中率(この目的での): {hit_rate:.1f}%  ({len(top1)}レース)")
 
-    test_df["勝ち確率"] = test_df.groupby("race_id").apply(normalize).reset_index(level=0, drop=True)
-    test_df["単勝期待値"] = test_df["単勝オッズ"] * test_df["勝ち確率"] - 1
+    if target == "win":
+        # 案B: 勝ち確率は「生確率」をそのまま使う（正規化しない）。
+        # 生確率 = winモデルが出す「この馬が1着になる絶対確率」。
+        # これにより 勝率 ≤ 連対率 ≤ 複勝率 の包含関係が自然に保たれる。
+        test_df["勝ち確率"] = test_df["予測スコア"]
+        test_df["単勝期待値"] = test_df["単勝オッズ"] * test_df["勝ち確率"] - 1
+        out = test_df[["race_id","馬名","着順_num","予測スコア","予測順位","単勝オッズ","人気","勝ち確率","単勝期待値"]].copy()
+        out = out.sort_values(["race_id", "予測順位"])
+        out.to_csv("model_result.csv", index=False, encoding="utf-8-sig")
 
-    out = test_df[["race_id","馬名","着順_num","予測勝率スコア","予測順位","単勝オッズ","人気","勝ち確率","単勝期待値"]].copy()
-    out = out.sort_values(["race_id", "予測順位"])
-    out.to_csv("model_result.csv", index=False, encoding="utf-8-sig")
+    return models, test_df, use_cols, lambda_wrapper
 
-    save_dict = {"models": models, "use_cols": use_cols}
-    if lambda_wrapper is not None:
-        save_dict["lambda_booster"] = lambda_wrapper.booster
+
+def train_all_targets(csv_path="race_features.csv"):
+    """win / place2 / place3 の3モデルを学習し、model.pkl に3セット保存する。"""
+    print("特徴量データ読み込み中（共通）...")
+    df = pd.read_csv(csv_path)
+    df = df.dropna(subset=["着順_num"])
+    df = df[df["着順_num"] >= 1]
+
+    result = {}
+    win_test_df = None
+    for target in ["win", "place2", "place3"]:
+        models, test_df, use_cols, lambda_wrapper = train_model(
+            csv_path=csv_path, target=target, df=df.copy()
+        )
+        entry = {"models": models, "use_cols": use_cols}
+        if lambda_wrapper is not None:
+            entry["lambda_booster"] = lambda_wrapper.booster
+        result[target] = entry
+        if target == "win":
+            win_test_df = test_df
+
+    # 後方互換: 旧コードが model["models"] を読めるよう、winを最上位にも置く
+    save_dict = {
+        "win":    result["win"],
+        "place2": result["place2"],
+        "place3": result["place3"],
+        # ↓旧形式互換（keiba_predict等が未対応でも動くように）
+        "models":   result["win"]["models"],
+        "use_cols": result["win"]["use_cols"],
+        "format":   "multi_v1",
+    }
+    if "lambda_booster" in result["win"]:
+        save_dict["lambda_booster"] = result["win"]["lambda_booster"]
 
     with open("model.pkl", "wb") as f:
         pickle.dump(save_dict, f)
-    print(f"モデル保存完了 → model.pkl（{len(models)}モデル" +
-          (" + LambdaRank参考スコア）" if lambda_wrapper else "）"))
+    print(f"\n✅ 3モデル保存完了 → model.pkl")
+    print(f"   win: {len(result['win']['models'])}モデル / "
+          f"place2: {len(result['place2']['models'])}モデル / "
+          f"place3: {len(result['place3']['models'])}モデル")
+    print(f"   ※旧形式互換: model['models']=winモデル も保持")
 
-    return models, test_df, use_cols
+    return win_test_df
 
 
 if __name__ == "__main__":
-    models, df, use_cols = train_model()
+    df = train_all_targets()
 
-    print(f"\n{'='*40}\n🔥 バックテスト\n{'='*40}")
+    print(f"\n{'='*40}\n🔥 バックテスト（winモデル・生確率ベース）\n{'='*40}")
 
-    TARGET_EV = 0.3
+    # ── 期待値閾値スイープ（生確率での最適閾値を探す） ──
+    print(f"\n{'─'*40}\n📊 戦略A 期待値閾値スイープ（最適値を探索）\n{'─'*40}")
+    print("  閾値   ベット数  的中率   回収率")
+    best_ev, best_roi = 0.3, 0
+    for ev_th in [-0.2, -0.1, 0.0, 0.1, 0.2, 0.3, 0.4, 0.5]:
+        bets = df[(df["予測順位"]==1)&(df["単勝期待値"]>=ev_th)&(df["単勝オッズ"]>=1.5)&(df["単勝オッズ"]<=20.0)]
+        if len(bets) < 10:
+            print(f"  {ev_th:+.1f}    {len(bets):4d}回    （サンプル不足）")
+            continue
+        wins = bets[bets["着順_num"]==1]
+        roi = wins["単勝オッズ"].sum()/len(bets)*100
+        rate = len(wins)/len(bets)*100
+        mark = ""
+        if roi > best_roi and len(bets) >= 30:
+            best_roi, best_ev = roi, ev_th
+            mark = " ←最高"
+        print(f"  {ev_th:+.1f}    {len(bets):4d}回   {rate:5.1f}%  {roi:6.1f}%{mark}")
+    print(f"\n  → 最適閾値: 期待値>={best_ev:+.1f}（回収率{best_roi:.1f}%, ベット30回以上で最高）")
+
+    TARGET_EV = best_ev  # スイープで見つけた最適閾値を以降の戦略でも使う
+    print(f"\n  以降の戦略A系は TARGET_EV={TARGET_EV:+.1f} を使用")
 
     bets_a = df[(df["予測順位"]==1)&(df["単勝期待値"]>=TARGET_EV)&(df["単勝オッズ"]>=1.5)&(df["単勝オッズ"]<=20.0)]
     if len(bets_a) > 0:
         wins_a = bets_a[bets_a["着順_num"]==1]
-        print(f"\n── 戦略A: 予測1位 × 期待値>={TARGET_EV} × オッズ(1.5〜20倍) ──")
+        print(f"\n── 戦略A: 予測1位 × 期待値>={TARGET_EV:+.1f} × オッズ(1.5〜20倍) ──")
         print(f"ベット数: {len(bets_a)}回\n的中数:   {len(wins_a)}回\n的中率:   {len(wins_a)/len(bets_a)*100:.1f}%\n回収率:   {wins_a['単勝オッズ'].sum()/len(bets_a)*100:.1f}%")
 
     bets_a2 = bets_a[bets_a["人気"]>=2]
