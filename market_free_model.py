@@ -60,11 +60,11 @@ FEATURE_COLS_MF = [
     "平均タイム差",
     # 騎手×競馬場
     "騎手競馬場勝率",
-    # 交互作用特徴量
+    # 交互作用特徴量（市場情報を含まないものだけ）
     "距離×馬場_過去勝率", "距離×馬場_過去平均着順",
     "距離×クラス_過去勝率",
     "芝ダート×先行_過去勝率",
-    "前走好走×人気薄", "前走着順×人気_乖離",
+    # 「前走好走×人気薄」「前走着順×人気_乖離」は人気を含むため除外（純粋実力モデル）
     "斤量×年齢_負担",
     "距離延長×前走好走", "距離短縮×前走好走",
 ]
@@ -266,5 +266,157 @@ def train_market_free_model(csv_path="race_features.csv"):
     return models, test_df, use_cols
 
 
+# ════════════════════════════════════════════════════════════════════
+# MF版 3モデル化（win/place2/place3）— 市場を見ない実力ベースの3予想
+# ════════════════════════════════════════════════════════════════════
+
+def _mf_make_target(chaku, target):
+    if target == "win":
+        return (chaku == 1).astype(int)
+    elif target == "place2":
+        return (chaku <= 2).astype(int)
+    elif target == "place3":
+        return (chaku <= 3).astype(int)
+    raise ValueError(target)
+
+
+_MF_POS_WEIGHT = {"win": 2.0, "place2": 1.7, "place3": 1.5}
+
+
+def _train_mf_one(train_df, test_df, use_cols, target):
+    """MFモデルを1ターゲット分学習してアンサンブル(LGB+XGB+CatBoost)を返す。"""
+    try:
+        import xgboost as xgb
+        HAS_XGB = True
+    except ImportError:
+        HAS_XGB = False
+    try:
+        from catboost import CatBoostClassifier
+        HAS_CAT = True
+    except ImportError:
+        HAS_CAT = False
+
+    print(f"\n{'#'*46}\n# MF ターゲット: {target}\n{'#'*46}")
+    X_train_all = train_df[use_cols].copy()
+    y_train_all = _mf_make_target(train_df["着順_num"], target)
+
+    TIME_WEIGHT_MAX = 1.0
+    year_min = train_df["年"].min()
+    year_max = train_df["年"].max()
+    year_range = max(year_max - year_min, 1)
+    train_df = train_df.copy()
+    train_df["時系列重み"] = 1.0 + (train_df["年"] - year_min) / year_range * (TIME_WEIGHT_MAX - 1.0)
+
+    X_tr, X_cal, y_tr, y_cal, w_tr, w_cal = train_test_split(
+        X_train_all, y_train_all, train_df["時系列重み"], test_size=0.2, random_state=42
+    )
+    pos_w = _MF_POS_WEIGHT.get(target, 2.0)
+    w_main = np.where(y_tr == 1, pos_w, 1.0) * w_tr.values
+    print(f"  正例重み({target}): {pos_w}倍")
+
+    models = []
+    # LightGBM
+    base = lgb.LGBMClassifier(**LGB_PARAMS, n_estimators=5000)
+    base.fit(X_tr, y_tr, sample_weight=w_main,
+             callbacks=[lgb.early_stopping(100, verbose=False), lgb.log_evaluation(period=200)],
+             eval_set=[(X_cal, y_cal)])
+    cal_lgb = CalibratedClassifierCV(estimator=base, method="isotonic", cv=None)
+    cal_lgb.fit(X_cal, y_cal)
+    models.append(cal_lgb)
+    print(f"  LightGBM完了（{base.best_iteration_}本）")
+
+    # XGBoost
+    if HAS_XGB:
+        xtmp = xgb.XGBClassifier(
+            objective="binary:logistic", learning_rate=0.03, max_depth=5,
+            n_estimators=1000, subsample=0.8, colsample_bytree=0.8,
+            scale_pos_weight=pos_w, eval_metric="logloss",
+            early_stopping_rounds=100, verbosity=0, random_state=42)
+        xtmp.fit(X_tr, y_tr, eval_set=[(X_cal, y_cal)],
+                 sample_weight=w_tr.values, verbose=False)
+        best_it = xtmp.best_iteration
+        xgbm = xgb.XGBClassifier(
+            objective="binary:logistic", learning_rate=0.03, max_depth=5,
+            n_estimators=best_it, subsample=0.8, colsample_bytree=0.8,
+            scale_pos_weight=pos_w, verbosity=0, random_state=42)
+        xgbm.fit(X_tr, y_tr, sample_weight=w_tr.values, verbose=False)
+        cal_xgb = CalibratedClassifierCV(estimator=xgbm, method="isotonic", cv=None)
+        cal_xgb.fit(X_cal, y_cal)
+        models.append(cal_xgb)
+        print(f"  XGBoost完了（{best_it}本）")
+
+    # CatBoost
+    if HAS_CAT:
+        ctmp = CatBoostClassifier(
+            iterations=1000, learning_rate=0.03, depth=5,
+            loss_function="Logloss", eval_metric="Logloss",
+            early_stopping_rounds=100, verbose=False, random_seed=42)
+        ctmp.fit(X_tr, y_tr, eval_set=(X_cal, y_cal), sample_weight=w_main)
+        best_it = ctmp.best_iteration_
+        cbm = CatBoostClassifier(
+            iterations=best_it, learning_rate=0.03, depth=5,
+            loss_function="Logloss", verbose=False, random_seed=42)
+        cbm.fit(X_tr, y_tr, sample_weight=w_main)
+        cal_cat = CalibratedClassifierCV(estimator=cbm, method="isotonic", cv=None)
+        cal_cat.fit(X_cal, y_cal)
+        models.append(cal_cat)
+        print(f"  CatBoost完了（{best_it}本）")
+
+    # 評価
+    X_test = test_df[use_cols].copy()
+    score = np.mean([m.predict_proba(X_test)[:, 1] for m in models], axis=0)
+    tdf = test_df.copy()
+    tdf["_score"] = score
+    tdf["_rank"]  = tdf.groupby("race_id")["_score"].rank(ascending=False)
+    top1 = tdf[tdf["_rank"] == 1]
+    if len(top1) > 0:
+        hit = _mf_make_target(top1["着順_num"], target).mean() * 100
+        print(f"  [MF {target}] 予測1位の的中率: {hit:.1f}% ({len(top1)}レース)")
+
+    return models
+
+
+def train_mf_all_targets(csv_path="race_features.csv"):
+    """MF版の win/place2/place3 を学習し model_mf.pkl に3セット保存する。"""
+    print("=" * 50)
+    print("🤖 市場フリーモデル 3モデル化 学習開始")
+    print("=" * 50)
+    df = pd.read_csv(csv_path)
+    df = df.dropna(subset=["着順_num"])
+    df = df[df["着順_num"] >= 1]
+    df = add_race_rank_features(df)
+    df["年"] = df["race_id"].astype(str).str[:4].astype(int)
+    train_df = df[df["年"] <= 2024].copy()
+    test_df  = df[df["年"] == 2025].copy()
+    use_cols = [c for c in FEATURE_COLS_MF if c in train_df.columns]
+    print(f"使用特徴量: {len(use_cols)}列（人気・オッズ・人気交互作用すべて除外）")
+    print(f"  人気混入チェック: {[c for c in use_cols if '人気' in c or 'オッズ' in c]}（空ならOK）")
+
+    result = {}
+    for target in ["win", "place2", "place3"]:
+        models = _train_mf_one(train_df, test_df, use_cols, target)
+        result[target] = {"models": models, "use_cols": use_cols}
+
+    save_dict = {
+        "win":    result["win"],
+        "place2": result["place2"],
+        "place3": result["place3"],
+        # 旧形式互換（既存コードが model_mf["models"] を読めるように）
+        "models":   result["win"]["models"],
+        "use_cols": result["win"]["use_cols"],
+        "format":   "multi_v1",
+    }
+    with open("model_mf.pkl", "wb") as f:
+        pickle.dump(save_dict, f)
+    print(f"\n✅ MF 3モデル保存完了 → model_mf.pkl")
+    print(f"   win/place2/place3 各{len(result['win']['models'])}モデル（市場フリー）")
+
+
 if __name__ == "__main__":
-    models, df, use_cols = train_market_free_model()
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "single":
+        # 旧来の単一モデル学習
+        train_market_free_model()
+    else:
+        # デフォルト: 3モデル化（推奨）
+        train_mf_all_targets()
