@@ -96,6 +96,22 @@ def add_horse_history_features(df):
     df["前走距離"] = g["距離"].transform(lambda x: pd.to_numeric(x, errors="coerce").shift(1))
     df["距離変化"] = pd.to_numeric(df["距離"], errors="coerce") - df["前走距離"]
 
+    # ── 距離変化系の新特徴量（長距離・距離延長の弱点対策）──
+    _cur_dist = pd.to_numeric(df["距離"], errors="coerce")
+    # 距離変化比率（今回/前走、1.0超=延長）
+    df["距離変化比率"] = _cur_dist / df["前走距離"].replace(0, np.nan)
+    # 大幅延長フラグ（200m超の延長）
+    df["大幅延長フラグ"] = ((df["距離変化"] > 200)).astype(float)
+    # 大幅短縮フラグ（200m超の短縮）
+    df["大幅短縮フラグ"] = ((df["距離変化"] < -200)).astype(float)
+    # 延長幅（延長のみ正値、短縮は0）
+    df["距離延長幅"] = df["距離変化"].clip(lower=0)
+    # 長距離フラグ（今回が2001m以上）
+    df["長距離フラグ"] = (_cur_dist >= 2001).astype(float)
+    # 大幅延長 × 長距離（初挑戦の長距離延長＝最も飛びやすい）
+    df["大幅延長×長距離"] = df["大幅延長フラグ"] * df["長距離フラグ"]
+    # ※「距離延長×先行」は先行馬フラグ生成後に作る（add_pace_features内）
+
     df = df.drop(columns=["_win", "_top3", "_last3_avg", "_all_avg"], errors="ignore")
 
     result_rows = []
@@ -137,6 +153,13 @@ def add_horse_history_features(df):
                 row["連続勝利フラグ"]       = np.nan
                 row["近走改善度"]           = np.nan
                 row["平均タイム差"]         = np.nan
+                # 【新規】距離適性・スタミナ系（長距離・距離延長の弱点対策）
+                row["経験最長距離"]         = np.nan
+                row["経験範囲超過"]         = np.nan
+                row["延長×距離経験不足"]    = np.nan
+                row["長距離複勝率"]         = np.nan
+                row["前走余力"]             = np.nan
+                row["延長×前走余力"]        = np.nan
             else:
                 last3 = valid.tail(3)
                 row["過去出走数"]           = len(valid)
@@ -229,6 +252,59 @@ def add_horse_history_features(df):
                     row["前走上り"]  = np.nan
                     row["前走距離"]  = np.nan
                     row["距離変化"]  = np.nan
+
+                # ── 距離適性・スタミナ系（長距離・距離延長の弱点対策）──
+                cur_dist2 = pd.to_numeric(row.get("距離", np.nan), errors="coerce")
+                past_dists = pd.to_numeric(valid["距離"], errors="coerce").dropna()
+                if len(past_dists) > 0 and pd.notna(cur_dist2):
+                    # 経験最長距離（過去にこなした最も長い距離）
+                    max_dist = past_dists.max()
+                    row["経験最長距離"] = max_dist
+                    # 経験範囲超過（今回が経験最長をどれだけ超えるか、正値=未知の距離）
+                    row["経験範囲超過"] = max(cur_dist2 - max_dist, 0)
+                    # 延長×距離経験不足（延長幅 × 経験範囲超過の度合い）
+                    encho = max(cur_dist2 - (row["前走距離"] if pd.notna(row.get("前走距離")) else cur_dist2), 0)
+                    row["延長×距離経験不足"] = encho * (1.0 if cur_dist2 > max_dist else 0.0)
+                    # 長距離(2001m〜)での過去複勝率
+                    long_past = valid[pd.to_numeric(valid["距離"], errors="coerce") >= 2001]
+                    if len(long_past) > 0:
+                        row["長距離複勝率"] = (long_past["着順_num"] <= 3).mean()
+                    else:
+                        row["長距離複勝率"] = np.nan
+                else:
+                    row["経験最長距離"]      = np.nan
+                    row["経験範囲超過"]      = np.nan
+                    row["延長×距離経験不足"] = np.nan
+                    row["長距離複勝率"]      = np.nan
+
+                # 前走余力（前走で楽勝なら延長に対応しやすい）
+                # 前走着順が良く(1-3着)、かつ着差がついていた = 余力あり
+                if len(valid) > 0:
+                    prev2 = valid.iloc[-1]
+                    prev_chaku = prev2["着順_num"]
+                    # 前走1着なら余力大、上位なら中程度、凡走なら0
+                    if pd.notna(prev_chaku):
+                        if prev_chaku == 1:
+                            yoryoku = 1.0
+                        elif prev_chaku <= 3:
+                            yoryoku = 0.5
+                        else:
+                            yoryoku = 0.0
+                    else:
+                        yoryoku = np.nan
+                    row["前走余力"] = yoryoku
+                    # 延長×前走余力（延長でも前走に余力があれば対応可）
+                    cur_d = pd.to_numeric(row.get("距離", np.nan), errors="coerce")
+                    prev_d = row.get("前走距離", np.nan)
+                    if pd.notna(cur_d) and pd.notna(prev_d) and pd.notna(yoryoku):
+                        encho_haba = max(cur_d - prev_d, 0)
+                        # 延長幅が大きいほど余力が重要 → 余力で割引を緩和
+                        row["延長×前走余力"] = encho_haba * yoryoku
+                    else:
+                        row["延長×前走余力"] = np.nan
+                else:
+                    row["前走余力"]      = np.nan
+                    row["延長×前走余力"] = np.nan
 
                 # ── 連続好走フラグ ─────────────────────────────────────
                 if len(valid) >= 2:
@@ -380,6 +456,10 @@ def add_extra_advanced_features(df):
         df["先行馬フラグ"] = (
             df["過去平均先行指数"] <= df["出走頭数"] / 3
         ).astype(float)
+
+        # 距離延長 × 先行（逃げ先行馬の距離延長は前半飛ばしてバテやすい＝弱点対策）
+        if "距離延長幅" in df.columns:
+            df["距離延長×先行"] = df["距離延長幅"].fillna(0) * df["先行馬フラグ"].fillna(0)
 
         # ── ⑤ ペース想定特徴量（レース内の先行馬構成から想定ペースを推定） ──
         # レース内で「先行馬フラグ=1」の馬が何頭・何割いるか集計。
