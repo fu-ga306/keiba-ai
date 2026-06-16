@@ -393,9 +393,29 @@ def train_mf_all_targets(csv_path="race_features.csv"):
     print(f"  人気混入チェック: {[c for c in use_cols if '人気' in c or 'オッズ' in c]}（空ならOK）")
 
     result = {}
+    test_scores = {}
     for target in ["win", "place2", "place3"]:
         models = _train_mf_one(train_df, test_df, use_cols, target)
         result[target] = {"models": models, "use_cols": use_cols}
+        # テストデータの予測スコアも保存（回収率分析用）
+        Xt = test_df[use_cols].copy()
+        test_scores[target] = np.mean([m.predict_proba(Xt)[:, 1] for m in models], axis=0)
+
+    # ── 回収率分析用の結果CSVを出力 ──
+    out = test_df[["race_id", "馬名", "着順_num"]].copy()
+    if "単勝オッズ" in test_df.columns:
+        out["単勝オッズ"] = test_df["単勝オッズ"].values
+    if "人気" in test_df.columns:
+        out["人気"] = test_df["人気"].values
+    out["MF勝率"]   = test_scores["win"]
+    out["MF連対率"] = test_scores["place2"]
+    out["MF複勝率"] = test_scores["place3"]
+    # レース内順位
+    out["MF勝率順位"]   = out.groupby("race_id")["MF勝率"].rank(ascending=False)
+    out["MF連対順位"]   = out.groupby("race_id")["MF連対率"].rank(ascending=False)
+    out["MF複勝順位"]   = out.groupby("race_id")["MF複勝率"].rank(ascending=False)
+    out.to_csv("model_mf_result.csv", index=False, encoding="utf-8-sig")
+    print("  回収率分析用CSV出力 → model_mf_result.csv")
 
     save_dict = {
         "win":    result["win"],
