@@ -151,6 +151,9 @@ def add_horse_history_features(df):
                 row["距離変化"]             = np.nan
                 row["連続複勝フラグ"]       = np.nan
                 row["連続勝利フラグ"]       = np.nan
+                row["直近5走勝利数"]       = np.nan
+                row["直近5走複勝数"]       = np.nan
+                row["直近5走平均着順"]     = np.nan
                 row["近走改善度"]           = np.nan
                 row["平均タイム差"]         = np.nan
                 # 【新規】距離適性・スタミナ系（長距離・距離延長の弱点対策）
@@ -315,6 +318,19 @@ def add_horse_history_features(df):
                     row["連続複勝フラグ"] = np.nan
                     row["連続勝利フラグ"] = np.nan
 
+                # ── 好調度（直近5走の好走数＝連続値・フラグより効く）────────
+                if len(valid) >= 1:
+                    last5 = valid.tail(5)
+                    n5 = len(last5)
+                    row["直近5走勝利数"] = int((last5["着順_num"] == 1).sum())
+                    row["直近5走複勝数"] = int((last5["着順_num"] <= 3).sum())
+                    # 直近の勢い（直近5走の平均着順、小さいほど好調）
+                    row["直近5走平均着順"] = last5["着順_num"].mean()
+                else:
+                    row["直近5走勝利数"]   = np.nan
+                    row["直近5走複勝数"]   = np.nan
+                    row["直近5走平均着順"] = np.nan
+
                 # ── 近走改善度（直近3走 vs 全過去の着順差） ────────────
                 if len(valid) >= 4:
                     last3_avg = valid.tail(3)["着順_num"].mean()
@@ -425,6 +441,54 @@ def add_jockey_trainer_features(df):
     # 元のdfに結合
     df = df.merge(df2[["race_id", "馬名", "騎手競馬場勝率"]],
                   on=["race_id", "馬名"], how="left")
+
+    # ── 騎手の直近トレンド（「今乗れている騎手」を捉える） ──────────────
+    # 直近30走の勝率・複勝率を追跡（通算とは別に「最近の調子」を見る）
+    from collections import deque
+    df3 = df.sort_values("race_id").reset_index(drop=True)
+    jockey_recent = {}  # {騎手: deque(maxlen=30) of (win, top3)}
+    recent_win  = []
+    recent_fuku = []
+    recent_trend = []  # 直近10走 vs その前20走 の勝率差（調子の上昇/下降）
+
+    for _, row in df3.iterrows():
+        jockey   = row["騎手"]
+        chakujun = row["着順_num"]
+
+        if jockey not in jockey_recent:
+            jockey_recent[jockey] = deque(maxlen=30)
+        dq = jockey_recent[jockey]
+
+        # 現時点での直近成績（過去データのみ）
+        if len(dq) > 0:
+            wins = sum(w for w, _ in dq)
+            top3 = sum(t for _, t in dq)
+            recent_win.append(wins / len(dq))
+            recent_fuku.append(top3 / len(dq))
+            # 調子トレンド: 直近10走の勝率 - 直近11〜30走の勝率
+            recent10 = list(dq)[-10:]
+            older    = list(dq)[:-10]
+            if len(recent10) >= 5 and len(older) >= 5:
+                w_recent = sum(w for w, _ in recent10) / len(recent10)
+                w_older  = sum(w for w, _ in older) / len(older)
+                recent_trend.append(w_recent - w_older)
+            else:
+                recent_trend.append(np.nan)
+        else:
+            recent_win.append(np.nan)
+            recent_fuku.append(np.nan)
+            recent_trend.append(np.nan)
+
+        # 結果を追加（着順確定後）
+        if not np.isnan(chakujun):
+            dq.append((1 if chakujun == 1 else 0, 1 if chakujun <= 3 else 0))
+
+    df3["騎手直近勝率"]     = recent_win
+    df3["騎手直近複勝率"]   = recent_fuku
+    df3["騎手調子トレンド"] = recent_trend
+    df = df.merge(
+        df3[["race_id", "馬名", "騎手直近勝率", "騎手直近複勝率", "騎手調子トレンド"]],
+        on=["race_id", "馬名"], how="left")
 
     return df
 
