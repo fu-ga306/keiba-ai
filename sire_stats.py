@@ -27,12 +27,16 @@ def build_sire_stats():
     horse_df = pd.read_csv(HORSE_CSV)
     print(f"  {len(horse_df)}頭")
 
-    # horse_id で結合して父馬・母父馬を付与
-    race_df["horse_id"] = race_df["horse_id"].astype(str)
-    horse_df["horse_id"] = horse_df["horse_id"].astype(str)
+    # horse_id で結合して父馬・母父馬を付与（.0除去で結合キーをそろえる）
+    race_df["horse_id"]  = race_df["horse_id"].astype(str).str.replace(".0", "", regex=False).str.strip()
+    horse_df["horse_id"] = horse_df["horse_id"].astype(str).str.replace(".0", "", regex=False).str.strip()
     df = race_df.merge(horse_df[["horse_id", "父馬", "母父馬"]], on="horse_id", how="left")
 
     print(f"結合後: {len(df)}行  父馬情報あり: {df['父馬'].notna().sum()}行")
+
+    # 着順_num がなければ生成
+    if "着順_num" not in df.columns:
+        df["着順_num"] = pd.to_numeric(df.get("着順"), errors="coerce")
 
     # 集計関数
     def calc_sire_stats(df, sire_col, prefix):

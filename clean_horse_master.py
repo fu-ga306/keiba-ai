@@ -24,6 +24,11 @@ df = pd.read_csv(HORSE_CSV, header=None,
 
 print(f"クリーニング前: {len(df)}行")
 
+# 念のためバックアップを作成
+backup_path = HORSE_CSV.replace(".csv", "_backup.csv")
+df.to_csv(backup_path, index=False, header=False, encoding="utf-8-sig")
+print(f"  バックアップ作成 → horse_master_backup.csv")
+
 # ① 「このページは動作していません」が含まれる行を除外
 error_mask = df.apply(
     lambda row: row.astype(str).str.contains(

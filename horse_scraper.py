@@ -116,7 +116,7 @@ def get_horse_profile(driver, horse_id: str) -> dict | None:
 
     driver.get(url)
     import random as _r
-    time.sleep(_r.uniform(3.5, 6.0))
+    time.sleep(_r.uniform(2.5, 4.0))
     page_source = driver.page_source
     soup = BeautifulSoup(page_source, "html.parser")
 
@@ -286,12 +286,12 @@ def build_horse_master():
             })
             print("- (ページなし・地方馬等)")
 
-        # ランダム待機（bot検知回避・保守的設定）
-        time.sleep(_r.uniform(8.0, 14.0))
+        # ランダム待機（bot検知回避）
+        time.sleep(_r.uniform(5.0, 8.0))
 
         # 50頭ごとに長めの休憩（頻度を上げて負荷分散）
         if (i + 1) % 50 == 0:
-            rest = _r.uniform(90, 180)
+            rest = _r.uniform(60, 100)
             print(f"  [{i+1}頭完了] {rest:.0f}秒休憩中...")
             time.sleep(rest)
 
