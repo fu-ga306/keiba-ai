@@ -76,7 +76,7 @@ def is_blocked(soup, page_source: str) -> bool:
         return True
     # 正常に大きなページが返っていれば、まずブロックではない
     if len(page_source) >= 5000:
-        # 大きいページでも、タイトル等に明確なブロック文言があるか最終確認
+        # 大きいページでも、ブロック特有の兆候があれば検知
         lower = page_source.lower()
         hard_signals = [
             "アクセスが集中して",
@@ -85,7 +85,14 @@ def is_blocked(soup, page_source: str) -> bool:
             "too many requests",
             "service temporarily unavailable",
         ]
-        return any(sig in lower for sig in hard_signals)
+        if any(sig in lower for sig in hard_signals):
+            return True
+        # 429ブロックページの特徴: タイトルが "db.netkeiba.com" で
+        # h1が「このページは動作していません」+ テーブル0件
+        if "このページは動作していません" in page_source and soup is not None:
+            if len(soup.find_all("table")) == 0:
+                return True
+        return False
     # ページが極端に短い = 中身が返っていない = ブロック/エラーの可能性
     lower = page_source.lower()
     short_signals = [
@@ -116,7 +123,7 @@ def get_horse_profile(driver, horse_id: str) -> dict | None:
 
     driver.get(url)
     import random as _r
-    time.sleep(_r.uniform(2.5, 4.0))
+    time.sleep(_r.uniform(3.5, 6.0))
     page_source = driver.page_source
     soup = BeautifulSoup(page_source, "html.parser")
 
@@ -286,12 +293,12 @@ def build_horse_master():
             })
             print("- (ページなし・地方馬等)")
 
-        # ランダム待機（bot検知回避）
-        time.sleep(_r.uniform(5.0, 8.0))
+        # ランダム待機（bot検知回避・保守的設定）
+        time.sleep(_r.uniform(8.0, 14.0))
 
         # 50頭ごとに長めの休憩（頻度を上げて負荷分散）
         if (i + 1) % 50 == 0:
-            rest = _r.uniform(60, 100)
+            rest = _r.uniform(90, 180)
             print(f"  [{i+1}頭完了] {rest:.0f}秒休憩中...")
             time.sleep(rest)
 
