@@ -74,6 +74,14 @@ FEATURE_COLS_MF = [
     "長距離複勝率", "前走余力", "延長×前走余力",
     "騎手直近勝率", "騎手直近複勝率", "騎手調子トレンド",
     "直近5走勝利数", "直近5走複勝数", "直近5走平均着順",
+    # 過去獲得賞金（B-4: 実力指標）
+    "過去獲得賞金累計", "過去平均獲得賞金",
+    # コース形態（B-3: 再スクレイピングで取得）
+    "回り_num",
+    # 血統特徴量（C-3: horse_id回復後に効く）
+    "父系_今回距離適性", "母父系_今回距離適性",
+    "父系_長距離勝率", "母父系_長距離勝率",
+    "父系_芝ダ適性", "父系_複勝率",
 ]
 
 LGB_PARAMS = {
@@ -109,7 +117,7 @@ def add_race_rank_features(df):
 
 def train_market_free_model(csv_path="race_features.csv"):
     print("=" * 50)
-    print("🤖 市場フリーモデル 学習開始")
+    print("[MF] 市場フリーモデル 学習開始")
     print("=" * 50)
 
     print("特徴量データ読み込み中...")
@@ -189,7 +197,7 @@ def train_market_free_model(csv_path="race_features.csv"):
 
     # ── バックテスト ─────────────────────────────────────────────────
     print(f"\n{'='*50}")
-    print("🔥 市場フリーモデル バックテスト（2025年）")
+    print("[!!] 市場フリーモデル バックテスト（2025年）")
     print(f"{'='*50}")
 
     # 単勝期待値は通常モデルと異なり「純粋AI勝率×オッズ」
@@ -219,7 +227,7 @@ def train_market_free_model(csv_path="race_features.csv"):
 
     # ── 通常モデルとの比較分析 ─────────────────────────────────────
     print(f"\n{'='*50}")
-    print("📊 通常モデル vs 市場フリーモデル 比較")
+    print("[分析] 通常モデル vs 市場フリーモデル 比較")
     print(f"{'='*50}")
 
     try:
@@ -386,7 +394,7 @@ def _train_mf_one(train_df, test_df, use_cols, target):
 def train_mf_all_targets(csv_path="race_features.csv"):
     """MF版の win/place2/place3 を学習し model_mf.pkl に3セット保存する。"""
     print("=" * 50)
-    print("🤖 市場フリーモデル 3モデル化 学習開始")
+    print("[MF] 市場フリーモデル 3モデル化 学習開始")
     print("=" * 50)
     df = pd.read_csv(csv_path)
     df = df.dropna(subset=["着順_num"])
@@ -435,7 +443,7 @@ def train_mf_all_targets(csv_path="race_features.csv"):
     }
     with open("model_mf.pkl", "wb") as f:
         pickle.dump(save_dict, f)
-    print(f"\n✅ MF 3モデル保存完了 → model_mf.pkl")
+    print(f"\n[完了] MF 3モデル保存完了 → model_mf.pkl")
     print(f"   win/place2/place3 各{len(result['win']['models'])}モデル（市場フリー）")
 
 

@@ -122,7 +122,7 @@ def main():
     print("効いている特徴量 TOP20")
     print("=" * 56)
     for _, r in df.head(20).iterrows():
-        bar = "█" * int(r["重要度%"] * 2)
+        bar = "-" * int(r["重要度%"] * 2)
         print(f"  {r['特徴量']:<24} {r['重要度%']:5.2f}% {bar}")
 
     # ── 重要度 下位15（効いていない＝改善/削除候補）──
@@ -138,7 +138,7 @@ def main():
     print("=" * 56)
     cat = df.groupby("カテゴリ")["重要度%"].sum().sort_values(ascending=False)
     for name, val in cat.items():
-        bar = "█" * int(val / 2)
+        bar = "-" * int(val / 2)
         print(f"  {name:<12} {val:5.1f}% {bar}")
 
     # ── 足りない領域の指摘 ──
@@ -148,7 +148,7 @@ def main():
     present_cats = set(cat.index)
     # 血統があるか
     if "血統" not in present_cats or cat.get("血統", 0) < 1:
-        print("  🔴 血統: ほぼ無し → 取得中の血統データで大幅に補える")
+        print("  [!] 血統: ほぼ無し → 取得中の血統データで大幅に補える")
     # 距離適性の重要度
     dist_imp = cat.get("距離適性", 0)
     print(f"  距離適性カテゴリの重要度: {dist_imp:.1f}%")

@@ -89,7 +89,7 @@ def main():
             roi, hit, n = tansho_roi(sub)
             if n == 0:
                 continue
-            mark = "🟢" if roi >= 100 else "🔴"
+            mark = "[OK]" if roi >= 100 else "[NG]"
             print(f"  {mark} {label:10}: {n:4d}回  的中{hit:5.1f}%  回収率{roi:6.1f}%")
         print("  → 人気薄帯で回収率100%超なら、市場が見落とす妙味を捉えている")
 

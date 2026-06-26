@@ -47,30 +47,57 @@ JYO_NAMES = {
     6: "中山", 7: "中京", 8: "京都", 9: "阪神", 10: "小倉",
 }
 
-# model.py の FEATURE_COLS と完全一致させること
+# ── 戦略の期待値しきい値（案B: 生確率ベース） ──────────────────
+# model.py の期待値スイープで判明した最適値（2026/06/15確定）。
+# 生確率は正規化版より小さく出るが、スイープの結果 +0.3 が
+# トータル利益最大（251回 回収率129.2%）と判明したため踏襲。
+EV_THRESHOLD_MAIN  = 0.3   # 戦略A/C/F/H等の主要しきい値
+EV_THRESHOLD_SUB   = 0.2   # 戦略D等のサブしきい値
+EV_THRESHOLD_TAIKO = 0.1   # ○対抗の印選出しきい値
+
+# model.py の FEATURE_COLS と完全一致させること（フォールバック用）
 FEATURE_COLS = [
     "枠番", "馬番", "斤量", "斤量_相対",
     "年齢", "is_male", "is_female", "is_castrated",
     "馬体重", "体重増減", "馬体重_相対",
-    "人気",
-    "出走頭数", "競馬場cd", "レース番号",
+    "人気", "出走頭数", "競馬場cd", "レース番号",
     "過去出走数", "過去平均着順", "過去勝率", "過去複勝率",
     "過去平均上り", "直近3走平均着順",
     "過去平均タイム秒", "直近3走平均タイム秒", "過去最速タイム秒",
     "直近3走平均上り", "過去平均体重増減",
+    "体重増減_過去標準偏差", "体重増減_異常度",
     "距離カテゴリ", "距離別過去平均着順",
     "騎手勝率", "騎手複勝率", "調教師勝率", "調教師複勝率",
     "距離", "馬場状態_num", "is_turf", "クラス_num",
-    "前走間隔", "同距離過去勝率", "同距離過去平均着順", "良馬場勝率", "重馬場勝率",
-    # 上がり関連特徴量
+    "前走間隔", "同距離過去勝率", "同距離過去平均着順",
+    "良馬場勝率", "重馬場勝率",
     "過去最速上り", "上り偏差", "距離別過去平均上り",
-    # 回収率向上：追加特徴量
     "斤量変化", "乗り替わり", "連闘", "休み明け", "負担率",
-    # レース内ランク
-    "レース内_過去勝率ランク",
-    "レース内_直近3走平均着順ランク",
-    "レース内_過去平均上りランク",
-    "レース内_騎手勝率ランク",
+    "レース内_過去勝率ランク", "レース内_直近3走平均着順ランク",
+    "レース内_過去平均上りランク", "レース内_騎手勝率ランク",
+    "競馬場距離過去勝率", "競馬場距離過去平均着順",
+    "競馬場過去勝率", "競馬場過去平均着順",
+    "過去平均先行指数", "先行馬フラグ",
+    "想定先行馬数", "想定先行馬率", "他馬想定先行馬数", "差し馬×ハイペース想定",
+    "開催月", "開催季節",
+    "前走着順", "前走上り", "前走距離", "距離変化",
+    "連続複勝フラグ", "連続勝利フラグ", "近走改善度",
+    "平均タイム差", "騎手競馬場勝率",
+    "距離×馬場_過去勝率", "距離×馬場_過去平均着順",
+    "距離×クラス_過去勝率", "芝ダート×先行_過去勝率",
+    "前走好走×人気薄", "前走着順×人気_乖離", "斤量×年齢_負担",
+    "距離延長×前走好走", "距離短縮×前走好走",
+    "距離変化比率", "大幅延長フラグ", "大幅短縮フラグ",
+    "距離延長幅", "長距離フラグ", "大幅延長×長距離", "距離延長×先行",
+    "経験最長距離", "経験範囲超過", "延長×距離経験不足",
+    "長距離複勝率", "前走余力", "延長×前走余力",
+    "騎手直近勝率", "騎手直近複勝率", "騎手調子トレンド",
+    "直近5走勝利数", "直近5走複勝数", "直近5走平均着順",
+    "過去獲得賞金累計", "過去平均獲得賞金",
+    "回り_num",
+    "父系_今回距離適性", "母父系_今回距離適性",
+    "父系_長距離勝率", "母父系_長距離勝率",
+    "父系_芝ダ適性", "父系_複勝率",
 ]
 
 
@@ -165,7 +192,8 @@ def get_race_data(race_id):
     url = f"https://race.netkeiba.com/race/shutuba.html?race_id={race_id}"
     try:
         response = requests.get(url, headers=HEADERS, timeout=10)
-        response.encoding = "EUC-JP"
+        # netkeibaがUTF-8に移行したため、固定指定ではなく自動判定にする
+        response.encoding = response.apparent_encoding
         soup = BeautifulSoup(response.text, "html.parser")
 
         race_info = {}
@@ -177,6 +205,12 @@ def get_race_data(race_id):
             dist_match = re.search(r"(\d{3,4})m", text)
             race_info["距離"] = int(dist_match.group(1)) if dist_match else None
             race_info["馬場種別"] = "芝" if "芝" in text else "ダート"
+            race_info["is_turf"] = 1.0 if "芝" in text else 0.0
+
+            # 回り（右/左/直）を抽出 — モデルの学習データと一致させる
+            m_turn = re.search(r"[芝ダ](右|左|直)", text)
+            race_info["回り"] = m_turn.group(1) if m_turn else None
+            race_info["回り_num"] = {"右": 1, "左": 2, "直": 3}.get(race_info["回り"])
 
             race_info["馬場状態"] = None
             full_text = "".join(
@@ -186,6 +220,7 @@ def get_race_data(race_id):
                 if condition in full_text:
                     race_info["馬場状態"] = condition
                     break
+            race_info["馬場状態_num"] = {"良": 1, "稍重": 2, "重": 3, "不良": 4}.get(race_info["馬場状態"])
         else:
             print("  RaceData01: 見つからず")
 
@@ -198,6 +233,13 @@ def get_race_data(race_id):
                 if cls in text2:
                     race_info["レースクラス"] = cls
                     break
+            # クラス_num: モデル学習時(scraper_fixed.py)と同じ 1-8 スケール
+            _cls_map_live = {
+                "新馬": 1, "未勝利": 1,
+                "1勝クラス": 2, "2勝クラス": 3, "3勝クラス": 4,
+                "オープン": 5, "G3": 6, "G2": 7, "G1": 8,
+            }
+            race_info["クラス_num"] = _cls_map_live.get(race_info["レースクラス"])
 
         table = soup.find("table", class_="Shutuba_Table")
         print(f"  Shutuba_Table: {table is not None}")
@@ -208,10 +250,19 @@ def get_race_data(race_id):
         for tr in table.find_all("tr"):
             td = tr.find_all("td")
             if len(td) >= 8:
+                # 馬名セル(td[3])のリンクから horse_id を取得（血統結合に使う）。
+                # netkeibaのURL構造 /horse/数字 は文字コード変更後も不変。
+                horse_id = None
+                a_tag = td[3].find("a", href=re.compile(r"/horse/\d+"))
+                if a_tag and a_tag.has_attr("href"):
+                    m = re.search(r"/horse/(\d+)", a_tag["href"])
+                    if m:
+                        horse_id = m.group(1)
                 rows.append({
                     "枠番":   td[0].get_text(strip=True),
                     "馬番":   td[1].get_text(strip=True),
                     "馬名":   td[3].get_text(strip=True),
+                    "horse_id": horse_id,
                     "性齢":   td[4].get_text(strip=True),
                     "斤量":   td[5].get_text(strip=True),
                     "騎手":   td[6].get_text(strip=True),
@@ -470,10 +521,12 @@ def build_features(race_df, history_df):
         feat["馬場状態_num"] = baba_map.get(row.get("馬場状態"), np.nan)
 
         class_map = {
-            "新馬": 1, "未勝利": 2, "1勝クラス": 3, "2勝クラス": 4,
-            "3勝クラス": 5, "オープン": 6, "G3": 7, "G2": 8, "G1": 9,
+            "新馬": 1, "未勝利": 1,
+            "1勝クラス": 2, "2勝クラス": 3, "3勝クラス": 4,
+            "オープン": 5, "G3": 6, "G2": 7, "G1": 8,
         }
         feat["クラス_num"] = class_map.get(row.get("レースクラス"), np.nan)
+        feat["回り_num"] = row.get("回り_num")
 
         seire = str(row.get("性齢", ""))
         feat["is_male"]      = 1 if "牡" in seire else 0
@@ -527,8 +580,35 @@ def build_features(race_df, history_df):
         else:
             feat["前走間隔"] = np.nan
 
-        # 追加特徴量
-        current_jockey = jockey
+        # ── 距離変化系特徴量（学習時features.pyと同じロジック）──
+        prev_dist = np.nan
+        if "valid_df" in hs and len(hs["valid_df"]) > 0 and "距離" in hs["valid_df"].columns:
+            try:
+                prev_dist = pd.to_numeric(
+                    hs["valid_df"]["距離"].iloc[-1], errors="coerce"
+                )
+            except Exception:
+                prev_dist = np.nan
+        feat["前走距離"] = prev_dist
+        if pd.notna(current_dist) and pd.notna(prev_dist):
+            feat["距離変化"]     = current_dist - prev_dist
+            feat["距離変化比率"] = current_dist / prev_dist if prev_dist > 0 else np.nan
+            feat["大幅延長フラグ"] = 1.0 if (current_dist - prev_dist) > 200 else 0.0
+            feat["大幅短縮フラグ"] = 1.0 if (current_dist - prev_dist) < -200 else 0.0
+            feat["距離延長幅"]   = max(current_dist - prev_dist, 0)
+        else:
+            feat["距離変化"]     = np.nan
+            feat["距離変化比率"] = np.nan
+            feat["大幅延長フラグ"] = np.nan
+            feat["大幅短縮フラグ"] = np.nan
+            feat["距離延長幅"]   = np.nan
+        feat["長距離フラグ"] = 1.0 if (pd.notna(current_dist) and current_dist >= 2001) else 0.0
+        feat["大幅延長×長距離"] = (
+            (feat["大幅延長フラグ"] if pd.notna(feat["大幅延長フラグ"]) else 0)
+            * feat["長距離フラグ"]
+        )
+        # 距離延長×先行は先行馬フラグ確定後に計算（下流で補完）
+
         prev_jockey    = hs.get("直近騎手", "")
         feat["乗り替わり"] = 0 if (prev_jockey == "" or prev_jockey == current_jockey) else 1
 
@@ -878,8 +958,20 @@ def run_single_race(race_id, models, use_cols, history_df, mf_models=None, mf_co
 
     print("特徴量構築中...")
     try:
-        pdf = build_features(race_df, history_df)
-        print(f"  特徴量構築成功: {len(pdf)}行")
+        # 一本化: 学習(features.py)と同じパイプラインで特徴量を作る。
+        # これにより血統・距離適性・騎手トレンド・好調度が学習と完全一致で計算される。
+        # 失敗時は従来の予測専用 build_features にフォールバック（安全策）。
+        try:
+            import features as _features
+            pdf = _features.build_features_for_prediction(race_df, history_df)
+            # 必須列が揃っているか簡易チェック（揃わなければ従来法へ）
+            if pdf is None or len(pdf) == 0 or "馬名" not in pdf.columns:
+                raise ValueError("一本化パイプラインの出力が不正")
+            print(f"  特徴量構築成功(一本化): {len(pdf)}行")
+        except Exception as e_uni:
+            print(f"  一本化パイプライン不可({e_uni}) → 従来法にフォールバック")
+            pdf = build_features(race_df, history_df)
+            print(f"  特徴量構築成功(従来): {len(pdf)}行")
     except Exception as e:
         import traceback
         print(f"  特徴量構築エラー: {e}")
@@ -900,11 +992,14 @@ def run_single_race(race_id, models, use_cols, history_df, mf_models=None, mf_co
         traceback.print_exc()
         return
 
-    # 勝ち確率の正規化
-    raw = np.nan_to_num(pdf["予測着順スコア"].values, nan=0.0)
-    raw = np.clip(raw, 0, None)
-    win_probs = raw / raw.sum() if raw.sum() > 0 else np.ones(len(raw)) / len(raw)
-    pdf["勝ち確率"] = win_probs
+    # 勝ち確率はレース内で正規化（合計100%・FUJIAI型No-Odds方式）。
+    # 生確率は校正されているがレース内合計が100%にならず期待値が過小になるため、
+    # レース内で正規化して期待値計算・表示を適正にする。
+    raw = np.clip(np.nan_to_num(pdf["予測着順スコア"].values, nan=0.0), 0, 1)
+    raw_sum = raw.sum()
+    win_probs = raw / raw_sum if raw_sum > 0 else np.ones(len(raw)) / len(raw)
+    pdf["勝ち確率"]   = win_probs
+    pdf["勝ち確率_生"] = raw
 
     # ── 連対率・複勝率（3モデルがあれば独立予想、なければハーヴィル） ──
     use_multi = place2_pack is not None and place3_pack is not None
@@ -918,23 +1013,35 @@ def run_single_race(race_id, models, use_cols, history_df, mf_models=None, mf_co
             p3_raw = np.mean([m.predict_proba(X_p3)[:, 1] for m in p3_models], axis=0)
             p2_raw = np.clip(np.nan_to_num(p2_raw, nan=0.0), 0, 1)
             p3_raw = np.clip(np.nan_to_num(p3_raw, nan=0.0), 0, 1)
-            # 整合性: 複勝率(3着内) >= 連対率(2着内)。勝率は尺度が違うので使わない。
-            place2 = p2_raw
-            place3 = np.clip(np.maximum(p3_raw, place2), 0, 1)
+            # 正規化（FUJIAI型）: 連対率は合計≒200%、複勝率は合計≒300%。少頭数は枠数で頭打ち。
+            n_runners = len(pdf)
+            p2_sum = p2_raw.sum()
+            p3_sum = p3_raw.sum()
+            target2 = min(2, n_runners)
+            target3 = min(3, n_runners)
+            place2 = (p2_raw / p2_sum * target2) if p2_sum > 0 else np.full(n_runners, target2 / n_runners)
+            place3 = (p3_raw / p3_sum * target3) if p3_sum > 0 else np.full(n_runners, target3 / n_runners)
+            place2 = np.clip(place2, 0, 1)
+            place3 = np.clip(place3, 0, 1)
+            # 包含関係を保証: 勝率 ≤ 連対率 ≤ 複勝率
+            place2 = np.maximum(place2, win_probs)
+            place3 = np.clip(np.maximum(place3, place2), 0, 1)
             pdf["連対確率"] = place2
             pdf["複勝確率"] = place3
             pdf["連対順位"] = pd.Series(place2, index=pdf.index).rank(ascending=False)
             pdf["複勝順位"] = pd.Series(place3, index=pdf.index).rank(ascending=False)
-            print("  連対率・複勝率を独立モデルで予想")
+            print("  連対率・複勝率を独立モデルで予想（正規化・包含関係保証）")
         except Exception as e:
             print(f"  3モデル予測エラー→ハーヴィルにフォールバック: {e}")
             use_multi = False
 
     if not use_multi:
-        # 【従来】ハーヴィルモデルによる複勝確率
-        pdf["複勝確率"] = calc_place_prob_harvill(win_probs)
-        pdf["連対確率"] = pdf["複勝確率"]  # 簡易: 連対は複勝で代用（旧挙動互換）
-        pdf["連対順位"] = pdf["複勝確率"].rank(ascending=False)
+        # 【従来】ハーヴィルモデルによる複勝確率（生の勝率ベース）
+        fuku = calc_place_prob_harvill(win_probs)
+        fuku = np.maximum(fuku, win_probs)
+        pdf["複勝確率"] = fuku
+        pdf["連対確率"] = np.maximum(pdf["複勝確率"] * 0.7, win_probs)  # 簡易近似
+        pdf["連対順位"] = pdf["連対確率"].rank(ascending=False)
         pdf["複勝順位"] = pdf["複勝確率"].rank(ascending=False)
 
     # 複勝推定オッズ（ハーヴィル確率ベース、最低1.0倍）
@@ -1057,6 +1164,7 @@ def run_single_race(race_id, models, use_cols, history_df, mf_models=None, mf_co
         try:
             X_mf = pdf.reindex(columns=mf_cols)
             mf_preds = np.mean([m.predict_proba(X_mf)[:, 1] for m in mf_models], axis=0)
+            pdf["MF勝ち確率"] = mf_preds
             pdf["MF予測順位"] = pd.Series(mf_preds).rank(ascending=False).values
             # 乖離スコア：通常順位 - MF順位（プラスほど市場が過小評価）
             pdf["乖離スコア"] = pdf["予測順位"] - pdf["MF予測順位"]
@@ -1117,26 +1225,34 @@ def run_single_race(race_id, models, use_cols, history_df, mf_models=None, mf_co
             pdf.at[idx, "該当戦略"] = " / ".join(strategies)
 
     # 印の選出（◎○▲）
+    # C-4: MFモデルを主力化（回収率 MF:142.6% > 通常:112.5%）
     pdf["印"] = ""
+    USE_MF_FOR_MARKS = True
+    rank_col = (
+        "MF勝ち確率"
+        if USE_MF_FOR_MARKS
+        and "MF勝ち確率" in pdf.columns
+        and pdf["MF勝ち確率"].notna().any()
+        else "勝ち確率"
+    )
 
-    # ◎本命：期待値0.3以上の馬の中で勝ち確率最大
-    # → 期待値がプラスで実力も伴う馬を本命に（2着多発問題への対策）
-    honmei_cands = pdf[pdf["単勝期待値"] >= 0.3].sort_values("勝ち確率", ascending=False)
+    # ◎本命：期待値0.3以上の馬の中でMF勝ち確率最大
+    honmei_cands = pdf[pdf["単勝期待値"] >= 0.3].sort_values(rank_col, ascending=False)
     idx_honmei = (
         honmei_cands.index[0]
         if not honmei_cands.empty
-        else pdf.sort_values("勝ち確率", ascending=False).index[0]
+        else pdf.sort_values(rank_col, ascending=False).index[0]
     )
     pdf.at[idx_honmei, "印"] = "◎"
 
-    # ○対抗：本命以外で期待値0.1以上×勝ち確率上位
+    # ○対抗：本命以外で期待値0.1以上×MF勝ち確率上位
     taiko_cands = pdf[
         (pdf["単勝期待値"] >= 0.1) & (pdf.index != idx_honmei)
-    ].sort_values("勝ち確率", ascending=False)
+    ].sort_values(rank_col, ascending=False)
     if not taiko_cands.empty:
         idx_taiko = taiko_cands.index[0]
     else:
-        remaining = pdf[pdf.index != idx_honmei].sort_values("勝ち確率", ascending=False)
+        remaining = pdf[pdf.index != idx_honmei].sort_values(rank_col, ascending=False)
         idx_taiko = remaining.index[0] if not remaining.empty else idx_honmei
     if idx_taiko != idx_honmei:
         pdf.at[idx_taiko, "印"] = "○"
@@ -1214,7 +1330,7 @@ def main():
 
     print("履歴データ読み込み中（しばらくかかります）...")
     history_df = pd.read_csv(
-        os.path.join(BASE_DIR, "race_features.csv"), low_memory=False
+        os.path.join(BASE_DIR, "race_data_clean.csv"), low_memory=False
     )
     print(f"読み込み完了: {len(history_df)}行\n")
 

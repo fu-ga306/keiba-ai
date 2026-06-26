@@ -62,6 +62,14 @@ FEATURE_COLS = [
     "長距離複勝率", "前走余力", "延長×前走余力",
     "騎手直近勝率", "騎手直近複勝率", "騎手調子トレンド",
     "直近5走勝利数", "直近5走複勝数", "直近5走平均着順",
+    # 過去獲得賞金（B-4: 実力指標）
+    "過去獲得賞金累計", "過去平均獲得賞金",
+    # コース形態（B-3: 再スクレイピングで取得）
+    "回り_num",
+    # 血統特徴量（C-3: horse_id回復後に効く）
+    "父系_今回距離適性", "母父系_今回距離適性",
+    "父系_長距離勝率", "母父系_長距離勝率",
+    "父系_芝ダ適性", "父系_複勝率",
 ]
 
 LGB_PARAMS = {
@@ -385,7 +393,7 @@ def train_all_targets(csv_path="race_features.csv"):
 
     with open("model.pkl", "wb") as f:
         pickle.dump(save_dict, f)
-    print(f"\n✅ 3モデル保存完了 → model.pkl")
+    print(f"\n[完了] 3モデル保存完了 → model.pkl")
     print(f"   win: {len(result['win']['models'])}モデル / "
           f"place2: {len(result['place2']['models'])}モデル / "
           f"place3: {len(result['place3']['models'])}モデル")
@@ -397,10 +405,10 @@ def train_all_targets(csv_path="race_features.csv"):
 if __name__ == "__main__":
     df = train_all_targets()
 
-    print(f"\n{'='*40}\n🔥 バックテスト（winモデル・生確率ベース）\n{'='*40}")
+    print(f"\n{'='*40}\n[!!] バックテスト（winモデル・生確率ベース）\n{'='*40}")
 
     # ── 期待値閾値スイープ（生確率での最適閾値を探す） ──
-    print(f"\n{'─'*40}\n📊 戦略A 期待値閾値スイープ（最適値を探索）\n{'─'*40}")
+    print(f"\n{'─'*40}\n[分析] 戦略A 期待値閾値スイープ（最適値を探索）\n{'─'*40}")
     print("  閾値   ベット数  的中率   回収率")
     best_ev, best_roi = 0.3, 0
     for ev_th in [-0.2, -0.1, 0.0, 0.1, 0.2, 0.3, 0.4, 0.5]:
@@ -481,7 +489,7 @@ if __name__ == "__main__":
             mark = "🟢" if roi>=120 else "🟡" if roi>=100 else "🔴"
             print(f"  {mark} {label}: {len(bets)}回 {len(wins)/len(bets)*100:.1f}% 回収率{roi:.1f}%")
 
-    print(f"\n{'='*40}\n🏆 クラス別バックテスト（戦略A）\n{'='*40}")
+    print(f"\n{'='*40}\n[結果] クラス別バックテスト（戦略A）\n{'='*40}")
     CLASS_MAP = {1:"新馬",2:"未勝利",3:"1勝クラス",4:"2勝クラス",5:"3勝クラス",6:"OP",7:"G3",8:"G2",9:"G1"}
     if "クラス_num" in df.columns:
         cls_results = []

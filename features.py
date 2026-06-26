@@ -1,10 +1,15 @@
 import pandas as pd
 import numpy as np
+import re
 from datetime import datetime
 
 
-def load_and_prepare(csv_path="race_data_clean.csv"):
-    df = pd.read_csv(csv_path, low_memory=False)
+def load_and_prepare(csv_path="race_data_clean.csv", df=None):
+    # df が渡されればCSVを読まずにそれを使う（予測時の一本化用）。
+    if df is None:
+        df = pd.read_csv(csv_path, low_memory=False)
+    else:
+        df = df.copy()
 
     def time_to_sec(t):
         try:
@@ -15,7 +20,7 @@ def load_and_prepare(csv_path="race_data_clean.csv"):
         except:
             return np.nan
 
-    df["タイム秒"] = df["タイム"].apply(time_to_sec)
+    df["タイム秒"] = df["タイム"].apply(time_to_sec) if "タイム" in df.columns else np.nan
 
     df["race_id"]   = df["race_id"].astype(str)
     df["年"]        = df["race_id"].str[0:4].astype(int)
@@ -24,10 +29,79 @@ def load_and_prepare(csv_path="race_data_clean.csv"):
     df["日"]        = df["race_id"].str[8:10].astype(int)
     df["レース番号"] = df["race_id"].str[10:12].astype(int)
 
+    # 性別・年齢: 予測データには「性齢」(例:牡3)しかなく、縦結合後は履歴由来で
+    # 「性別」列は存在するが予測行はNaN。性齢がある行は性齢から性別/年齢を埋める。
+    if "性齢" in df.columns:
+        seire = df["性齢"].astype(str)
+        sex_from_seire = pd.Series(np.nan, index=df.index, dtype=object)
+        sex_from_seire[seire.str.contains("牡", na=False)] = "牡"
+        sex_from_seire[seire.str.contains("牝", na=False)] = "牝"
+        sex_from_seire[seire.str.contains("セ", na=False)] = "セ"
+        if "性別" not in df.columns:
+            df["性別"] = np.nan
+        sei = df["性別"].astype(object)
+        need = sei.isna() | sei.astype(str).isin(["nan", "", "None"])
+        df["性別"] = sei.where(~need, sex_from_seire)
+        age_from_seire = pd.to_numeric(seire.str.extract(r"(\d+)")[0], errors="coerce")
+        if "年齢" not in df.columns:
+            df["年齢"] = np.nan
+        df["年齢"] = pd.to_numeric(df["年齢"], errors="coerce").fillna(age_from_seire)
+    if "性別" not in df.columns:
+        df["性別"] = ""
+    df["性別"] = df["性別"].fillna("")
+
     df["is_male"]      = (df["性別"] == "牡").astype(int)
     df["is_female"]    = (df["性別"] == "牝").astype(int)
     df["is_castrated"] = (df["性別"] == "セ").astype(int)
-    df["人気_inv"]     = 1 / df["人気"].clip(lower=1)
+    if "人気" in df.columns:
+        df["人気_inv"] = 1 / pd.to_numeric(df["人気"], errors="coerce").clip(lower=1)
+    else:
+        df["人気_inv"] = np.nan
+
+    # 馬体重・体重増減: 予測データは "422kg(+2)" 形式。学習データは数値。なければパースする。
+    if "馬体重" in df.columns and df["馬体重"].astype(str).str.contains("kg|\\(", regex=True).any():
+        raw = df["馬体重"].astype(str)
+        parsed_w = pd.to_numeric(raw.str.extract(r"(\d+)")[0], errors="coerce")
+        df["馬体重"] = df["馬体重"].where(~raw.str.contains("kg|\\(", regex=True), parsed_w)
+        if "体重増減" not in df.columns:
+            df["体重増減"] = pd.to_numeric(raw.str.extract(r"\(([+-]?\d+)\)")[0], errors="coerce")
+
+    # is_turf / 馬場状態_num / クラス_num: 縦結合後、履歴由来でこれらの列は存在するが、
+    # 予測対象行(予測データ由来)は値がNaN。「列の有無」でなく「値がNaN」の行を
+    # 元の文字列列(馬場種別/馬場状態/レースクラス)から埋める。
+    baba_map = {"良": 1, "稍重": 2, "重": 3, "不良": 4, "稍": 2, "不": 4}
+    class_map = {
+        "新馬": 1, "未勝利": 2, "1勝クラス": 3, "2勝クラス": 4,
+        "3勝クラス": 5, "オープン": 6, "G3": 7, "G2": 8, "G1": 9,
+        "500万下": 3, "1000万下": 4, "1600万下": 5,
+    }
+    if "馬場種別" in df.columns:
+        turf_from_str = df["馬場種別"].astype(str).str.contains("芝").astype(float)
+        if "is_turf" not in df.columns:
+            df["is_turf"] = np.nan
+        df["is_turf"] = pd.to_numeric(df["is_turf"], errors="coerce").fillna(turf_from_str)
+    if "馬場状態" in df.columns:
+        baba_from_str = df["馬場状態"].astype(str).map(baba_map)
+        if "馬場状態_num" not in df.columns:
+            df["馬場状態_num"] = np.nan
+        df["馬場状態_num"] = pd.to_numeric(df["馬場状態_num"], errors="coerce").fillna(baba_from_str)
+    if "レースクラス" in df.columns:
+        class_from_str = df["レースクラス"].astype(str).map(class_map)
+        if "クラス_num" not in df.columns:
+            df["クラス_num"] = np.nan
+        df["クラス_num"] = pd.to_numeric(df["クラス_num"], errors="coerce").fillna(class_from_str)
+
+    # クラス_num: なければレースクラスから作る（上で処理済みだが念のため）
+    if "クラス_num" not in df.columns and "レースクラス" in df.columns:
+        df["クラス_num"] = df["レースクラス"].astype(str).map(class_map)
+
+    # 数値であるべき列を確実に数値化（予測データは文字列のことがあり、
+    # 文字列のままだと groupby集計で連結され "54.057.0..." のように壊れる）。
+    for col in ["斤量", "馬番", "枠番", "距離", "人気", "単勝オッズ",
+                "馬体重", "体重増減", "年齢", "馬場状態_num", "クラス_num",
+                "着順_num", "上り", "賞金"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
 
     return df
 
@@ -53,6 +127,13 @@ def add_horse_history_features(df):
     df["過去最速上り"]     = g["上り"].transform(lambda x: x.shift(1).expanding().min())
     df["上り偏差"]         = g["上り"].transform(lambda x: x.shift(1).expanding().std())
     df["過去平均体重増減"] = g["体重増減"].transform(lambda x: x.shift(1).expanding().mean())
+    # ── 過去獲得賞金（B-4: 実力指標）─────────────────────────────────
+    if "賞金" in df.columns:
+        df["過去獲得賞金累計"] = g["賞金"].transform(lambda x: x.shift(1).expanding().sum())
+        df["過去平均獲得賞金"] = g["賞金"].transform(lambda x: x.shift(1).expanding().mean())
+    else:
+        df["過去獲得賞金累計"] = np.nan
+        df["過去平均獲得賞金"] = np.nan
     # ── ⑥ 馬体重変化の個体差特徴量 ──────────────────────────────────
     # 馬ごとに体重増減の標準偏差(個体の変動範囲)を計算し、
     # 今回の増減がその馬にとって「いつも通りか異常か」をzスコアで表す。
@@ -592,6 +673,117 @@ def add_extra_advanced_features(df):
     return df
 
 
+def add_blood_features(df, base_dir=None):
+    """
+    sire_stats.csv（種牡馬成績）と horse_master.csv（各馬の父・母父）から
+    血統特徴量を付与する。血統データは途中でもよい（無い馬はNaN）。
+
+    付与する特徴量:
+      父系_今回距離適性  : その馬の父系の、今回距離帯での勝率
+      母父系_今回距離適性 : 母父系の、今回距離帯での勝率
+      父系_長距離勝率    : 父系の長距離勝率（長距離の弱点対策）
+      母父系_長距離勝率  : 母父系の長距離勝率
+      父系_芝ダ適性      : 今回の芝/ダートでの父系勝率
+      父系_複勝率        : 父系全体の複勝率（地力の指標）
+    """
+    import os as _os
+    bd = base_dir or _os.path.dirname(_os.path.abspath(__file__))
+    horse_path = _os.path.join(bd, "horse_master.csv")
+    father_path = _os.path.join(bd, "sire_stats_father.csv")
+    bms_path    = _os.path.join(bd, "sire_stats_bms.csv")
+
+    # データが無ければ全部NaNで返す（血統未取得でも動くように）
+    blood_cols = ["父系_今回距離適性", "母父系_今回距離適性",
+                  "父系_長距離勝率", "母父系_長距離勝率",
+                  "父系_芝ダ適性", "父系_複勝率"]
+    if not (_os.path.exists(horse_path) and _os.path.exists(father_path)):
+        for c in blood_cols:
+            df[c] = np.nan
+        return df
+
+    # 各馬の父・母父を結合
+    horse = pd.read_csv(horse_path)
+    horse = horse[horse["horse_id"].astype(str).str.replace(".0", "", regex=False).str.strip() != "horse_id"]
+    horse["horse_id"] = horse["horse_id"].astype(str).str.replace(".0", "", regex=False).str.strip()
+    if "horse_id" in df.columns:
+        df["horse_id"] = df["horse_id"].astype(str).str.replace(".0", "", regex=False).str.strip()
+        # horse_id 欠損の補完: 学習データの大半(約82%)で horse_id が欠損しているため、
+        # horse_id が存在する行から「馬名→horse_id」対応表を作り、欠損行を馬名で補完する。
+        # これにより血統紐づきが約17%→約67%に向上する。
+        df.loc[df["horse_id"].isin(["nan", "", "None"]), "horse_id"] = np.nan
+        if "馬名" in df.columns:
+            has_id = df[df["horse_id"].notna()]
+            name2id = (has_id.dropna(subset=["馬名"])
+                              .drop_duplicates("馬名")
+                              .set_index("馬名")["horse_id"].to_dict())
+            fill = df["馬名"].map(name2id)
+            df["horse_id"] = df["horse_id"].fillna(fill)
+        df = df.merge(horse[["horse_id", "父馬", "母父馬"]], on="horse_id", how="left")
+    else:
+        for c in blood_cols:
+            df[c] = np.nan
+        return df
+
+    # 種牡馬成績を読み込み
+    father = pd.read_csv(father_path)
+    bms    = pd.read_csv(bms_path)
+    # 辞書化（高速参照）: {種牡馬名: {指標: 値}}
+    father_d = father.set_index("父名").to_dict("index") if "父名" in father.columns else {}
+    bms_d    = bms.set_index("母父名").to_dict("index") if "母父名" in bms.columns else {}
+
+    def dist_band_col(d):
+        if pd.isna(d):
+            return None
+        if d <= 1400:
+            return "短距離"
+        elif d <= 2000:
+            return "中距離"
+        else:
+            return "長距離"
+
+    f_dist, b_dist, f_long, b_long, f_turf, f_fuku = [], [], [], [], [], []
+    for _, row in df.iterrows():
+        sire = row.get("父馬")
+        bmsire = row.get("母父馬")
+        dist = pd.to_numeric(row.get("距離"), errors="coerce")
+        band = dist_band_col(dist)
+        is_turf = row.get("is_turf", np.nan)
+
+        # 父系 今回距離適性
+        fs = father_d.get(sire)
+        if fs and band:
+            f_dist.append(fs.get(f"父_{band}勝率", np.nan))
+            f_long.append(fs.get("父_長距離勝率", np.nan))
+            f_fuku.append(fs.get("父_複勝率", np.nan))
+            if pd.notna(is_turf):
+                f_turf.append(fs.get("父_芝勝率" if is_turf == 1 else "父_ダート勝率", np.nan))
+            else:
+                f_turf.append(np.nan)
+        else:
+            f_dist.append(np.nan); f_long.append(np.nan)
+            f_fuku.append(np.nan); f_turf.append(np.nan)
+
+        # 母父系
+        bs = bms_d.get(bmsire)
+        if bs and band:
+            b_dist.append(bs.get(f"母父_{band}勝率", np.nan))
+            b_long.append(bs.get("母父_長距離勝率", np.nan))
+        else:
+            b_dist.append(np.nan); b_long.append(np.nan)
+
+    df["父系_今回距離適性"]  = f_dist
+    df["母父系_今回距離適性"] = b_dist
+    df["父系_長距離勝率"]    = f_long
+    df["母父系_長距離勝率"]  = b_long
+    df["父系_芝ダ適性"]      = f_turf
+    df["父系_複勝率"]        = f_fuku
+
+    n_blood = df["父系_今回距離適性"].notna().sum()
+    print(f"  血統特徴量を付与: {n_blood}/{len(df)}行 ({n_blood/len(df)*100:.1f}%)")
+
+    return df
+
+
 def add_interaction_features(df):
     """
     交互作用特徴量を追加（高精度化）：
@@ -666,39 +858,8 @@ def add_interaction_features(df):
 def build_features(csv_path="race_data_clean.csv", out_path="race_features.csv"):
     print("データ読み込み中...")
     df = load_and_prepare(csv_path)
-
-    print("過去成績を集計中（時間がかかります）...")
-    df = add_horse_history_features(df)
-
-    print("レース内相対特徴量を追加中...")
-    df = add_race_relative_features(df)
-
-    print("騎手・調教師の成績を集計中...")
-    df = add_jockey_trainer_features(df)
-
-    # 距離カテゴリ
-    df["距離カテゴリ"] = pd.cut(
-        df["レース番号"], bins=[0, 4, 8, 12], labels=[1, 2, 3]
-    ).astype(float)
-
-    # 馬ごとの距離カテゴリ別平均着順
-    df = df.sort_values(["馬名", "race_id"]).reset_index(drop=True)
-    dist_avg = []
-    for _, group in df.groupby(["馬名", "距離カテゴリ"]):
-        group = group.copy()
-        group["距離別過去平均着順"] = group["着順_num"].shift(1).expanding().mean()
-        dist_avg.append(group)
-    df = pd.concat(dist_avg).sort_values(["race_id", "馬番"]).reset_index(drop=True)
-
-    print("追加特徴量（競馬場適性・脚質・時期）を生成中...")
-    df = add_extra_advanced_features(df)
-    print("交互作用特徴量を生成中...")
-    df = add_interaction_features(df)
-
-    # 距離を数値に
-    if "距離" in df.columns:
-        df["距離"] = pd.to_numeric(df["距離"], errors="coerce")
-        df["距離"] = df["距離"].fillna(df["距離"].median())
+    print("特徴量を生成中（過去成績・騎手・血統・交互作用、時間がかかります）...")
+    df = _run_feature_pipeline(df)
 
     FEATURE_COLS = [
         "race_id", "馬名", "着順_num",
@@ -744,12 +905,98 @@ def build_features(csv_path="race_data_clean.csv", out_path="race_features.csv")
         "前走好走×人気薄", "前走着順×人気_乖離",
         "斤量×年齢_負担",
         "距離延長×前走好走", "距離短縮×前走好走",
+        # 血統特徴量
+        "父系_今回距離適性", "母父系_今回距離適性",
+        "父系_長距離勝率", "母父系_長距離勝率",
+        "父系_芝ダ適性", "父系_複勝率",
     ]
 
     out = df[[c for c in FEATURE_COLS if c in df.columns]]
     out.to_csv(out_path, index=False, encoding="utf-8-sig")
     print(f"保存完了 → {out_path}（{len(out)}行 × {len(out.columns)}列）")
     return out
+
+
+def _run_feature_pipeline(df):
+    """load_and_prepare 済みの df に対し、学習と同じ特徴量関数を順に適用する。
+    build_features（学習）と build_features_for_prediction（予測）で共通利用し、
+    特徴量計算の二重管理（学習と予測のズレ）を防ぐ。"""
+    df = add_horse_history_features(df)
+    df = add_race_relative_features(df)
+    df = add_jockey_trainer_features(df)
+    df["距離カテゴリ"] = pd.cut(
+        df["レース番号"], bins=[0, 4, 8, 12], labels=[1, 2, 3]
+    ).astype(float)
+    df = df.sort_values(["馬名", "race_id"]).reset_index(drop=True)
+    dist_avg = []
+    for _, group in df.groupby(["馬名", "距離カテゴリ"]):
+        group = group.copy()
+        group["距離別過去平均着順"] = group["着順_num"].shift(1).expanding().mean()
+        dist_avg.append(group)
+    if dist_avg:
+        df = pd.concat(dist_avg).sort_values(["race_id", "馬番"]).reset_index(drop=True)
+    df = add_extra_advanced_features(df)
+    df = add_blood_features(df)
+    df = add_interaction_features(df)
+    if "距離" in df.columns:
+        df["距離"] = pd.to_numeric(df["距離"], errors="coerce")
+        df["距離"] = df["距離"].fillna(df["距離"].median())
+    return df
+
+
+def build_features_for_prediction(race_df, history_df):
+    """予測対象レース(race_df, 着順なし)に、履歴(history_df)から
+    学習と同一の特徴量を付与する。学習(build_features)と同じ
+    _run_feature_pipeline を通すので、距離適性・騎手トレンド・好調度・
+    血統を含む全特徴量が、学習と完全に同じロジックで計算される。
+
+    戻り値: 予測対象レースの行のみ（特徴量付き）。
+    """
+    race_df = race_df.copy()
+    history_df = history_df.copy()
+    race_df["race_id"] = race_df["race_id"].astype(str)
+    history_df["race_id"] = history_df["race_id"].astype(str)
+    target_ids = set(race_df["race_id"].unique())
+
+    # 高速化: 全履歴(約32万行)ではなく、予測対象に関連するレースだけに絞る。
+    # 各特徴量が必要とするデータ:
+    #   ・馬の過去成績/距離適性/好調度 → 予測対象馬(馬名)の過去走
+    #   ・騎手トレンド/騎手勝率 → 予測対象の騎手が乗った全レース
+    #   ・調教師成績 → 予測対象の調教師のレース
+    #   ・血統 → sire_stats CSV から引く(履歴不要)
+    # これらの和集合だけ残せば、計算結果は全履歴使用時と同一になる。
+    try:
+        target_horses   = set(race_df["馬名"].dropna().astype(str)) if "馬名" in race_df.columns else set()
+        target_jockeys  = set(race_df["騎手"].dropna().astype(str)) if "騎手" in race_df.columns else set()
+        target_trainers = set(race_df["調教師"].dropna().astype(str)) if "調教師" in race_df.columns else set()
+        mask = pd.Series(False, index=history_df.index)
+        if target_horses and "馬名" in history_df.columns:
+            mask |= history_df["馬名"].astype(str).isin(target_horses)
+        if target_jockeys and "騎手" in history_df.columns:
+            mask |= history_df["騎手"].astype(str).isin(target_jockeys)
+        if target_trainers and "調教師" in history_df.columns:
+            mask |= history_df["調教師"].astype(str).isin(target_trainers)
+        if mask.any():
+            history_df = history_df[mask].copy()
+    except Exception:
+        pass  # 絞り込み失敗時は全履歴を使う（安全側）
+
+    # 予測対象に無い列を NaN で補い、履歴と列を揃える（縦結合のため）
+    for col in history_df.columns:
+        if col not in race_df.columns:
+            race_df[col] = np.nan
+    # 予測対象行の着順はまだ無い（未来）。集計の材料にならないよう NaN にする。
+    for c in ["着順", "着順_num", "タイム", "上り", "通過", "着差", "賞金"]:
+        if c in race_df.columns:
+            race_df[c] = np.nan
+
+    combined = pd.concat([history_df, race_df[history_df.columns]], ignore_index=True)
+    combined = load_and_prepare(df=combined)
+    combined = _run_feature_pipeline(combined)
+
+    # 予測対象レースの行だけ取り出す
+    result = combined[combined["race_id"].isin(target_ids)].copy()
+    return result
 
 
 if __name__ == "__main__":

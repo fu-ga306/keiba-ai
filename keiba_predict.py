@@ -312,15 +312,20 @@ def build_report(pdf, race_id, jyo_name, race_no,
     lines.append("  ※ 期待値・オッズは参考情報として表示（印の決定には使用しません）")
     lines.append("")
 
-    # スコアリング（100点満点）
-    # AI予測順位（勝ち確率）80点 + 戦略該当ボーナス20点
-    # 期待値は印の決定には使わず、参考情報として表示するのみ
-    pdf["_ai_rank"]  = pdf["勝ち確率"].rank(ascending=False)
+    # スコアリング: 印（◎○▲）は実力評価（MF勝ち確率）の順位で決める。
+    # 戦略ボーナスは外す（期待値の妙味は「買い目サマリー」で別途絞るため、
+    # 印に混ぜると実力評価が歪む）。役割分担:
+    #   印     = 実力順（MFモデル=人気を見ない実力評価）
+    #   買い目 = 期待値で絞る（期待値+0.4で回収率121%・analyze結果）
+    # USE_MF_FOR_MARKS=False で従来(通常モデル)の印に戻せる。
+    USE_MF_FOR_MARKS = True
+    if USE_MF_FOR_MARKS and pdf["MF勝ち確率"].notna().any():
+        rank_basis = "MF勝ち確率"
+    else:
+        rank_basis = "勝ち確率"
+    pdf["_ai_rank"]  = pdf[rank_basis].rank(ascending=False)
     n = len(pdf)
-    pdf["_score"] = (
-        (1 - (pdf["_ai_rank"] - 1) / n) * 80 +
-        pdf["該当戦略"].apply(lambda s: 20 if s else 0)
-    )
+    pdf["_score"] = (1 - (pdf["_ai_rank"] - 1) / n) * 100
     final_top = pdf.sort_values("_score", ascending=False).head(5)
 
     final_marks  = ["◎", "○", "▲", "△", "×"]
@@ -468,8 +473,28 @@ def build_report(pdf, race_id, jyo_name, race_no,
         )
     lines.append("")
 
+    # ── 期待値ベースの勝負買い目（回収率重視・実戦投入用）─────────────
+    # バックテストの最適閾値: 単勝期待値>=+0.4 で回収率121.3%（予測1位×オッズ1.5〜20倍）。
+    # 「印（実力評価）」とは別に、実際に賭けて勝てる馬を期待値で絞って示す。
+    TARGET_EV = 0.4
+    bet_candidates = pdf[
+        (pdf["単勝期待値"] >= TARGET_EV) &
+        (pdf["単勝オッズ"] >= 1.5) & (pdf["単勝オッズ"] <= 20.0)
+    ].sort_values("単勝期待値", ascending=False)
+    lines.append("  【💰 期待値ベースの勝負馬（回収率重視・EV>=+0.4で過去回収率121%）】")
+    if len(bet_candidates) > 0:
+        for _, r in bet_candidates.head(3).iterrows():
+            lines.append(
+                f"     ★ {r['馬名']}（{r['単勝オッズ']:.1f}倍 {int(r['人気'])}人気） "
+                f"期待値{_ev(r['単勝期待値'])}  勝率{r['勝ち確率']*100:.1f}%  → 単勝勝負"
+            )
+        lines.append("     ※ 該当馬がいない時は『見送り』が正解（無理に賭けない）。")
+    else:
+        lines.append("     該当なし → このレースは見送り推奨（期待値+0.4以上の馬がいない）。")
+    lines.append("")
+
     # ── 買い目サマリー（複勝・馬連・ワイド・馬単・3連複） ──────────────
-    lines.append("  【買い目サマリー】")
+    lines.append("  【買い目サマリー（印ベース・参考）】")
     honmei = final_top.iloc[0]
     taiko  = final_top.iloc[1] if len(final_top) > 1 else None
     ana    = final_top.iloc[2] if len(final_top) > 2 else None
@@ -589,8 +614,8 @@ def predict_race(race_id: str):
         except Exception as e:
             print(f"  市場フリーモデルスキップ: {e}")
 
-    # 履歴データ読み込み
-    hist_path = os.path.join(BASE_DIR, "race_features.csv")
+    # 履歴データ読み込み（一本化は騎手・調教師など全列が必要なので生データを使う）
+    hist_path = os.path.join(BASE_DIR, "race_data_clean.csv")
     print(f"履歴データ読み込み中...")
     history_df = pd.read_csv(hist_path, low_memory=False)
     print(f"  読み込み完了: {len(history_df)}行")
@@ -604,9 +629,18 @@ def predict_race(race_id: str):
         sys.exit(1)
     print(f"  {len(race_df)}頭分取得完了")
 
-    # 特徴量構築
+    # 特徴量構築（一本化: 学習と同じパイプライン。失敗時は従来法にフォールバック）
     print("特徴量構築中...")
-    pdf = build_features(race_df, history_df)
+    try:
+        import features as _features
+        pdf = _features.build_features_for_prediction(race_df, history_df)
+        if pdf is None or len(pdf) == 0 or "馬名" not in pdf.columns:
+            raise ValueError("一本化パイプラインの出力が不正")
+        print(f"  特徴量構築成功(一本化): {len(pdf)}行")
+    except Exception as e_uni:
+        print(f"  一本化パイプライン不可({e_uni}) → 従来法にフォールバック")
+        pdf = build_features(race_df, history_df)
+        print(f"  特徴量構築成功(従来): {len(pdf)}行")
 
     # 予測
     print("予測中...")
@@ -615,29 +649,44 @@ def predict_race(race_id: str):
     pdf["予測スコア"] = preds
     pdf["予測順位"]   = pdf["予測スコア"].rank(ascending=False).astype(int)
 
-    # 案B: 勝ち確率は「生確率」をそのまま使う（正規化しない）。
-    # winモデルが出す「この馬が1着になる絶対確率」。
-    win_probs = np.clip(np.nan_to_num(preds, nan=0.0), 0, 1)
-    pdf["勝ち確率"] = win_probs
+    # 勝ち確率はレース内で正規化（合計100%・FUJIAI型No-Odds方式）。
+    # 生確率は校正されているがレース内合計が100%にならない（低めに出る）。
+    # 期待値計算・表示を適正にするため、レース内で正規化する。
+    win_raw = np.clip(np.nan_to_num(preds, nan=0.0), 0, 1)
+    win_sum = win_raw.sum()
+    win_probs = win_raw / win_sum if win_sum > 0 else np.ones(len(win_raw)) / len(win_raw)
+    pdf["勝ち確率"]   = win_probs
+    pdf["勝ち確率_生"] = win_raw  # 生確率も保持（参考・校正値）
 
     if is_multi:
-        # ── 連対率・複勝率を独立モデルで予想（生確率） ──
+        # ── 連対率・複勝率を独立モデルで予想 ──
         X_p2 = pdf.reindex(columns=place2_cols)
         X_p3 = pdf.reindex(columns=place3_cols)
         p2_raw = np.mean([m.predict_proba(X_p2)[:, 1] for m in place2_models], axis=0)
         p3_raw = np.mean([m.predict_proba(X_p3)[:, 1] for m in place3_models], axis=0)
         p2_raw = np.clip(np.nan_to_num(p2_raw, nan=0.0), 0, 1)
         p3_raw = np.clip(np.nan_to_num(p3_raw, nan=0.0), 0, 1)
-        # 案B整合性: 勝率 ≤ 連対率 ≤ 複勝率（包含関係）を生確率で保証する
-        place2 = np.maximum(p2_raw, win_probs)
-        place3 = np.clip(np.maximum(p3_raw, place2), 0, 1)
+        # 正規化（FUJIAI型）: 勝率は合計100%、連対率は合計≒200%（2着以内2頭)、
+        # 複勝率は合計≒300%（3着以内3頭）にする。少頭数では枠数で頭打ち。
+        n_runners = len(pdf)
+        p2_sum = p2_raw.sum()
+        p3_sum = p3_raw.sum()
+        target2 = min(2, n_runners)  # 2着以内の枠数
+        target3 = min(3, n_runners)  # 3着以内の枠数
+        place2 = (p2_raw / p2_sum * target2) if p2_sum > 0 else np.full(n_runners, target2 / n_runners)
+        place3 = (p3_raw / p3_sum * target3) if p3_sum > 0 else np.full(n_runners, target3 / n_runners)
+        place2 = np.clip(place2, 0, 1)
+        place3 = np.clip(place3, 0, 1)
+        # 包含関係を保証: 勝率 ≤ 連対率 ≤ 複勝率
+        place2 = np.maximum(place2, win_probs)
+        place3 = np.clip(np.maximum(place3, place2), 0, 1)
         pdf["連対確率"]  = place2
         pdf["複勝確率"]  = place3
         pdf["3着内確率"] = place3
         # 独立モデルによる連対・複勝の順位（券種推奨に使う）
         pdf["連対順位"] = pd.Series(place2, index=pdf.index).rank(ascending=False)
         pdf["複勝順位"] = pd.Series(place3, index=pdf.index).rank(ascending=False)
-        print("  連対率・複勝率を独立モデルで予想完了（生確率・包含関係保証）")
+        print("  連対率・複勝率を独立モデルで予想完了（正規化・包含関係保証）")
     else:
         # ── 旧来のハーヴィル変換（生の勝率ベース） ──
         place2, place3 = calc_place_probs_harvill(win_probs)
