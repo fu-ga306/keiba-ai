@@ -270,9 +270,9 @@ def build_report(pdf, race_id, jyo_name, race_no,
             row = pdf[pdf["馬名"] == h].iloc[0]
             st  = f"  [!!]{row['該当戦略']}" if row.get("該当戦略") else ""
             lines.append(
-                f"    ✅ {h}  勝率{row['勝ち確率']*100:.1f}%  "
+                f"    [+] {h}  勝率{row['勝ち確率']*100:.1f}%  "
                 f"連対率{row['連対確率']*100:.1f}%  複勝率{row['複勝確率']*100:.1f}%  "
-                f"期待値{row['単勝期待値']:+.2f}  {row['単勝オッズ']:.1f}倍{st}"
+                f"期待値{_ev(row['単勝期待値'])}  {_odds(row['単勝オッズ'])}{st}"
             )
     else:
         lines.append("    （なし）")
@@ -545,7 +545,7 @@ def build_report(pdf, race_id, jyo_name, race_no,
         fuku_ev = h_place_p * est_fuku_odds - 1
         lines.append(
             f"  複勝   : ◎{honmei['馬名']}  "
-            f"（複勝率{h_place_p*100:.1f}% / 推定オッズ約{est_fuku_odds:.1f}倍 / 推定EV{fuku_ev:+.2f}）"
+            f"（複勝率{h_place_p*100:.1f}% / 推定オッズ約{est_fuku_odds:.1f}倍 / 推定EV{_ev(fuku_ev)}）"
         )
 
     if taiko is not None:

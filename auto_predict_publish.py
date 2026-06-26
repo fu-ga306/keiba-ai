@@ -208,12 +208,26 @@ def stop_keiba_auto():
     try:
         with open(pid_file) as f:
             pid = int(f.read().strip())
-        import signal
-        os.kill(pid, signal.SIGTERM)
-        os.remove(pid_file)
-        print(f"  keiba_auto.py 停止完了 (PID: {pid})")
+        import signal, subprocess
+        try:
+            result = subprocess.run(
+                ["taskkill", "/F", "/PID", str(pid)],
+                capture_output=True, text=True
+            )
+            if result.returncode == 0:
+                print(f"  keiba_auto.py 停止完了 (PID: {pid})")
+            else:
+                print(f"  keiba_auto.py 既に終了済み (PID: {pid})")
+        except Exception:
+            os.kill(pid, signal.SIGTERM)
+            print(f"  keiba_auto.py 停止完了 (PID: {pid})")
+    except (OSError, PermissionError) as e:
+        print(f"  keiba_auto.py 既に終了済み (無視): {e}")
     except Exception as e:
         print(f"  keiba_auto.py 停止エラー: {e}")
+    finally:
+        if os.path.exists(pid_file):
+            os.remove(pid_file)
 
 
 def main():

@@ -917,11 +917,55 @@ def build_features(csv_path="race_data_clean.csv", out_path="race_features.csv")
     return out
 
 
+def add_distance_stamina_features(df):
+    """距離適性・スタミナ系特徴量（経験最長距離・長距離複勝率・前走余力 など）。
+    add_horse_history_features() 後に呼ぶこと（前走着順・距離延長幅が前提）。"""
+    df = df.sort_values(["馬名", "race_id"]).reset_index(drop=True)
+    g = df.groupby("馬名")
+
+    _cur_dist = pd.to_numeric(df["距離"], errors="coerce")
+
+    # 経験最長距離（過去にこなした最長距離、shift(1)でリーク防止）
+    df["経験最長距離"] = g["距離"].transform(
+        lambda x: pd.to_numeric(x, errors="coerce").shift(1).expanding().max()
+    )
+
+    # 経験範囲超過（今回距離が経験最長を超える量、正値=未知領域）
+    df["経験範囲超過"] = (_cur_dist - df["経験最長距離"]).clip(lower=0)
+
+    # 延長×距離経験不足（延長幅 × 未経験フラグ）
+    _encho = df["距離延長幅"] if "距離延長幅" in df.columns else pd.Series(0.0, index=df.index)
+    _mikeiken = (_cur_dist > df["経験最長距離"]).astype(float)
+    df["延長×距離経験不足"] = _encho * _mikeiken
+
+    # 長距離複勝率（2001m以上での過去top3率、shift(1)でリーク防止）
+    df["_is_long_tmp"]   = (pd.to_numeric(df["距離"], errors="coerce") >= 2001).astype(float)
+    df["_long_top3_tmp"] = ((df["着順_num"] <= 3) & (df["_is_long_tmp"] == 1)).astype(float)
+    _long_cnt = g["_is_long_tmp"].transform(lambda x: x.shift(1).expanding().sum())
+    _long_t3  = g["_long_top3_tmp"].transform(lambda x: x.shift(1).expanding().sum())
+    df["長距離複勝率"] = np.where(_long_cnt > 0, _long_t3 / _long_cnt, np.nan)
+    df = df.drop(columns=["_is_long_tmp", "_long_top3_tmp"], errors="ignore")
+
+    # 前走余力（1着=1.0、2-3着=0.5、それ以外=0.0）
+    _prev_chaku = df["前走着順"] if "前走着順" in df.columns else pd.Series(np.nan, index=df.index)
+    df["前走余力"] = np.where(
+        _prev_chaku.isna(), np.nan,
+        np.where(_prev_chaku == 1, 1.0,
+        np.where(_prev_chaku <= 3, 0.5, 0.0))
+    )
+
+    # 延長×前走余力（距離延長が大きいほど前走余力が重要）
+    df["延長×前走余力"] = _encho * df["前走余力"]
+
+    return df
+
+
 def _run_feature_pipeline(df):
     """load_and_prepare 済みの df に対し、学習と同じ特徴量関数を順に適用する。
     build_features（学習）と build_features_for_prediction（予測）で共通利用し、
     特徴量計算の二重管理（学習と予測のズレ）を防ぐ。"""
     df = add_horse_history_features(df)
+    df = add_distance_stamina_features(df)
     df = add_race_relative_features(df)
     df = add_jockey_trainer_features(df)
     df["距離カテゴリ"] = pd.cut(
