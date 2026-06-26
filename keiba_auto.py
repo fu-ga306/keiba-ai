@@ -771,6 +771,19 @@ def make_email_body(race_id, pdf):
         lines.append(f"  単勝期待値: {ev_win_str}  複勝期待値: {ev_place_str}")
         lines.append(f"  推奨賭け率（1/4Kelly）: {kelly_str}")
 
+        # 人気帯別バックテスト回収率コメント（MF◎ 3,144レース実績）
+        if mark == "◎" and pd.notna(pop) and pop > 0:
+            pop_i = int(pop)
+            if pop_i == 1:
+                lines.append("  [BT] 1番人気◎ → 単勝回収率97.8%（赤字） / 単勝見送り推奨")
+                lines.append("       複勝・ワイドの軸 or 人気薄との組み合わせで勝負")
+            elif pop_i <= 3:
+                lines.append(f"  [BT] 2-3番人気◎ → 単勝回収率133.2%（黒字）")
+            elif pop_i <= 6:
+                lines.append(f"  [BT] 4-6番人気◎ → 単勝回収率172.3%（妙味あり）")
+            else:
+                lines.append(f"  [BT] 7番人気以下◎ → 単勝回収率311.9%（積極的に狙う）")
+
         if strategy:
             verdict = f"【高回収率該当】{strategy}"
         elif pd.notna(ev_win):
@@ -785,7 +798,7 @@ def make_email_body(race_id, pdf):
             else:
                 verdict = "[--] 見送り"
         else:
-            verdict = "⚠️ オッズ確定後に判断"
+            verdict = "[?] オッズ確定後に判断"
 
         lines.append(f"  【判定】{verdict}")
 
