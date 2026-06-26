@@ -368,9 +368,23 @@ def build_report(pdf, race_id, jyo_name, race_no,
         )
         if tag_s:
             lines.append(f"  │           {tag_s}")
+        # ◎が1番人気 → 単勝は回収率97.8%（赤字）のため見送り推奨
+        if i == 0 and pd.notna(pop) and int(pop) == 1:
+            lines.append("  │  [注意] 1番人気◎ → 単勝回収率97.8%（赤字）/ 単勝見送り推奨")
+            lines.append("  │         複勝・ワイドの軸 or 人気薄との組み合わせで勝負")
+        # ◎が7番人気以下 → 回収率311.9%の好機
+        elif i == 0 and pd.notna(pop) and int(pop) >= 7:
+            lines.append("  │  [狙い目] 7番人気以下◎ → 回収率311.9% / 単勝積極的に狙う")
+        elif i == 0 and pd.notna(pop) and int(pop) >= 4:
+            lines.append("  │  [妙味] 4-6番人気◎ → 回収率172.3% / 単勝で妙味あり")
         if i < 4:
             lines.append("  ├─────────────────────────────────────────────────────────┤")
     lines.append("  └─────────────────────────────────────────────────────────┘")
+    lines.append("")
+    # 人気帯別バックテスト参考（MFモデル ◎単勝 3,144レース）
+    lines.append("  [BT参考] MF◎ 人気帯別単勝回収率（3,144レース）")
+    lines.append("  1番人気: 97.8%[NG]  2-3番人気: 133.2%  4-6番人気: 172.3%  7番人気以下: 311.9%")
+    lines.append("  MF◎xEV>=0.4: 187.4%（529回）  MF◎xEV>=0.3: 179.0%（651回）")
     lines.append("")
 
     # ── 券種推奨（3モデルによる役割判定） ────────────────────────────
@@ -460,10 +474,10 @@ def build_report(pdf, race_id, jyo_name, race_no,
     # ③ 総合判断（このレースを買うべきか）
     lines.append("  ③ レース総合判断")
     has_myumi = len(candidates) > 0
-    plus_ev_count = (pdf["単勝期待値"] >= 0.3).sum()
+    plus_ev_count = (pdf["単勝期待値"] >= 0.4).sum()
     if plus_ev_count > 0 or has_myumi:
         lines.append(
-            f"     妙味あり（期待値0.3以上が{plus_ev_count}頭）。"
+            f"     妙味あり（期待値0.4以上が{plus_ev_count}頭）。"
             f"狙い目があるレース。"
         )
     else:
@@ -481,12 +495,21 @@ def build_report(pdf, race_id, jyo_name, race_no,
         (pdf["単勝期待値"] >= TARGET_EV) &
         (pdf["単勝オッズ"] >= 1.5) & (pdf["単勝オッズ"] <= 20.0)
     ].sort_values("単勝期待値", ascending=False)
-    lines.append("  【[EV] 期待値ベースの勝負馬（回収率重視・EV>=+0.4で過去回収率121%）】")
+    lines.append("  【[EV] 期待値ベースの勝負馬（EV>=+0.4 × オッズ1.5-20倍 / BT回収率178.4%）】")
     if len(bet_candidates) > 0:
         for _, r in bet_candidates.head(3).iterrows():
+            pop_r = r.get("人気", np.nan)
+            pop_comment = ""
+            if pd.notna(pop_r):
+                if int(pop_r) == 1:
+                    pop_comment = " [1番人気=単勝見送り推奨]"
+                elif int(pop_r) >= 7:
+                    pop_comment = " [穴=回収率311.9%圏内]"
+                elif int(pop_r) >= 4:
+                    pop_comment = " [中穴=回収率172.3%圏内]"
             lines.append(
-                f"     ★ {r['馬名']}（{r['単勝オッズ']:.1f}倍 {int(r['人気'])}人気） "
-                f"期待値{_ev(r['単勝期待値'])}  勝率{r['勝ち確率']*100:.1f}%  → 単勝勝負"
+                f"     ★ {r['馬名']}（{r['単勝オッズ']:.1f}倍 {int(pop_r) if pd.notna(pop_r) else '-'}人気）"
+                f" 期待値{_ev(r['単勝期待値'])}  勝率{r['勝ち確率']*100:.1f}%{pop_comment}"
             )
         lines.append("     ※ 該当馬がいない時は『見送り』が正解（無理に賭けない）。")
     else:
@@ -500,10 +523,19 @@ def build_report(pdf, race_id, jyo_name, race_no,
     ana    = final_top.iloc[2] if len(final_top) > 2 else None
 
     h_odds = honmei.get("単勝オッズ", np.nan)
+    h_pop  = honmei.get("人気", np.nan)
+    _tan_comment = ""
+    if pd.notna(h_pop):
+        if int(h_pop) == 1:
+            _tan_comment = " ← 1番人気/回収率97.8%[見送り推奨]"
+        elif int(h_pop) >= 7:
+            _tan_comment = " ← 穴/回収率311.9%[積極買い]"
+        elif int(h_pop) >= 4:
+            _tan_comment = " ← 中穴/回収率172.3%[妙味あり]"
     lines.append(
         (f"  単勝   : ◎{honmei['馬名']}  "
-         f"（{h_odds:.1f}倍 / EV{_ev(honmei['単勝期待値'])}）")
-        if pd.notna(h_odds) else f"  単勝   : ◎{honmei['馬名']}"
+         f"（{h_odds:.1f}倍 / EV{_ev(honmei['単勝期待値'])}）{_tan_comment}")
+        if pd.notna(h_odds) else f"  単勝   : ◎{honmei['馬名']}{_tan_comment}"
     )
 
     # 複勝：◎の複勝確率×想定複勝オッズ(単勝オッズの目安1/3〜1/4)で期待値推定
