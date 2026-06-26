@@ -134,13 +134,13 @@ def build_report(pdf, race_id, jyo_name, race_no,
     from datetime import datetime
     now = datetime.now().strftime("%Y/%m/%d %H:%M")
     lines.append(sep())
-    lines.append(f"  🏇 競馬AI 詳細予想レポート  {now}")
+    lines.append(f"  [競馬AI 詳細予想レポート]  {now}")
     lines.append(f"  レースID : {race_id}   {jyo_name} {race_no}R")
     lines.append(sep())
     lines.append("")
 
     # レース概要
-    lines.append(header("📋 レース概要", "─"))
+    lines.append(header("[レース概要]", "─"))
     lines.append(f"  コース   : {turf} {dist}m")
     lines.append(f"  馬場状態 : {baba}")
     lines.append(f"  クラス   : {cls}")
@@ -148,7 +148,7 @@ def build_report(pdf, race_id, jyo_name, race_no,
     lines.append("")
 
     # ── 全馬詳細一覧 ──────────────────────────────────────────────────────
-    lines.append(header("🐴 全馬詳細評価（予測順位順）", "─"))
+    lines.append(header("[全馬詳細評価（予測順位順）]", "─"))
     lines.append("")
 
     # 列ヘッダー
@@ -240,7 +240,7 @@ def build_report(pdf, race_id, jyo_name, race_no,
             block.append(f"     単勝期待値: {_ev(ev)}  推奨賭け率(1/4Kelly): {kelly_s}")
             block.append(f"     過去勝率  : {past_wr_s}")
             if strategy:
-                block.append(f"     🔥 バックテスト戦略該当: {strategy}")
+                block.append(f"     [戦略該当] {strategy}")
             block.append("")
         return block
 
@@ -248,16 +248,16 @@ def build_report(pdf, race_id, jyo_name, race_no,
     top5_ev = pdf[pdf["勝ち確率"] >= 0.03].sort_values("単勝期待値", ascending=False).head(5)
 
     lines += rec_block(
-        "純粋AI予想 TOP5", "🤖", top5_ai,
+        "純粋AI予想 TOP5", "[AI]", top5_ai,
         "モデルが算出した勝ち確率のみで選出。オッズ・人気は一切考慮しない。"
     )
     lines += rec_block(
-        "期待値ベース推奨 TOP5", "💰", top5_ev,
+        "期待値ベース推奨 TOP5", "[EV]", top5_ev,
         "期待値（勝ち確率×オッズ-1）が高い順。馬券的妙味を重視した選出。"
     )
 
     # ── 2軸比較サマリー ──────────────────────────────────────────────────
-    lines.append(header("🔍 2軸比較サマリー", "─"))
+    lines.append(header("[2軸比較サマリー]", "─"))
     ai_names = top5_ai["馬名"].tolist()
     ev_names = top5_ev["馬名"].tolist()
     both    = [h for h in ai_names if h in ev_names]
@@ -268,7 +268,7 @@ def build_report(pdf, race_id, jyo_name, race_no,
     if both:
         for h in both:
             row = pdf[pdf["馬名"] == h].iloc[0]
-            st  = f"  🔥{row['該当戦略']}" if row.get("該当戦略") else ""
+            st  = f"  [!!]{row['該当戦略']}" if row.get("該当戦略") else ""
             lines.append(
                 f"    ✅ {h}  勝率{row['勝ち確率']*100:.1f}%  "
                 f"連対率{row['連対確率']*100:.1f}%  複勝率{row['複勝確率']*100:.1f}%  "
@@ -283,7 +283,7 @@ def build_report(pdf, race_id, jyo_name, race_no,
         for h in ai_only:
             row = pdf[pdf["馬名"] == h].iloc[0]
             lines.append(
-                f"    🤖 {h}  勝率{row['勝ち確率']*100:.1f}%  "
+                f"    [AI] {h}  勝率{row['勝ち確率']*100:.1f}%  "
                 f"期待値{_ev(row['単勝期待値'])}  {_odds(row['単勝オッズ'])}"
             )
     else:
@@ -295,7 +295,7 @@ def build_report(pdf, race_id, jyo_name, race_no,
         for h in ev_only:
             row = pdf[pdf["馬名"] == h].iloc[0]
             lines.append(
-                f"    💰 {h}  勝率{row['勝ち確率']*100:.1f}%  "
+                f"    [EV] {h}  勝率{row['勝ち確率']*100:.1f}%  "
                 f"期待値{_ev(row['単勝期待値'])}  {_odds(row['単勝オッズ'])}"
             )
     else:
@@ -304,7 +304,7 @@ def build_report(pdf, race_id, jyo_name, race_no,
     lines.append("")
 
     # ── 最終予想（2軸を統合した結論） ──────────────────────────────────
-    lines.append(header("🏆 最終予想（総合判定）", "═"))
+    lines.append(header("[最終予想（総合判定）]", "═"))
     lines.append("  【判定ロジック】")
     lines.append("  ① 両方選出 × 戦略該当  → 最強推奨（◎）")
     lines.append("  ② AI予測順位が上位（期待値はマイナスでも可）")
@@ -375,7 +375,7 @@ def build_report(pdf, race_id, jyo_name, race_no,
 
     # ── 券種推奨（3モデルによる役割判定） ────────────────────────────
     if "券種推奨" in pdf.columns and (pdf["券種推奨"] != "").any():
-        lines.append(header("🎯 券種推奨（勝ち・連対・複勝の3モデル判定）", "─"))
+        lines.append(header("[券種推奨（3モデル判定）]", "─"))
         lines.append("  軸◎=勝てる本命  軸(人気)=実力上位だが妙味薄  相手○=連対候補  穴▲=複勝妙味")
         lines.append("")
         role_order = {"軸◎": 0, "軸(人気)": 1, "相手○": 2, "穴▲": 3}
@@ -405,8 +405,8 @@ def build_report(pdf, race_id, jyo_name, race_no,
         lines.append("  ※ 連対率・複勝率は専用モデルが各馬独立に予想した値です。")
         lines.append("")
 
-    # ── 💎 妙味重視の狙い目（回収率重視） ────────────────────────────
-    lines.append(header("💎 妙味重視の狙い目（回収率重視）", "─"))
+    # ── [妙味重視の狙い目（回収率重視）] ────────────────────────────
+    lines.append(header("[妙味重視の狙い目（回収率重視）]", "─"))
     lines.append("  市場(人気)を出し抜ける可能性のある買い方。妙味がなければ「見送り推奨」。")
     lines.append("")
 
@@ -481,7 +481,7 @@ def build_report(pdf, race_id, jyo_name, race_no,
         (pdf["単勝期待値"] >= TARGET_EV) &
         (pdf["単勝オッズ"] >= 1.5) & (pdf["単勝オッズ"] <= 20.0)
     ].sort_values("単勝期待値", ascending=False)
-    lines.append("  【💰 期待値ベースの勝負馬（回収率重視・EV>=+0.4で過去回収率121%）】")
+    lines.append("  【[EV] 期待値ベースの勝負馬（回収率重視・EV>=+0.4で過去回収率121%）】")
     if len(bet_candidates) > 0:
         for _, r in bet_candidates.head(3).iterrows():
             lines.append(

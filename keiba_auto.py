@@ -200,8 +200,8 @@ def get_race_data(race_id):
 
         race_div = soup.find("div", class_="RaceData01")
         if race_div:
-            text = race_div.get_text()
-            print(f"  RaceData01: {text[:80]}")
+            text = race_div.get_text().replace("\xa0", " ")
+            print(f"  RaceData01: {text[:80].encode('cp932', errors='replace').decode('cp932')}")
             dist_match = re.search(r"(\d{3,4})m", text)
             race_info["距離"] = int(dist_match.group(1)) if dist_match else None
             race_info["馬場種別"] = "芝" if "芝" in text else "ダート"
@@ -772,18 +772,18 @@ def make_email_body(race_id, pdf):
         lines.append(f"  推奨賭け率（1/4Kelly）: {kelly_str}")
 
         if strategy:
-            verdict = f"🔥【高回収率バックテスト該当】{strategy}"
+            verdict = f"【高回収率該当】{strategy}"
         elif pd.notna(ev_win):
             if win_p < 0.03:
-                verdict = "❌ 見送り（超大穴・ノイズ判定）"
+                verdict = "[--] 見送り（超大穴・ノイズ判定）"
             elif ev_win >= 1.0 and win_p >= 0.12:
-                verdict = "✅ 強く買い推奨"
+                verdict = "[++] 強く買い推奨"
             elif ev_win >= 0.5 and win_p >= 0.06:
-                verdict = "🟡 買い推奨"
+                verdict = "[~] 買い推奨"
             elif ev_win >= 0.2 and win_p >= 0.04:
-                verdict = "🟢 買い検討"
+                verdict = "[OK] 買い検討"
             else:
-                verdict = "❌ 見送り"
+                verdict = "[--] 見送り"
         else:
             verdict = "⚠️ オッズ確定後に判断"
 
@@ -793,7 +793,7 @@ def make_email_body(race_id, pdf):
 
     valid_pdf = pdf[pdf["勝ち確率"] >= 0.03]
 
-    lines.append("\n📊 単勝期待値ランキング TOP3（勝率3%以上）")
+    lines.append("\n[単勝期待値ランキング] TOP3（勝率3%以上）")
     for _, row in valid_pdf.sort_values("単勝期待値", ascending=False).head(3).iterrows():
         ev    = row.get("単勝期待値", np.nan)
         odds  = row.get("単勝オッズ", np.nan)
@@ -804,7 +804,7 @@ def make_email_body(race_id, pdf):
                 f"(確率{win_p*100:.1f}% × {odds}倍)"
             )
 
-    lines.append("\n📊 複勝期待値ランキング TOP3（勝率3%以上）")
+    lines.append("\n[複勝期待値ランキング] TOP3（勝率3%以上）")
     for _, row in valid_pdf.sort_values("複勝期待値", ascending=False).head(3).iterrows():
         ev_p    = row.get("複勝期待値", np.nan)
         place_p = row.get("複勝確率", np.nan)
@@ -819,7 +819,7 @@ def make_email_body(race_id, pdf):
 
     # ── 馬券種別 買い目提案 ──────────────────────────────────────────
     lines.append("\n" + "=" * 40)
-    lines.append("🎯 買い目提案")
+    lines.append("[買い目提案]")
     lines.append("=" * 40)
 
     # 単勝推奨
@@ -832,7 +832,7 @@ def make_email_body(race_id, pdf):
             kelly = row.get("推奨賭け率", np.nan)
             kelly_s = f"{kelly*100:.1f}%" if pd.notna(kelly) and kelly > 0 else "-"
             lines.append(
-                f"  ✅ {row['馬名']} {odd}倍 "
+                f"  [+] {row['馬名']} {odd}倍 "
                 f"期待値{ev:+.2f} Kelly:{kelly_s} "
                 f"({row['該当戦略']})"
             )
@@ -860,7 +860,7 @@ def make_email_body(race_id, pdf):
             pp = row["複勝確率"]
             ev = row.get(col, np.nan)
             lines.append(
-                f"  ✅ {row['馬名']} {odds_s} "
+                f"  [+] {row['馬名']} {odds_s} "
                 f"複勝確率{pp*100:.1f}% 期待値{ev:+.2f}"
             )
     else:
@@ -877,7 +877,7 @@ def make_email_body(race_id, pdf):
             n1 = pdf[pdf["馬番"].astype(str) == u1]["馬名"].iloc[0] if len(pdf[pdf["馬番"].astype(str) == u1]) > 0 else u1
             n2 = pdf[pdf["馬番"].astype(str) == u2]["馬名"].iloc[0] if len(pdf[pdf["馬番"].astype(str) == u2]) > 0 else u2
             ev = bet["ワイド期待値"]
-            mark = "✅" if ev >= 0 else "△"
+            mark = "[+]" if ev >= 0 else "△"
             lines.append(
                 f"  {mark} {n1} × {n2} "
                 f"{bet['ワイドオッズ_min']}〜{bet['ワイドオッズ_max']}倍 "
@@ -895,7 +895,7 @@ def make_email_body(race_id, pdf):
             n1 = pdf[pdf["馬番"].astype(str) == u1]["馬名"].iloc[0] if len(pdf[pdf["馬番"].astype(str) == u1]) > 0 else u1
             n2 = pdf[pdf["馬番"].astype(str) == u2]["馬名"].iloc[0] if len(pdf[pdf["馬番"].astype(str) == u2]) > 0 else u2
             ev = bet["馬連期待値"]
-            mark = "✅" if ev >= 0 else "△"
+            mark = "[+]" if ev >= 0 else "△"
             lines.append(
                 f"  {mark} {n1} × {n2} "
                 f"{bet['馬連オッズ']}倍 "
@@ -913,7 +913,7 @@ def make_email_body(race_id, pdf):
             n1 = pdf[pdf["馬番"].astype(str) == u1]["馬名"].iloc[0] if len(pdf[pdf["馬番"].astype(str) == u1]) > 0 else u1
             n2 = pdf[pdf["馬番"].astype(str) == u2]["馬名"].iloc[0] if len(pdf[pdf["馬番"].astype(str) == u2]) > 0 else u2
             ev = bet["馬単期待値"]
-            mark = "✅" if ev >= 0 else "△"
+            mark = "[+]" if ev >= 0 else "△"
             lines.append(
                 f"  {mark} {n1} → {n2} "
                 f"{bet['馬単オッズ']}倍 "
