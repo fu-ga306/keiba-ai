@@ -10,15 +10,17 @@ AI評価の精度を多角的に分析する。
   4. 純粋AI評価(MF) vs 通常モデルの精度比較
   5. 戦略該当馬の実績
   6. 人気帯別の精度(人気を当てているだけか、妙味を出せているか)
-出力はすべてコンソール。結果はnetkeibaから取得(負荷軽減のため5秒間隔)。
+出力はコンソール + accuracy_log.csv（日付別に蓄積）。
 """
 import os
 import time
+from datetime import datetime
 import pandas as pd
 import numpy as np
 from result_tracker import get_race_result, BASE_DIR
 
 PRED_FILE = os.path.join(BASE_DIR, "today_predictions.csv")
+LOG_FILE  = os.path.join(BASE_DIR, "accuracy_log.csv")
 
 
 def main():
@@ -185,6 +187,39 @@ def main():
         print("  券種推奨列なし(新モデルの予想データが必要)")
 
     print("\n分析完了")
+
+    # ── accuracy_log.csv に日次サマリーを追記 ──
+    log_row = {"日付": datetime.now().strftime("%Y-%m-%d"), "レース数": len(df["race_id"].unique())}
+
+    if "推奨ランク" in df.columns:
+        honmei = df[df["推奨ランク"] == "◎"]
+        log_row["◎勝率"]   = round((honmei["着順_num"] == 1).mean() * 100, 1) if len(honmei) else None
+        log_row["◎複勝率"] = round((honmei["着順_num"] <= 3).mean() * 100, 1) if len(honmei) else None
+        log_row["◎頭数"]   = len(honmei)
+
+    if "予測順位" in df.columns:
+        top1 = df[df.groupby("race_id")["予測順位"].transform("min") == df["予測順位"]]
+        log_row["AI1位勝率"]   = round((top1["着順_num"] == 1).mean() * 100, 1) if len(top1) else None
+        log_row["AI1位複勝率"] = round((top1["着順_num"] <= 3).mean() * 100, 1) if len(top1) else None
+
+    if "MF勝ち確率" in df.columns:
+        mf_idx = df.groupby("race_id")["MF勝ち確率"].idxmax().dropna()
+        mf_top = df.loc[mf_idx]
+        log_row["MF1位勝率"]   = round((mf_top["着順_num"] == 1).mean() * 100, 1) if len(mf_top) else None
+        log_row["MF1位複勝率"] = round((mf_top["着順_num"] <= 3).mean() * 100, 1) if len(mf_top) else None
+
+    if "単勝期待値" in df.columns:
+        ev_hits = df[df["単勝期待値"] >= 0.4]
+        log_row["EV0.4以上頭数"] = len(ev_hits)
+        log_row["EV0.4以上勝率"] = round((ev_hits["着順_num"] == 1).mean() * 100, 1) if len(ev_hits) else None
+
+    log_df = pd.DataFrame([log_row])
+    if os.path.exists(LOG_FILE):
+        existing = pd.read_csv(LOG_FILE)
+        existing = existing[existing["日付"] != log_row["日付"]]  # 同日は上書き
+        log_df = pd.concat([existing, log_df], ignore_index=True)
+    log_df.to_csv(LOG_FILE, index=False, encoding="utf-8-sig")
+    print(f"  ログ保存: {LOG_FILE}")
 
 
 if __name__ == "__main__":
