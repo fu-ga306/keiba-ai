@@ -957,352 +957,32 @@ def send_email(subject, body):
 
 
 # ── Step6: 1レース実行 ────────────────────────────────────────────────────
-def run_single_race(race_id, models, use_cols, history_df, mf_models=None, mf_cols=None,
-                    place2_pack=None, place3_pack=None):
+def run_single_race(race_id, history_df, models_pack):
     print(f"\n[{datetime.now().strftime('%H:%M')}] {race_id} 予測開始...")
-
-    print("出馬表取得中...")
-    race_df = get_race_data(race_id)
-    if race_df is None:
-        print(f"  出馬表取得失敗: {race_id}")
-        return
-
-    print(f"  出馬表取得成功: {len(race_df)}頭")
-
-    print("特徴量構築中...")
     try:
-        # 一本化: 学習(features.py)と同じパイプラインで特徴量を作る。
-        # これにより血統・距離適性・騎手トレンド・好調度が学習と完全一致で計算される。
-        # 失敗時は従来の予測専用 build_features にフォールバック（安全策）。
-        try:
-            import features as _features
-            pdf = _features.build_features_for_prediction(race_df, history_df)
-            # 必須列が揃っているか簡易チェック（揃わなければ従来法へ）
-            if pdf is None or len(pdf) == 0 or "馬名" not in pdf.columns:
-                raise ValueError("一本化パイプラインの出力が不正")
-            print(f"  特徴量構築成功(一本化): {len(pdf)}行")
-        except Exception as e_uni:
-            print(f"  一本化パイプライン不可({e_uni}) → 従来法にフォールバック")
-            pdf = build_features(race_df, history_df)
-            print(f"  特徴量構築成功(従来): {len(pdf)}行")
-    except Exception as e:
-        import traceback
-        print(f"  特徴量構築エラー: {e}")
-        traceback.print_exc()
-        return
-
-    print("予測中...")
-    try:
-        # 学習時と同じ列・順序で入力（use_cols は model.pkl から取得）
-        X = pdf.reindex(columns=use_cols)
-        preds = np.mean([m.predict_proba(X)[:, 1] for m in models], axis=0)
-        pdf["予測着順スコア"] = preds
-        pdf["予測順位"] = pdf["予測着順スコア"].rank(ascending=False)
-        print("  予測成功")
+        from keiba_predict import predict_race_pdf
+        pdf = predict_race_pdf(race_id, history_df=history_df, models_pack=models_pack)
     except Exception as e:
         import traceback
         print(f"  予測エラー: {e}")
         traceback.print_exc()
         return
-
-    # 勝ち確率はレース内で正規化（合計100%・FUJIAI型No-Odds方式）。
-    # 生確率は校正されているがレース内合計が100%にならず期待値が過小になるため、
-    # レース内で正規化して期待値計算・表示を適正にする。
-    raw = np.clip(np.nan_to_num(pdf["予測着順スコア"].values, nan=0.0), 0, 1)
-    raw_sum = raw.sum()
-    win_probs = raw / raw_sum if raw_sum > 0 else np.ones(len(raw)) / len(raw)
-    pdf["勝ち確率"]   = win_probs
-    pdf["勝ち確率_生"] = raw
-
-    # ── 連対率・複勝率（3モデルがあれば独立予想、なければハーヴィル） ──
-    use_multi = place2_pack is not None and place3_pack is not None
-    if use_multi:
-        try:
-            p2_models, p2_cols = place2_pack
-            p3_models, p3_cols = place3_pack
-            X_p2 = pdf.reindex(columns=p2_cols)
-            X_p3 = pdf.reindex(columns=p3_cols)
-            p2_raw = np.mean([m.predict_proba(X_p2)[:, 1] for m in p2_models], axis=0)
-            p3_raw = np.mean([m.predict_proba(X_p3)[:, 1] for m in p3_models], axis=0)
-            p2_raw = np.clip(np.nan_to_num(p2_raw, nan=0.0), 0, 1)
-            p3_raw = np.clip(np.nan_to_num(p3_raw, nan=0.0), 0, 1)
-            # 正規化（FUJIAI型）: 連対率は合計≒200%、複勝率は合計≒300%。少頭数は枠数で頭打ち。
-            n_runners = len(pdf)
-            p2_sum = p2_raw.sum()
-            p3_sum = p3_raw.sum()
-            target2 = min(2, n_runners)
-            target3 = min(3, n_runners)
-            place2 = (p2_raw / p2_sum * target2) if p2_sum > 0 else np.full(n_runners, target2 / n_runners)
-            place3 = (p3_raw / p3_sum * target3) if p3_sum > 0 else np.full(n_runners, target3 / n_runners)
-            place2 = np.clip(place2, 0, 1)
-            place3 = np.clip(place3, 0, 1)
-            # 包含関係を保証: 勝率 ≤ 連対率 ≤ 複勝率
-            place2 = np.maximum(place2, win_probs)
-            place3 = np.clip(np.maximum(place3, place2), 0, 1)
-            pdf["連対確率"] = place2
-            pdf["複勝確率"] = place3
-            pdf["連対順位"] = pd.Series(place2, index=pdf.index).rank(ascending=False)
-            pdf["複勝順位"] = pd.Series(place3, index=pdf.index).rank(ascending=False)
-            print("  連対率・複勝率を独立モデルで予想（正規化・包含関係保証）")
-        except Exception as e:
-            print(f"  3モデル予測エラー→ハーヴィルにフォールバック: {e}")
-            use_multi = False
-
-    if not use_multi:
-        # 【従来】ハーヴィルモデルによる複勝確率（生の勝率ベース）
-        fuku = calc_place_prob_harvill(win_probs)
-        fuku = np.maximum(fuku, win_probs)
-        pdf["複勝確率"] = fuku
-        pdf["連対確率"] = np.maximum(pdf["複勝確率"] * 0.7, win_probs)  # 簡易近似
-        pdf["連対順位"] = pdf["連対確率"].rank(ascending=False)
-        pdf["複勝順位"] = pdf["複勝確率"].rank(ascending=False)
-
-    # 複勝推定オッズ（ハーヴィル確率ベース、最低1.0倍）
-    pdf["複勝推定オッズ"] = (1.0 / pdf["複勝確率"].clip(lower=0.01)).clip(upper=30.0)
-
-    # 期待値（単一定義）
-    pdf["単勝期待値"] = pdf["勝ち確率"] * pdf["単勝オッズ"] - 1
-    pdf["複勝期待値"] = pdf["複勝確率"] * pdf["複勝推定オッズ"] - 1
-
-    # 【改善】1/4ケリー基準による推奨賭け率
-    pdf["推奨賭け率"] = pdf.apply(
-        lambda r: kelly_fraction(r["勝ち確率"], r["単勝オッズ"]),
-        axis=1,
-    )
-
-    # ── 複勝期待値（実オッズベース） ──────────────────────────────────
-    if "複勝オッズ_min" in pdf.columns:
-        # 実オッズが取れた場合は実オッズで計算
-        pdf["複勝期待値_実"] = pdf["複勝確率"] * pdf["複勝オッズ_min"] - 1
-    else:
-        pdf["複勝期待値_実"] = pdf["複勝期待値"]  # ハーヴィル推定値を使用
-
-    # ── ワイド・馬連の期待値と買い目提案 ────────────────────────────
-    wide_map   = pdf["_wide_map"].iloc[0]   if "_wide_map"   in pdf.columns else {}
-    umaren_map = pdf["_umaren_map"].iloc[0] if "_umaren_map" in pdf.columns else {}
-
-    # 上位3頭の馬番を取得
-    top3 = pdf.sort_values("勝ち確率", ascending=False).head(3)
-    top3_umaban = top3["馬番"].astype(str).tolist()
-
-    # ワイド期待値計算（◎×○ / ◎×▲ / ○×▲）
-    wide_bets = []
-    if wide_map and len(top3_umaban) >= 2:
-        for i in range(len(top3_umaban)):
-            for j in range(i+1, len(top3_umaban)):
-                u1, u2 = top3_umaban[i], top3_umaban[j]
-                key1 = (u1, u2)
-                key2 = (u2, u1)
-                wide_odds = wide_map.get(key1, wide_map.get(key2, (np.nan, np.nan)))
-                if isinstance(wide_odds, tuple) and pd.notna(wide_odds[0]):
-                    # ワイド的中確率 = 2頭が共に3着以内に入る確率（近似）
-                    r1 = pdf[pdf["馬番"].astype(str) == u1]
-                    r2 = pdf[pdf["馬番"].astype(str) == u2]
-                    if len(r1) > 0 and len(r2) > 0:
-                        p1 = float(r1["複勝確率"].iloc[0])
-                        p2 = float(r2["複勝確率"].iloc[0])
-                        # 近似：両方3着以内の確率
-                        wide_prob = p1 * p2 * 1.5  # ハーヴィル近似係数
-                        wide_prob = min(wide_prob, 0.95)
-                        wide_ev = wide_prob * wide_odds[0] - 1
-                        wide_bets.append({
-                            "馬番1": u1, "馬番2": u2,
-                            "ワイドオッズ_min": wide_odds[0],
-                            "ワイドオッズ_max": wide_odds[1] if len(wide_odds) > 1 else wide_odds[0],
-                            "ワイド的中確率": wide_prob,
-                            "ワイド期待値": wide_ev,
-                        })
-
-    # 馬連期待値計算
-    umaren_bets = []
-    if umaren_map and len(top3_umaban) >= 2:
-        for i in range(len(top3_umaban)):
-            for j in range(i+1, len(top3_umaban)):
-                u1, u2 = top3_umaban[i], top3_umaban[j]
-                key1 = (u1, u2)
-                key2 = (u2, u1)
-                umaren_odds = umaren_map.get(key1, umaren_map.get(key2, np.nan))
-                if pd.notna(umaren_odds):
-                    r1 = pdf[pdf["馬番"].astype(str) == u1]
-                    r2 = pdf[pdf["馬番"].astype(str) == u2]
-                    if len(r1) > 0 and len(r2) > 0:
-                        p1 = float(r1["勝ち確率"].iloc[0])
-                        p2 = float(r2["勝ち確率"].iloc[0])
-                        # 馬連的中確率 = どちらかが1着でもう一方が2着
-                        umaren_prob = p1 * (p2 / (1 - p1 + 1e-9)) + p2 * (p1 / (1 - p2 + 1e-9))
-                        umaren_prob = min(umaren_prob, 0.95)
-                        umaren_ev = umaren_prob * umaren_odds - 1
-                        umaren_bets.append({
-                            "馬番1": u1, "馬番2": u2,
-                            "馬連オッズ": umaren_odds,
-                            "馬連的中確率": umaren_prob,
-                            "馬連期待値": umaren_ev,
-                        })
-
-    # 馬単（順序あり：上位2頭の正逆2パターン）
-    umatan_map = pdf["_umatan_map"].iloc[0] if "_umatan_map" in pdf.columns else {}
-    umatan_bets = []
-    if umatan_map and len(top3_umaban) >= 2:
-        for i in range(len(top3_umaban)):
-            for j in range(len(top3_umaban)):
-                if i == j:
-                    continue
-                u1, u2 = top3_umaban[i], top3_umaban[j]  # u1=1着, u2=2着
-                umatan_odds = umatan_map.get((u1, u2), np.nan)
-                if pd.notna(umatan_odds):
-                    r1 = pdf[pdf["馬番"].astype(str) == u1]
-                    r2 = pdf[pdf["馬番"].astype(str) == u2]
-                    if len(r1) > 0 and len(r2) > 0:
-                        p1 = float(r1["勝ち確率"].iloc[0])
-                        p2 = float(r2["勝ち確率"].iloc[0])
-                        # 馬単的中確率 = u1が1着 × u2が(u1以外で)2着
-                        umatan_prob = p1 * (p2 / (1 - p1 + 1e-9))
-                        umatan_prob = min(umatan_prob, 0.95)
-                        umatan_ev = umatan_prob * umatan_odds - 1
-                        umatan_bets.append({
-                            "馬番1着": u1, "馬番2着": u2,
-                            "馬単オッズ": umatan_odds,
-                            "馬単的中確率": umatan_prob,
-                            "馬単期待値": umatan_ev,
-                        })
-
-    pdf["_wide_bets"]   = [wide_bets]   * len(pdf)
-    pdf["_umaren_bets"] = [umaren_bets] * len(pdf)
-    pdf["_umatan_bets"] = [umatan_bets] * len(pdf)
-
-    # 市場フリーモデルによる乖離スコア計算
-    pdf["MF予測順位"] = np.nan
-    pdf["乖離スコア"] = np.nan
-    if mf_models is not None and mf_cols is not None:
-        try:
-            X_mf = pdf.reindex(columns=mf_cols)
-            mf_preds = np.mean([m.predict_proba(X_mf)[:, 1] for m in mf_models], axis=0)
-            pdf["MF勝ち確率"] = mf_preds
-            pdf["MF予測順位"] = pd.Series(mf_preds).rank(ascending=False).values
-            # 乖離スコア：通常順位 - MF順位（プラスほど市場が過小評価）
-            pdf["乖離スコア"] = pdf["予測順位"] - pdf["MF予測順位"]
-            print("  市場フリー予測成功")
-        except Exception as e:
-            print(f"  市場フリー予測エラー（スキップ）: {e}")
-
-    # バックテスト戦略のリアルタイム判定
-    pdf["該当戦略"] = ""
-    for idx, row in pdf.iterrows():
-        strategies = []
-        if (row["予測順位"] == 1
-                and row["単勝期待値"] >= 0.3
-                and 1.5 <= row["単勝オッズ"] <= 20):
-            strategies.append("戦略A")
-            if row["人気"] != 1:
-                strategies.append("戦略A-2(超穴妙味)")
-        # 戦略B廃止（回収率92.8%で赤字のため）
-        if (row["人気"] >= 3
-                and row["予測順位"] == 1
-                and row["単勝期待値"] >= 0.3):
-            strategies.append("戦略C(市場乖離)")
-        if (pd.notna(row.get("前走間隔"))
-                and 2 <= row["前走間隔"] <= 4
-                and row["予測順位"] == 1
-                and row["単勝期待値"] >= 0.2):
-            strategies.append("戦略D(好ローテ)")
-        # 戦略E：一時無効化（交互作用特徴量追加後、乖離スコアの有効性が崩壊したため）
-        # 旧: 乖離スコア≥5 × MF予測1位（回収率168.1%→0.0%に悪化）
-        # if (pd.notna(row.get("乖離スコア"))
-        #         and row.get("乖離スコア", 0) >= 5
-        #         and row.get("MF予測順位", 99) == 1):
-        #     strategies.append("戦略E(市場見落とし)")
-        # 戦略F：中京・東京 × 予測1位 × 期待値≥0.3（回収率197.2%）
-        # 競馬場cd: 5=東京, 7=中京
-        jyo_cd = int(str(row.get("race_id", "000000000000"))[4:6])
-        if (jyo_cd in [5, 7]
-                and row["予測順位"] == 1
-                and row["単勝期待値"] >= 0.3
-                and 1.5 <= row["単勝オッズ"] <= 20):
-            strategies.append("戦略F(東京・中京)")
-        # 戦略H：中山・小倉 × 予測1位 × 期待値≥0.3（回収率128.9%）
-        # 競馬場cd: 6=中山, 10=小倉
-        if (jyo_cd in [6, 10]
-                and row["予測順位"] == 1
-                and row["単勝期待値"] >= 0.3
-                and 1.5 <= row["単勝オッズ"] <= 20):
-            strategies.append("戦略H(中山・小倉)")
-        # 戦略FG：中京・東京 × 短距離(〜1400m) × 予測1位 × 期待値≥0.3（回収率265.0%）
-        if (jyo_cd in [5, 7]
-                and pd.notna(row.get("距離"))
-                and row.get("距離", 9999) <= 1400
-                and row["予測順位"] == 1
-                and row["単勝期待値"] >= 0.3
-                and 1.5 <= row["単勝オッズ"] <= 20):
-            strategies.append("戦略FG(東京・中京×短距離)")
-        if strategies:
-            pdf.at[idx, "該当戦略"] = " / ".join(strategies)
-
-    # 印の選出（◎○▲）
-    # C-4: MFモデルを主力化（回収率 MF:142.6% > 通常:112.5%）
-    pdf["印"] = ""
-    USE_MF_FOR_MARKS = True
-    rank_col = (
-        "MF勝ち確率"
-        if USE_MF_FOR_MARKS
-        and "MF勝ち確率" in pdf.columns
-        and pdf["MF勝ち確率"].notna().any()
-        else "勝ち確率"
-    )
-
-    # ◎本命：期待値0.3以上の馬の中でMF勝ち確率最大
-    honmei_cands = pdf[pdf["単勝期待値"] >= 0.3].sort_values(rank_col, ascending=False)
-    idx_honmei = (
-        honmei_cands.index[0]
-        if not honmei_cands.empty
-        else pdf.sort_values(rank_col, ascending=False).index[0]
-    )
-    pdf.at[idx_honmei, "印"] = "◎"
-
-    # ○対抗：本命以外で期待値0.1以上×MF勝ち確率上位
-    taiko_cands = pdf[
-        (pdf["単勝期待値"] >= 0.1) & (pdf.index != idx_honmei)
-    ].sort_values(rank_col, ascending=False)
-    if not taiko_cands.empty:
-        idx_taiko = taiko_cands.index[0]
-    else:
-        remaining = pdf[pdf.index != idx_honmei].sort_values(rank_col, ascending=False)
-        idx_taiko = remaining.index[0] if not remaining.empty else idx_honmei
-    if idx_taiko != idx_honmei:
-        pdf.at[idx_taiko, "印"] = "○"
-
-    # ▲穴馬：本命・対抗以外で期待値0.3以上×オッズ5倍以上の最高期待値馬
-    ana_cands = pdf[
-        (pdf["単勝期待値"] >= 0.3)
-        & (pdf["単勝オッズ"] >= 5.0)
-        & (~pdf.index.isin([idx_honmei, idx_taiko]))
-    ].sort_values("単勝期待値", ascending=False)
-    if not ana_cands.empty:
-        idx_ana = ana_cands.index[0]
-    else:
-        remaining = pdf[~pdf.index.isin([idx_honmei, idx_taiko])].sort_values(
-            "単勝期待値", ascending=False
-        )
-        idx_ana = remaining.index[0] if not remaining.empty else idx_honmei
-    if idx_ana not in [idx_honmei, idx_taiko]:
-        pdf.at[idx_ana, "印"] = "▲"
+    if pdf is None:
+        print(f"  出馬表取得失敗: {race_id}")
+        return
 
     jyo_cd   = int(str(race_id)[4:6])
     race_no  = int(str(race_id)[10:12])
     jyo_name = JYO_NAMES.get(jyo_cd, str(jyo_cd))
 
-    # 記録保存（prediction_record_v2.csv のみに一元化）
-    # result_tracker.record_from_prediction で update_results/dashboard と
-    # 互換性のあるカラム形式（jyo, race, honmei, hit, honmei_actual等）で保存する
-    try:
-        record_from_prediction(race_id, pdf)
-    except Exception as e:
-        print(f"  記録保存エラー: {e}")
-
-    # メール送信
     body    = make_email_body(race_id, pdf)
     subject = f"【競馬AI】{jyo_name} {race_no}R 予測"
     print(body)
     send_email(subject, body)
+    try:
+        record_from_prediction(race_id, pdf)
+    except Exception as e:
+        print(f"  記録保存エラー: {e}")
 
 
 # ── Step7: スケジューラー ─────────────────────────────────────────────────
@@ -1312,34 +992,27 @@ def main():
     print("モデル読み込み中...")
     with open(os.path.join(BASE_DIR, "model.pkl"), "rb") as f:
         saved = pickle.load(f)
-    models   = saved["models"]
-    use_cols = saved["use_cols"]
+    is_multi = saved.get("format") == "multi_v1" and saved.get("place2") and saved.get("place3")
+    models_pack = {
+        "win":    {"models": saved.get("win", {}).get("models", saved["models"]),
+                   "use_cols": saved.get("win", {}).get("use_cols", saved["use_cols"])},
+        "place2": saved["place2"] if is_multi else None,
+        "place3": saved["place3"] if is_multi else None,
+    }
+    print("  3モデル構成 → 独立予想を使用" if is_multi else "  旧モデル構成 → ハーヴィル変換を使用")
 
-    # 3モデル（win/place2/place3）。新形式なら独立予想、旧形式ならハーヴィル
-    place2_pack = None
-    place3_pack = None
-    if saved.get("format") == "multi_v1" and saved.get("place2") and saved.get("place3"):
-        place2_pack = (saved["place2"]["models"], saved["place2"]["use_cols"])
-        place3_pack = (saved["place3"]["models"], saved["place3"]["use_cols"])
-        print("  3モデル構成(win/place2/place3)を検出 → 独立予想を使用")
-    else:
-        print("  旧モデル構成 → 連対率・複勝率はハーヴィル変換を使用")
-
-    # 市場フリーモデルを読み込む（存在する場合のみ）
-    mf_models = None
-    mf_cols   = None
-    mf_path   = os.path.join(BASE_DIR, "model_mf.pkl")
+    mf_path = os.path.join(BASE_DIR, "model_mf.pkl")
     if os.path.exists(mf_path):
         try:
             with open(mf_path, "rb") as f:
                 mf_saved = pickle.load(f)
-            mf_models = mf_saved["models"]
-            mf_cols   = mf_saved["use_cols"]
-            print("市場フリーモデル読み込み完了 → 戦略E有効")
+            models_pack["mf"] = mf_saved
+            print("  市場フリーモデル読み込み完了")
         except Exception as e:
-            print(f"市場フリーモデル読み込みスキップ: {e}")
+            print(f"  市場フリーモデルスキップ: {e}")
+            models_pack["mf"] = None
     else:
-        print("market_free_model.pkl なし → 戦略Eスキップ")
+        models_pack["mf"] = None
 
     print("履歴データ読み込み中（しばらくかかります）...")
     history_df = pd.read_csv(
@@ -1376,13 +1049,8 @@ def main():
         schedule.every().day.at(notify_time).do(
             run_single_race,
             race_id=race_id,
-            models=models,
-            use_cols=use_cols,
             history_df=history_df,
-            mf_models=mf_models,
-            mf_cols=mf_cols,
-            place2_pack=place2_pack,
-            place3_pack=place3_pack,
+            models_pack=models_pack,
         )
         jyo_cd   = int(str(race_id)[4:6])
         race_no  = int(str(race_id)[10:12])

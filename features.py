@@ -921,12 +921,12 @@ def add_distance_stamina_features(df):
     """距離適性・スタミナ系特徴量（経験最長距離・長距離複勝率・前走余力 など）。
     add_horse_history_features() 後に呼ぶこと（前走着順・距離延長幅が前提）。"""
     df = df.sort_values(["馬名", "race_id"]).reset_index(drop=True)
-    g = df.groupby("馬名")
 
     _cur_dist = pd.to_numeric(df["距離"], errors="coerce")
 
     # 経験最長距離（過去にこなした最長距離、shift(1)でリーク防止）
-    df["経験最長距離"] = g["距離"].transform(
+    # ※ groupbyは列アクセスのたびに再生成し pandas バージョン差異を回避
+    df["経験最長距離"] = df.groupby("馬名")["距離"].transform(
         lambda x: pd.to_numeric(x, errors="coerce").shift(1).expanding().max()
     )
 
@@ -934,28 +934,36 @@ def add_distance_stamina_features(df):
     df["経験範囲超過"] = (_cur_dist - df["経験最長距離"]).clip(lower=0)
 
     # 延長×距離経験不足（延長幅 × 未経験フラグ）
-    _encho = df["距離延長幅"] if "距離延長幅" in df.columns else pd.Series(0.0, index=df.index)
-    _mikeiken = (_cur_dist > df["経験最長距離"]).astype(float)
+    _encho = df["距離延長幅"].values if "距離延長幅" in df.columns else np.zeros(len(df))
+    _mikeiken = (_cur_dist > df["経験最長距離"]).astype(float).values
     df["延長×距離経験不足"] = _encho * _mikeiken
 
     # 長距離複勝率（2001m以上での過去top3率、shift(1)でリーク防止）
-    df["_is_long_tmp"]   = (pd.to_numeric(df["距離"], errors="coerce") >= 2001).astype(float)
-    df["_long_top3_tmp"] = ((df["着順_num"] <= 3) & (df["_is_long_tmp"] == 1)).astype(float)
-    _long_cnt = g["_is_long_tmp"].transform(lambda x: x.shift(1).expanding().sum())
-    _long_t3  = g["_long_top3_tmp"].transform(lambda x: x.shift(1).expanding().sum())
+    _is_long   = (pd.to_numeric(df["距離"], errors="coerce") >= 2001).astype(float)
+    _top3_flag = (df["着順_num"] <= 3).fillna(False).astype(float)
+    _long_top3 = (_is_long * _top3_flag)
+
+    df["_is_long_tmp"]   = _is_long
+    df["_long_top3_tmp"] = _long_top3
+    _long_cnt = df.groupby("馬名")["_is_long_tmp"].transform(
+        lambda x: x.shift(1).expanding().sum()
+    )
+    _long_t3 = df.groupby("馬名")["_long_top3_tmp"].transform(
+        lambda x: x.shift(1).expanding().sum()
+    )
     df["長距離複勝率"] = np.where(_long_cnt > 0, _long_t3 / _long_cnt, np.nan)
     df = df.drop(columns=["_is_long_tmp", "_long_top3_tmp"], errors="ignore")
 
     # 前走余力（1着=1.0、2-3着=0.5、それ以外=0.0）
-    _prev_chaku = df["前走着順"] if "前走着順" in df.columns else pd.Series(np.nan, index=df.index)
+    _prev_chaku = df["前走着順"].values if "前走着順" in df.columns else np.full(len(df), np.nan)
     df["前走余力"] = np.where(
-        _prev_chaku.isna(), np.nan,
+        pd.isna(_prev_chaku), np.nan,
         np.where(_prev_chaku == 1, 1.0,
         np.where(_prev_chaku <= 3, 0.5, 0.0))
     )
 
     # 延長×前走余力（距離延長が大きいほど前走余力が重要）
-    df["延長×前走余力"] = _encho * df["前走余力"]
+    df["延長×前走余力"] = _encho * df["前走余力"].values
 
     return df
 
