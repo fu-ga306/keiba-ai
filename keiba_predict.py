@@ -790,25 +790,42 @@ def predict_race_pdf(race_id: str, *, history_df: pd.DataFrame, models_pack: dic
         if pd.notna(fev) and fev >= 0:
             pdf.at[idx, "妙味_複勝"] = "妙味"
 
-    # ── 印割り当て（MF勝ち確率純粋順位 / predict・auto 共通）
-    USE_MF_FOR_MARKS = True
+    # ── 印割り当て
+    # ◎○▲: MF勝ち確率（純粋AI）の総合スコア上位3頭 → 単勝・軸
+    # △   : 連対確率（place2モデル）上位（◎○▲以外）  → 馬連・ワイドの相手
+    # ×   : 複勝確率（place3モデル）上位（◎○▲△以外）→ 三連複・ヒモ
     rank_basis = (
         "MF勝ち確率"
-        if USE_MF_FOR_MARKS and "MF勝ち確率" in pdf.columns and pdf["MF勝ち確率"].notna().any()
+        if "MF勝ち確率" in pdf.columns and pdf["MF勝ち確率"].notna().any()
         else "勝ち確率"
     )
     n = len(pdf)
     pdf["_ai_rank"]  = pdf[rank_basis].rank(ascending=False)
     pdf["総合スコア"] = (1 - (pdf["_ai_rank"] - 1) / n) * 80 + pdf["該当戦略"].apply(lambda s: 20 if s else 0)
-    final_top = pdf.sort_values("総合スコア", ascending=False).head(5)
-    marks5 = ["◎", "○", "▲", "△", "×"]
+
     pdf["推奨ランク"] = ""
     pdf["印"]        = ""
-    for i, (idx, _) in enumerate(final_top.iterrows()):
-        mk = marks5[i]
+
+    # ◎○▲ (上位3頭)
+    top3 = pdf.sort_values("総合スコア", ascending=False).head(3)
+    assigned = set(top3.index)
+    for i, (idx, _) in enumerate(top3.iterrows()):
+        mk = ("◎", "○", "▲")[i]
         pdf.at[idx, "推奨ランク"] = mk
-        if mk in ("◎", "○", "▲"):
-            pdf.at[idx, "印"] = mk   # make_email_body / record_from_prediction 用
+        pdf.at[idx, "印"] = mk
+
+    # △: 連対確率上位（◎○▲以外）
+    rest = pdf[~pdf.index.isin(assigned)]
+    if not rest.empty and "連対確率" in rest.columns:
+        delta_idx = rest["連対確率"].idxmax()
+        pdf.at[delta_idx, "推奨ランク"] = "△"
+        assigned.add(delta_idx)
+
+    # ×: 複勝確率上位（◎○▲△以外）
+    rest2 = pdf[~pdf.index.isin(assigned)]
+    if not rest2.empty and "複勝確率" in rest2.columns:
+        batu_idx = rest2["複勝確率"].idxmax()
+        pdf.at[batu_idx, "推奨ランク"] = "×"
 
     # ── レース情報（PDF上に格納して呼び出し元でも使えるように）
     baba_inv = {1: "良", 2: "稍重", 3: "重", 4: "不良"}

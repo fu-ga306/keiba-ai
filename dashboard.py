@@ -320,17 +320,17 @@ if st.session_state.page == "🏇 当日予想":
     """, unsafe_allow_html=True)
 
     st.caption(f"予想日時: {rdf['予想日時'].iloc[0] if '予想日時' in rdf.columns else '-'}")
-    st.caption("勝率(AI)・期待値(AI) = 人気・オッズを見ない市場フリーモデルの値 / 連対率・複勝率は通常モデル（人気・オッズ考慮）")
+    st.caption("◎○▲ = MF勝ち確率順（単勝・軸）　△ = 連対率上位（馬連・ワイド相手）　× = 複勝率上位（三連複・ヒモ）")
 
     # ── 推奨馬の詳細カード ──
     st.markdown("---")
     st.subheader("推奨馬 詳細")
 
-    marks = [("◎","最強推奨","#f0b429","mark-honmei"),
-             ("○","強く推奨","#3b82f6","mark-taiko"),
-             ("▲","推奨","#10b981","mark-ana"),
-             ("△","穴候補","#8892a4","mark-ana"),
-             ("×","注目","#e74c3c","mark-ana")]
+    marks = [("◎","単勝軸 MF1位","#f0b429","mark-honmei"),
+             ("○","単勝相手 MF2位","#3b82f6","mark-taiko"),
+             ("▲","単勝穴 MF3位","#10b981","mark-ana"),
+             ("△","連対候補 連対率上位","#8892a4","mark-ana"),
+             ("×","複勝候補 複勝率上位","#e74c3c","mark-ana")]
 
     if "推奨ランク" in rdf.columns:
         for mk,lbl,color,cls in marks:
