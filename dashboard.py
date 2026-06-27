@@ -225,11 +225,13 @@ if st.session_state.page == "🏇 当日予想":
         name   = row.get("馬名", "")
         odds   = row.get("単勝オッズ", np.nan)
         pop    = row.get("人気", np.nan)
-        wp     = row.get("勝ち確率", np.nan)
-        mfp    = row.get("MF勝ち確率", np.nan)
+        wp     = row.get("MF勝ち確率", row.get("勝ち確率", np.nan))  # 市場フリー優先
+        mfp    = wp  # 後方互換用
         p2     = row.get("連対確率", np.nan)
         pp     = row.get("複勝確率", np.nan)
-        ev     = row.get("単勝期待値", np.nan)
+        # EV も MF勝ち確率ベースで再計算（オッズが取れる場合）
+        _stored_ev = row.get("単勝期待値", np.nan)
+        ev = (wp * odds - 1) if (pd.notna(wp) and pd.notna(odds)) else _stored_ev
         mark   = row.get("推奨ランク", "")
         if pd.isna(mark):
             mark = ""
@@ -243,7 +245,6 @@ if st.session_state.page == "🏇 当日予想":
         odds_s = f"{odds:.1f}" if pd.notna(odds) else "-"
         pop_s  = f"{int(pop)}人気" if pd.notna(pop) else "-"
         wp_s   = f"{wp*100:.1f}%" if pd.notna(wp) else "-"
-        mfp_s  = f"{mfp*100:.1f}%" if pd.notna(mfp) else "-"
         p2_s   = f"{p2*100:.1f}%" if pd.notna(p2) else "-"
         pp_s   = f"{pp*100:.1f}%" if pd.notna(pp) else "-"
 
@@ -278,17 +279,6 @@ if st.session_state.page == "🏇 当日予想":
         else:
             sig_html = "<span style='color:var(--color-text-secondary);font-size:0.7rem'>-</span>"
 
-        # 純粋AI能力値バー（0-100スケール想定でMF勝ち確率を強調表示）
-        ability_pct = mfp*100 if pd.notna(mfp) else 0
-        bar_color = "#dc2626" if ability_pct >= 15 else ("#f97316" if ability_pct >= 8 else "#3b82f6")
-        bar_w = min(ability_pct * 4, 100)  # スケール調整
-        ability_html = (
-            f"<div style='display:flex;align-items:center;gap:6px'>"
-            f"<span style='font-size:0.78rem;min-width:42px'>{mfp_s}</span>"
-            f"<span class='bar-wrap' style='width:50px'><span class='bar-inner' style='width:{bar_w:.0f}%;background:{bar_color}'></span></span>"
-            f"</div>"
-        )
-
         row_bg = "background:rgba(240,180,41,0.06);" if mark == "◎" else ""
         ev_color = "#10b981" if pd.notna(ev) and ev >= 0 else "var(--color-text-secondary)"
         ev_s = f"<span style='color:{ev_color};font-weight:600'>{ev:+.2f}</span>" if pd.notna(ev) else "-"
@@ -303,7 +293,6 @@ if st.session_state.page == "🏇 当日予想":
             f"<td>{name}</td>"
             f"<td style='text-align:center'>{ken_html}</td>"
             f"<td style='text-align:center'>{sig_html}</td>"
-            f"<td>{ability_html}</td>"
             f"<td style='text-align:center'>{wp_s}</td>"
             f"<td style='text-align:center'>{p2_s}</td>"
             f"<td style='text-align:center'>{pp_s}</td>"
@@ -324,14 +313,14 @@ if st.session_state.page == "🏇 当日予想":
     <table class='race-table'>
     <thead><tr>
         <th>オッズ</th><th>人気</th><th>枠</th><th>馬番</th><th>印</th><th>馬名</th>
-        <th>券種推奨</th><th>買い推奨</th><th>純粋AI評価</th><th>勝率</th><th>連対率</th><th>複勝率</th><th>期待値</th>
+        <th>券種推奨</th><th>買い推奨</th><th>勝率(AI)</th><th>連対率</th><th>複勝率</th><th>期待値(AI)</th>
     </tr></thead>
     <tbody>{rows_html}</tbody>
     </table>
     """, unsafe_allow_html=True)
 
     st.caption(f"予想日時: {rdf['予想日時'].iloc[0] if '予想日時' in rdf.columns else '-'}")
-    st.caption("純粋AI評価=人気・オッズを見ない市場フリーモデルの勝率 / 勝率・複勝率は通常モデル（人気・オッズ考慮）")
+    st.caption("勝率(AI)・期待値(AI) = 人気・オッズを見ない市場フリーモデルの値 / 連対率・複勝率は通常モデル（人気・オッズ考慮）")
 
     # ── 推奨馬の詳細カード ──
     st.markdown("---")
@@ -351,10 +340,11 @@ if st.session_state.page == "🏇 当日予想":
             row = rows.iloc[0]
             odds  = row.get("単勝オッズ",np.nan)
             pop   = row.get("人気",np.nan)
-            wp    = row.get("勝ち確率",np.nan)
+            wp    = row.get("MF勝ち確率", row.get("勝ち確率", np.nan))
             p2    = row.get("連対確率",np.nan)
             pp    = row.get("複勝確率",np.nan)
-            ev    = row.get("単勝期待値",np.nan)
+            _odds = row.get("単勝オッズ", np.nan)
+            ev    = (wp * _odds - 1) if (pd.notna(wp) and pd.notna(_odds)) else row.get("単勝期待値", np.nan)
             strat = row.get("該当戦略","")
             if pd.isna(strat):
                 strat = ""
