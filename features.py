@@ -95,6 +95,15 @@ def load_and_prepare(csv_path="race_data_clean.csv", df=None):
     if "クラス_num" not in df.columns and "レースクラス" in df.columns:
         df["クラス_num"] = df["レースクラス"].astype(str).map(class_map)
 
+    # 回り_num: 右=1, 左=2, 直=3
+    mawari_map = {"右": 1, "左": 2, "直": 3}
+    if "回り" in df.columns:
+        if "回り_num" not in df.columns:
+            df["回り_num"] = np.nan
+        df["回り_num"] = pd.to_numeric(df["回り_num"], errors="coerce").fillna(
+            df["回り"].astype(str).map(mawari_map)
+        )
+
     # 数値であるべき列を確実に数値化（予測データは文字列のことがあり、
     # 文字列のままだと groupby集計で連結され "54.057.0..." のように壊れる）。
     for col in ["斤量", "馬番", "枠番", "距離", "人気", "単勝オッズ",
@@ -658,6 +667,14 @@ def add_extra_advanced_features(df):
         lambda x: x.shift(1).expanding().mean()
     )
 
+    # 回り別_過去勝率・過去複勝率（右/左/直 それぞれの実績）
+    if "回り_num" in df.columns:
+        df["_fuku"] = (df["着順_num"] <= 3).astype(float)
+        grp_mawari = df.groupby(["馬名", "回り_num"])
+        df["回り別_過去勝率"]  = grp_mawari["_win"].transform(lambda x: x.shift(1).expanding().mean())
+        df["回り別_過去複勝率"] = grp_mawari["_fuku"].transform(lambda x: x.shift(1).expanding().mean())
+        df = df.drop(columns=["_fuku"], errors="ignore")
+
     # 不要な一時列を削除
     df = df.drop(columns=["_win", "距離カテゴリ_jyo", "距離_num"], errors="ignore")
 
@@ -669,6 +686,25 @@ def add_extra_advanced_features(df):
         bins=[0, 3, 6, 9, 12],
         labels=[1, 2, 3, 4],
     ).astype(float)
+
+    # ── ④ コース形態の静的ルックアップ（競馬場固定値）─────────────────────
+    # 競馬場cd → (直線長_m, 坂あり) 代表値（外回り/芝コースの値）
+    _JYO_COURSE = {
+        1: (264, 0),   # 札幌
+        2: (260, 0),   # 函館
+        3: (292, 0),   # 福島
+        4: (659, 0),   # 新潟（外回り）
+        5: (526, 1),   # 東京
+        6: (310, 1),   # 中山（急坂）
+        7: (413, 1),   # 中京
+        8: (404, 1),   # 京都（外回り）
+        9: (474, 1),   # 阪神（外回り）
+        10: (293, 0),  # 小倉
+    }
+    if "競馬場cd" in df.columns:
+        cd = pd.to_numeric(df["競馬場cd"], errors="coerce")
+        df["直線長_m"] = cd.map({k: v[0] for k, v in _JYO_COURSE.items()})
+        df["坂あり"]   = cd.map({k: v[1] for k, v in _JYO_COURSE.items()})
 
     return df
 
@@ -885,6 +921,9 @@ def build_features(csv_path="race_data_clean.csv", out_path="race_features.csv")
         # 競馬場×距離 適性
         "競馬場距離過去勝率", "競馬場距離過去平均着順",
         "競馬場過去勝率", "競馬場過去平均着順",
+        # コース形態（B-2）
+        "回り_num", "回り別_過去勝率", "回り別_過去複勝率",
+        "直線長_m", "坂あり",
         # 脚質
         "過去平均先行指数", "先行馬フラグ",
         "想定先行馬数", "想定先行馬率", "他馬想定先行馬数", "差し馬×ハイペース想定",

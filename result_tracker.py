@@ -104,7 +104,15 @@ def record_from_prediction(race_id, pdf):
     keiba_auto.py の run_single_race から呼び出す。
     update_results / show_summary / dashboard.py と同じカラム形式で保存する。
     """
-    top3  = pdf.sort_values("予測順位").head(3)
+    # 印列（推奨ランク）が付いている場合は MF 順位ベースの印を優先。
+    # 付いていない旧形式では予測順位(通常モデル)にフォールバック。
+    mark_order = {"◎": 0, "○": 1, "▲": 2, "△": 3, "×": 4}
+    if "推奨ランク" in pdf.columns and pdf["推奨ランク"].notna().any():
+        pdf = pdf.copy()
+        pdf["_mark_order"] = pdf["推奨ランク"].map(mark_order).fillna(9)
+        top3 = pdf.sort_values("_mark_order").head(3)
+    else:
+        top3 = pdf.sort_values("予測順位").head(3)
     top1  = top3.iloc[0]
     top2  = top3.iloc[1] if len(top3) > 1 else None
     top3h = top3.iloc[2] if len(top3) > 2 else None
