@@ -693,7 +693,7 @@ def predict_race_pdf(race_id: str, *, history_df: pd.DataFrame, models_pack: dic
     pdf["連対順位"]  = pd.Series(place2, index=pdf.index).rank(ascending=False)
     pdf["複勝順位"]  = pd.Series(place3, index=pdf.index).rank(ascending=False)
 
-    pdf["単勝期待値"]    = pdf["勝ち確率"] * pdf["単勝オッズ"] - 1
+    pdf["単勝期待値"]    = pdf["勝ち確率"] * pdf["単勝オッズ"] - 1  # MFモデル取得後に上書き
     pdf["推奨賭け率"]    = pdf.apply(lambda r: kelly_fraction(r["勝ち確率"], r["単勝オッズ"]), axis=1)
     pdf["複勝推定オッズ"] = (pdf["単勝オッズ"] / 4).clip(lower=1.05)
     pdf["複勝期待値"]    = pdf["複勝確率"] * pdf["複勝推定オッズ"] - 1
@@ -714,6 +714,8 @@ def predict_race_pdf(race_id: str, *, history_df: pd.DataFrame, models_pack: dic
             pdf["乖離スコア"] = pdf["予測順位"] - pdf["MF予測順位"]
             mf_raw = np.clip(np.nan_to_num(mf_preds, nan=0.0), 0, None)
             pdf["MF勝ち確率"] = mf_raw / mf_raw.sum() if mf_raw.sum() > 0 else np.ones(len(mf_raw)) / len(mf_raw)
+            # EV を MF勝ち確率ベースで上書き（通常モデルの暫定値を置き換え）
+            pdf["単勝期待値"] = pdf["MF勝ち確率"] * pdf["単勝オッズ"] - 1
             print("  市場フリー予測成功")
         except Exception as e:
             print(f"  市場フリー予測エラー（スキップ）: {e}")
@@ -746,7 +748,13 @@ def predict_race_pdf(race_id: str, *, history_df: pd.DataFrame, models_pack: dic
     # ── 券種推奨
     pdf["券種推奨"] = ""
     try:
-        axis_idx = pdf["勝ち確率"].rank(ascending=False).idxmin()
+        # 軸馬は MF勝ち確率（市場フリー）の1位。未取得なら通常モデルにフォールバック。
+        _rank_for_axis = (
+            pdf["MF勝ち確率"]
+            if "MF勝ち確率" in pdf.columns and pdf["MF勝ち確率"].notna().any()
+            else pdf["勝ち確率"]
+        )
+        axis_idx = _rank_for_axis.rank(ascending=False).idxmin()
         pdf.at[axis_idx, "券種推奨"] = (
             "軸◎" if pd.notna(pdf.at[axis_idx, "単勝期待値"]) and pdf.at[axis_idx, "単勝期待値"] >= 0
             else "軸(人気)"
