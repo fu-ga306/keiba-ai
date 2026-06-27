@@ -101,10 +101,11 @@ st.sidebar.markdown("---")
 if "page" not in st.session_state:
     st.session_state.page = "🏇 当日予想"
 
+_PAGES = ["🏇 当日予想", "📊 成績サマリー", "📋 レース結果", "🏆 戦略分析", "📈 精度分析"]
 page = st.sidebar.radio(
     "ページ",
-    ["🏇 当日予想", "📊 成績サマリー", "📋 レース結果", "🏆 戦略分析"],
-    index=["🏇 当日予想", "📊 成績サマリー", "📋 レース結果", "🏆 戦略分析"].index(st.session_state.page)
+    _PAGES,
+    index=_PAGES.index(st.session_state.page) if st.session_state.page in _PAGES else 0
 )
 st.session_state.page = page
 st.sidebar.markdown("---")
@@ -114,12 +115,13 @@ if st.sidebar.button("🔄 更新"):
 st.sidebar.caption(f"更新: {datetime.now().strftime('%H:%M')}")
 
 # モバイル用ナビゲーションボタン（メイン画面上部）
-nav_cols = st.columns(4)
+nav_cols = st.columns(5)
 nav_items = [
     ("🏇 当日", "🏇 当日予想"),
     ("📊 成績", "📊 成績サマリー"),
     ("📋 結果", "📋 レース結果"),
     ("🏆 戦略", "🏆 戦略分析"),
+    ("📈 精度", "📈 精度分析"),
 ]
 for col, (label, full_page) in zip(nav_cols, nav_items):
     is_active = full_page == page
@@ -600,3 +602,164 @@ elif st.session_state.page == "🏆 戦略分析":
         n=row["ベット"]
         icon="🟢" if n>=200 else "🟡" if n>=100 else "🟠" if n>=30 else "🔴"
         st.markdown(f"{icon} **{row['戦略']}** ({n}回) ─ {row['説明']} ─ 信頼度: **{row['信頼度']}**")
+
+elif st.session_state.page == "📈 精度分析":
+    st.markdown("## 📈 精度分析 ─ 月曜改修インプット")
+
+    rec = load_data()
+    confirmed = rec[rec["hit"].notna()].copy()
+
+    if confirmed.empty:
+        st.info("照合済みレコードがありません。週次更新後に表示されます。")
+    else:
+        confirmed["hit"]            = pd.to_numeric(confirmed["hit"], errors="coerce")
+        confirmed["honmei_actual"]  = pd.to_numeric(confirmed["honmei_actual"], errors="coerce")
+        confirmed["taiko_actual"]   = pd.to_numeric(confirmed["taiko_actual"], errors="coerce")
+        confirmed["ana_actual"]     = pd.to_numeric(confirmed["ana_actual"], errors="coerce")
+        confirmed["honmei_ninki"]   = pd.to_numeric(confirmed["honmei_ninki"], errors="coerce")
+        confirmed["honmei_ev"]      = pd.to_numeric(confirmed["honmei_ev"], errors="coerce")
+
+        honmei_win  = (confirmed["honmei_actual"] == 1)
+        honmei_fuku = (confirmed["honmei_actual"] <= 3)
+        taiko_fuku  = (confirmed["taiko_actual"].notna() & (confirmed["taiko_actual"] <= 3))
+        ana_fuku    = (confirmed["ana_actual"].notna() & (confirmed["ana_actual"] <= 3))
+        any_fuku    = honmei_fuku | taiko_fuku | ana_fuku
+        n = len(confirmed)
+
+        # ── KPI ──
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("◎勝率",   f"{honmei_win.mean()*100:.1f}%", f"/{n}件")
+        k2.metric("◎複勝率", f"{honmei_fuku.mean()*100:.1f}%")
+        k3.metric("◎○▲いずれか複勝", f"{any_fuku.mean()*100:.1f}%")
+        k4.metric("照合件数", f"{n}件")
+
+        st.markdown("---")
+
+        # ── 競馬場別 ──
+        col_a, col_b = st.columns(2)
+        with col_a:
+            st.markdown("#### 競馬場別 ◎勝率・複勝率")
+            by_jyo = confirmed.groupby("jyo").agg(
+                件数=("hit", "count"),
+                勝率=("honmei_actual", lambda x: (x == 1).mean() * 100),
+                複勝率=("honmei_actual", lambda x: (x <= 3).mean() * 100),
+            ).reset_index().sort_values("勝率")
+            by_jyo["勝率"]  = by_jyo["勝率"].round(1)
+            by_jyo["複勝率"] = by_jyo["複勝率"].round(1)
+            st.dataframe(by_jyo, hide_index=True, use_container_width=True)
+
+        with col_b:
+            st.markdown("#### 人気帯別 ◎勝率")
+            def ninki_band(n):
+                if pd.isna(n): return "不明"
+                n = int(n)
+                if n == 1: return "1番人気"
+                if n <= 3: return "2-3番人気"
+                if n <= 5: return "4-5番人気"
+                return "6番人気以下"
+            confirmed["人気帯"] = confirmed["honmei_ninki"].apply(ninki_band)
+            by_ninki = confirmed.groupby("人気帯").agg(
+                件数=("hit","count"),
+                勝率=("honmei_actual", lambda x: (x==1).mean()*100),
+                複勝率=("honmei_actual", lambda x: (x<=3).mean()*100),
+            ).reset_index()
+            by_ninki["勝率"]  = by_ninki["勝率"].round(1)
+            by_ninki["複勝率"] = by_ninki["複勝率"].round(1)
+            order = ["1番人気","2-3番人気","4-5番人気","6番人気以下","不明"]
+            by_ninki["_o"] = by_ninki["人気帯"].map({v:i for i,v in enumerate(order)})
+            st.dataframe(by_ninki.sort_values("_o").drop(columns="_o"), hide_index=True, use_container_width=True)
+
+        st.markdown("---")
+
+        # ── EVフィルター効果 ──
+        col_c, col_d = st.columns(2)
+        with col_c:
+            st.markdown("#### EV別 ◎勝率")
+            def ev_band(v):
+                if pd.isna(v): return "不明"
+                if v >= 0.3: return "EV≥0.3"
+                if v >= 0.0: return "0≤EV<0.3"
+                return "EV<0"
+            confirmed["EV帯"] = confirmed["honmei_ev"].apply(ev_band)
+            by_ev = confirmed.groupby("EV帯").agg(
+                件数=("hit","count"),
+                勝率=("honmei_actual", lambda x: (x==1).mean()*100),
+                複勝率=("honmei_actual", lambda x: (x<=3).mean()*100),
+            ).reset_index()
+            by_ev["勝率"]  = by_ev["勝率"].round(1)
+            by_ev["複勝率"] = by_ev["複勝率"].round(1)
+            st.dataframe(by_ev, hide_index=True, use_container_width=True)
+
+        with col_d:
+            st.markdown("#### 距離・クラス別（新規データから蓄積）")
+            has_dist  = "距離" in confirmed.columns and confirmed["距離"].notna().any()
+            has_class = "クラス" in confirmed.columns and confirmed["クラス"].notna().any()
+            if has_dist:
+                def dist_band(v):
+                    try:
+                        v = int(v)
+                        if v <= 1400: return "短距離(〜1400)"
+                        if v <= 1800: return "マイル(〜1800)"
+                        if v <= 2200: return "中距離(〜2200)"
+                        return "長距離(2200〜)"
+                    except: return "不明"
+                confirmed["距離帯"] = confirmed["距離"].apply(dist_band)
+                by_dist = confirmed.groupby("距離帯").agg(
+                    件数=("hit","count"),
+                    勝率=("honmei_actual", lambda x: (x==1).mean()*100),
+                ).reset_index()
+                by_dist["勝率"] = by_dist["勝率"].round(1)
+                st.dataframe(by_dist, hide_index=True, use_container_width=True)
+            else:
+                st.info("距離・クラスデータは6/27以降の照合から蓄積されます")
+
+        st.markdown("---")
+
+        # ── 月曜改善ポイント自動生成 ──
+        st.markdown("#### 月曜改修インプット")
+        issues = []
+
+        # 全体精度チェック
+        overall_win = honmei_win.mean() * 100
+        if overall_win < 25:
+            issues.append(f"**◎勝率が低い ({overall_win:.1f}%)** — MFモデルの上位予測精度を要確認。コース形態特徴量(B-2)の効果が出ているか確認。")
+
+        # 競馬場別弱点
+        weak_jyo = by_jyo[by_jyo["勝率"] < 20]
+        if not weak_jyo.empty:
+            jyo_list = "、".join(weak_jyo["jyo"].tolist())
+            issues.append(f"**競馬場別弱点: {jyo_list}** — 該当競馬場のコース特性が特徴量に反映されているか確認。直線長_m・坂ありの値を要チェック。")
+
+        # 人気帯別チェック：1番人気◎が多すぎる
+        nb1 = confirmed[confirmed["honmei_ninki"] == 1]
+        if len(nb1) > 0:
+            pct_1pop = len(nb1) / n * 100
+            if pct_1pop > 70:
+                issues.append(f"**◎の{pct_1pop:.0f}%が1番人気** — MF化後も1番人気に引っ張られている。B-1血統データ追加でMFモデルの識別力向上を検討。")
+
+        # EVフィルター効果確認
+        ev_pos = confirmed[confirmed["honmei_ev"] >= 0]
+        ev_neg = confirmed[confirmed["honmei_ev"] < 0]
+        if len(ev_pos) > 5 and len(ev_neg) > 5:
+            win_pos = (ev_pos["honmei_actual"] == 1).mean() * 100
+            win_neg = (ev_neg["honmei_actual"] == 1).mean() * 100
+            if win_pos < win_neg:
+                issues.append(f"**EV≥0の勝率({win_pos:.1f}%)がEV<0({win_neg:.1f}%)を下回っている** — EVフィルターが逆効果の可能性。閾値再検討を推奨。")
+            elif win_pos - win_neg > 10:
+                issues.append(f"**EV≥0フィルターが有効** (勝率差+{win_pos-win_neg:.1f}pt) — 戦略の絞り込み条件として積極活用を推奨。")
+
+        if not issues:
+            issues.append("現時点で明確な弱点は検出されていません。モデル再学習後に再確認してください。")
+
+        # サマリーファイルに保存
+        summary_path = os.path.join(BASE_DIR, "accuracy_summary.txt")
+        summary_lines = [f"=== 精度分析サマリー {datetime.now().strftime('%Y/%m/%d')} ===", ""]
+        summary_lines += [f"◎勝率: {overall_win:.1f}%  複勝率: {honmei_fuku.mean()*100:.1f}%  照合件数: {n}件", ""]
+        summary_lines += ["【月曜改修ポイント】"] + [f"- {i}" for i in issues]
+        with open(summary_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(summary_lines))
+
+        for issue in issues:
+            st.warning(issue)
+
+        st.caption(f"このサマリーは {summary_path} にも保存されます")

@@ -119,6 +119,59 @@ def main():
         timeout=120
     )
 
+    # ── Step 4.5: 精度サマリー自動生成 ───────────────────────────────────
+    log("[Step4.5] 精度サマリー生成")
+    try:
+        import pandas as pd
+        import numpy as np
+
+        rec_path = os.path.join(BASE_DIR, "prediction_record_v2.csv")
+        df = pd.read_csv(rec_path)
+        confirmed = df[df["hit"].notna()].copy()
+        confirmed["honmei_actual"] = pd.to_numeric(confirmed["honmei_actual"], errors="coerce")
+        confirmed["honmei_ninki"]  = pd.to_numeric(confirmed["honmei_ninki"], errors="coerce")
+        confirmed["honmei_ev"]     = pd.to_numeric(confirmed["honmei_ev"], errors="coerce")
+
+        n = len(confirmed)
+        overall_win  = (confirmed["honmei_actual"] == 1).mean() * 100
+        overall_fuku = (confirmed["honmei_actual"] <= 3).mean() * 100
+
+        by_jyo = confirmed.groupby("jyo").agg(
+            件数=("honmei_actual", "count"),
+            勝率=("honmei_actual", lambda x: (x==1).mean()*100),
+        ).reset_index()
+
+        issues = []
+        if overall_win < 25:
+            issues.append(f"◎勝率低下({overall_win:.1f}%) → コース形態/血統特徴量の効果確認")
+        weak = by_jyo[by_jyo["勝率"] < 20]
+        if not weak.empty:
+            issues.append(f"弱点競馬場: {', '.join(weak['jyo'].tolist())} → 直線長_m・坂あり要チェック")
+        nb1_pct = (confirmed["honmei_ninki"] == 1).mean() * 100
+        if nb1_pct > 70:
+            issues.append(f"◎の{nb1_pct:.0f}%が1番人気 → MF識別力不足、B-1血統データ追加を検討")
+        ev_pos = confirmed[confirmed["honmei_ev"] >= 0]
+        ev_neg = confirmed[confirmed["honmei_ev"] < 0]
+        if len(ev_pos) > 5 and len(ev_neg) > 5:
+            wp  = (ev_pos["honmei_actual"] == 1).mean() * 100
+            wn  = (ev_neg["honmei_actual"] == 1).mean() * 100
+            if wp < wn:
+                issues.append(f"EV≥0の勝率({wp:.1f}%) < EV<0({wn:.1f}%) → EVフィルター閾値再検討")
+
+        summary_path = os.path.join(BASE_DIR, "accuracy_summary.txt")
+        with open(summary_path, "w", encoding="utf-8") as f:
+            f.write(f"=== 精度分析サマリー {datetime.now().strftime('%Y/%m/%d')} ===\n\n")
+            f.write(f"◎勝率: {overall_win:.1f}%  複勝率: {overall_fuku:.1f}%  照合件数: {n}件\n\n")
+            f.write("【競馬場別】\n")
+            for _, row in by_jyo.iterrows():
+                f.write(f"  {row['jyo']}: {row['勝率']:.1f}% ({row['件数']}件)\n")
+            f.write("\n【月曜改修ポイント】\n")
+            for issue in (issues or ["現時点で明確な弱点なし"]):
+                f.write(f"- {issue}\n")
+        log(f"  精度サマリー保存: {summary_path}")
+    except Exception as e:
+        log(f"  精度サマリー生成エラー: {e}")
+
     # ── Step 5: GitHubプッシュ ────────────────────────────────────────────
     log("[Step5] GitHubプッシュ")
     try:
@@ -127,6 +180,7 @@ def main():
             "model_result.csv",
             "weekly_update_log.txt",
             "accuracy_log.csv",
+            "accuracy_summary.txt",
         ]
         for f in push_files:
             fpath = os.path.join(BASE_DIR, f)

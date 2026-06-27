@@ -140,6 +140,12 @@ def record_from_prediction(race_id, pdf):
         "honmei_ev":     float(top1.get("単勝期待値", np.nan)) if pd.notna(top1.get("単勝期待値")) else None,
         "honmei_strat":  str(top1.get("該当戦略", "")) if pd.notna(top1.get("該当戦略", "")) else "",
         "honmei_kenshu": str(top1.get("券種推奨", "")) if pd.notna(top1.get("券種推奨", "")) else "",
+        "honmei_mf_p":   float(top1.get("MF勝ち確率", np.nan)) if pd.notna(top1.get("MF勝ち確率")) else None,
+        # 弱点分析用の条件列
+        "距離":    top1.get("距離", np.nan),
+        "クラス":  top1.get("クラス", np.nan),
+        "馬場":    top1.get("馬場", np.nan),
+        "馬場状態": top1.get("馬場状態", np.nan),
         "honmei_actual": np.nan,
         "hit":           np.nan,
         "taiko_actual":  np.nan,
