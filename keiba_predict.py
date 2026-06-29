@@ -487,33 +487,37 @@ def build_report(pdf, race_id, jyo_name, race_no,
         )
     lines.append("")
 
-    # ── 期待値ベースの勝負買い目（回収率重視・実戦投入用）─────────────
-    # バックテストの最適閾値: 単勝期待値>=+0.4 で回収率121.3%（予測1位×オッズ1.5〜20倍）。
-    # 「印（実力評価）」とは別に、実際に賭けて勝てる馬を期待値で絞って示す。
-    TARGET_EV = 0.4
-    bet_candidates = pdf[
-        (pdf["単勝期待値"] >= TARGET_EV) &
-        (pdf["単勝オッズ"] >= 1.5) & (pdf["単勝オッズ"] <= 20.0)
-    ].sort_values("単勝期待値", ascending=False)
-    lines.append("  【[EV] 期待値ベースの勝負馬（EV>=+0.4 × オッズ1.5-20倍 / BT回収率178.4%）】")
-    if len(bet_candidates) > 0:
-        for _, r in bet_candidates.head(3).iterrows():
+    # ── AI合意馬推奨（MF×通常モデル両方が上位と判断した馬）────────────
+    # EV>=0.4は実績で勝率0%だったため廃止。MFと通常モデル両方がTop3以内の馬を推奨。
+    has_mf_col = "MF勝ち確率" in pdf.columns and pdf["MF勝ち確率"].notna().any()
+    if has_mf_col:
+        mf_top3   = set(pdf["MF勝ち確率"].nlargest(3).index)
+        win_top3  = set(pdf["勝ち確率"].nlargest(3).index)
+        agree_idx = mf_top3 & win_top3
+        agree_df  = pdf.loc[list(agree_idx)].sort_values("MF勝ち確率", ascending=False)
+        agree_df  = agree_df[agree_df["単勝オッズ"] >= 1.5]
+    else:
+        agree_df = pdf[pdf["予測順位"] <= 3].sort_values("勝ち確率", ascending=False)
+        agree_df = agree_df[agree_df["単勝オッズ"] >= 1.5]
+    lines.append("  【[AI合意] MF×通常モデル両方がTop3評価（双方が認めた本命候補）】")
+    if len(agree_df) > 0:
+        for _, r in agree_df.head(3).iterrows():
             pop_r = r.get("人気", np.nan)
             pop_comment = ""
             if pd.notna(pop_r):
                 if int(pop_r) == 1:
-                    pop_comment = " [1番人気=単勝見送り推奨]"
+                    pop_comment = " [1番人気]"
                 elif int(pop_r) >= 7:
-                    pop_comment = " [穴=回収率311.9%圏内]"
+                    pop_comment = " [穴]"
                 elif int(pop_r) >= 4:
-                    pop_comment = " [中穴=回収率172.3%圏内]"
+                    pop_comment = " [中穴]"
             lines.append(
                 f"     ★ {r['馬名']}（{r['単勝オッズ']:.1f}倍 {int(pop_r) if pd.notna(pop_r) else '-'}人気）"
-                f" 期待値{_ev(r['単勝期待値'])}  勝率{r['勝ち確率']*100:.1f}%{pop_comment}"
+                f"  MF勝率{r['MF勝ち確率']*100:.1f}% 通常勝率{r['勝ち確率']*100:.1f}%{pop_comment}"
             )
-        lines.append("     ※ 該当馬がいない時は『見送り』が正解（無理に賭けない）。")
+        lines.append("     ※ 両モデル合意馬が◎の基本軸。単独で◎が両モデル合意なら信頼度高。")
     else:
-        lines.append("     該当なし → このレースは見送り推奨（期待値+0.4以上の馬がいない）。")
+        lines.append("     該当なし（モデル意見が分かれているレース）。印を参考に判断。")
     lines.append("")
 
     # ── 買い目サマリー（複勝・馬連・ワイド・馬単・3連複） ──────────────
@@ -721,25 +725,25 @@ def predict_race_pdf(race_id: str, *, history_df: pd.DataFrame, models_pack: dic
             print(f"  市場フリー予測エラー（スキップ）: {e}")
 
     # ── 戦略判定（predict/auto 共通）
+    # EV条件は実データでEV>=0.3の勝率が0%のため除外。AI予測順位とオッズ範囲を基準にする。
     def _check_strategy(row):
         s   = []
         jyo = int(str(row.get("race_id", "000000000000"))[4:6])
         r1  = row["予測順位"] == 1
-        ev  = row["単勝期待値"]
         od  = row["単勝オッズ"]
-        if r1 and ev >= 0.3 and 1.5 <= od <= 20:
+        if r1 and 1.5 <= od <= 20:
             s.append("戦略A")
-            if row["人気"] != 1:
+            if pd.notna(row.get("人気")) and row["人気"] != 1:
                 s.append("戦略A-2")
-        if row["人気"] >= 3 and r1 and ev >= 0.3:
+        if pd.notna(row.get("人気")) and row["人気"] >= 3 and r1 and 2.0 <= od <= 20:
             s.append("戦略C")
-        if pd.notna(row.get("前走間隔")) and 2 <= row["前走間隔"] <= 4 and r1 and ev >= 0.2:
+        if pd.notna(row.get("前走間隔")) and 2 <= row["前走間隔"] <= 4 and r1:
             s.append("戦略D")
-        if jyo in [5, 7] and r1 and ev >= 0.3 and 1.5 <= od <= 20:
+        if jyo in [5, 7] and r1 and 1.5 <= od <= 20:
             s.append("戦略F")
             if pd.notna(row.get("距離")) and row.get("距離", 9999) <= 1400:
                 s.append("戦略FG")
-        if jyo in [6, 10] and r1 and ev >= 0.3 and 1.5 <= od <= 20:
+        if jyo in [6, 10] and r1 and 1.5 <= od <= 20:
             s.append("戦略H")
         return " / ".join(s) if s else ""
 
@@ -791,16 +795,18 @@ def predict_race_pdf(race_id: str, *, history_df: pd.DataFrame, models_pack: dic
             pdf.at[idx, "妙味_複勝"] = "妙味"
 
     # ── 印割り当て
-    # ◎○▲: MF勝ち確率（純粋AI）の総合スコア上位3頭 → 単勝・軸
+    # ◎○▲: MF 60% + 通常モデル 40% ブレンドスコア上位3頭 → 単勝・軸
     # △   : 連対確率（place2モデル）上位（◎○▲以外）  → 馬連・ワイドの相手
     # ×   : 複勝確率（place3モデル）上位（◎○▲△以外）→ 三連複・ヒモ
-    rank_basis = (
-        "MF勝ち確率"
-        if "MF勝ち確率" in pdf.columns and pdf["MF勝ち確率"].notna().any()
-        else "勝ち確率"
-    )
     n = len(pdf)
-    pdf["_ai_rank"]  = pdf[rank_basis].rank(ascending=False)
+    has_mf = "MF勝ち確率" in pdf.columns and pdf["MF勝ち確率"].notna().any()
+    if has_mf:
+        mf_norm  = pdf["MF勝ち確率"] / pdf["MF勝ち確率"].sum()
+        win_norm = pdf["勝ち確率"]    / pdf["勝ち確率"].sum()
+        blend    = 0.6 * mf_norm + 0.4 * win_norm
+        pdf["_ai_rank"] = blend.rank(ascending=False)
+    else:
+        pdf["_ai_rank"] = pdf["勝ち確率"].rank(ascending=False)
     pdf["総合スコア"] = (1 - (pdf["_ai_rank"] - 1) / n) * 80 + pdf["該当戦略"].apply(lambda s: 20 if s else 0)
 
     pdf["推奨ランク"] = ""

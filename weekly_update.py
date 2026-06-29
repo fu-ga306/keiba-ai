@@ -39,15 +39,17 @@ def run_step(label, cmd, timeout=3600):
     try:
         result = subprocess.run(
             cmd, cwd=BASE_DIR, capture_output=True,
-            text=True, encoding="utf-8", timeout=timeout
+            text=True, encoding="utf-8", errors="replace", timeout=timeout
         )
-        if result.stdout.strip():
-            for line in result.stdout.strip().splitlines()[-10:]:  # 末尾10行だけログ
+        stdout = (result.stdout or "").strip()
+        stderr = (result.stderr or "").strip()
+        if stdout:
+            for line in stdout.splitlines()[-10:]:
                 log(f"  {line}")
         if result.returncode != 0:
             log(f"  [警告] 終了コード {result.returncode}")
-            if result.stderr.strip():
-                for line in result.stderr.strip().splitlines()[-5:]:
+            if stderr:
+                for line in stderr.splitlines()[-5:]:
                     log(f"  ERR: {line}")
         else:
             log(f"--- {label} 完了 ---")

@@ -935,8 +935,8 @@ def build_features(csv_path="race_data_clean.csv", out_path="race_features.csv")
         "連続複勝フラグ", "連続勝利フラグ", "近走改善度",
         # タイム差
         "平均タイム差",
-        # 騎手×競馬場・乗り替わり
-        "騎手競馬場勝率", "乗り替わり",
+        # 騎手×競馬場・乗り替わり・斤量変化・前走条件変化
+        "騎手競馬場勝率", "乗り替わり", "斤量変化", "連闘", "休み明け", "負担率",
         # 交互作用特徴量
         "距離×馬場_過去勝率", "距離×馬場_過去平均着順",
         "距離×クラス_過去勝率",
@@ -950,12 +950,24 @@ def build_features(csv_path="race_data_clean.csv", out_path="race_features.csv")
         "父系_芝ダ適性", "父系_複勝率",
     ]
 
-    # ── 乗り替わり: 騎手列はCSV出力しないが、ここで計算して保持 ──
+    # ── 乗り替わり・斤量変化: 騎手列・斤量はCSV出力しないが、ここで計算して保持 ──
     # model.py は race_features.csv に騎手列がないと全NaNで重要度0%になる
-    if "騎手" in df.columns:
+    if "騎手" in df.columns or "斤量" in df.columns:
         df = df.sort_values(["馬名", "race_id"]).reset_index(drop=True)
-        prev_jockey = df.groupby("馬名")["騎手"].shift(1)
-        df["乗り替わり"] = (prev_jockey.notna() & (prev_jockey != df["騎手"])).astype(int)
+        if "騎手" in df.columns:
+            prev_jockey = df.groupby("馬名")["騎手"].shift(1)
+            df["乗り替わり"] = (prev_jockey.notna() & (prev_jockey != df["騎手"])).astype(int)
+        if "斤量" in df.columns:
+            df["斤量変化"] = df.groupby("馬名")["斤量"].diff()
+
+    # 前走間隔・馬体重・斤量から派生する特徴量（model.py で NaN 強制されていた）
+    if "前走間隔" in df.columns:
+        df["連闘"]    = (df["前走間隔"] <= 1).astype(float)
+        df["休み明け"] = (df["前走間隔"] >= 12).astype(float)
+        # 初出走（前走間隔=NaN）は NaN のまま
+        df.loc[df["前走間隔"].isna(), ["連闘", "休み明け"]] = float("nan")
+    if "斤量" in df.columns and "馬体重" in df.columns:
+        df["負担率"] = df["斤量"] / df["馬体重"].replace(0, float("nan"))
 
     out = df[[c for c in FEATURE_COLS if c in df.columns]]
     out.to_csv(out_path, index=False, encoding="utf-8-sig")

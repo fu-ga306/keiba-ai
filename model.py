@@ -172,11 +172,10 @@ def train_model(csv_path="race_features.csv", target="win", df=None):
     if "騎手" in df.columns:
         df = add_extra_features(df)
     else:
-        for col in ["斤量変化", "連闘", "休み明け", "負担率"]:
-            df[col] = np.nan
-        # 乗り替わりは features.py で計算済みの場合は上書きしない
-        if "乗り替わり" not in df.columns or df["乗り替わり"].isna().all():
-            df["乗り替わり"] = np.nan
+        # features.py で計算済みの場合は上書きしない（NaN率が高い場合のみ NaN でセット）
+        for col in ["斤量変化", "連闘", "休み明け", "負担率", "乗り替わり"]:
+            if col not in df.columns or df[col].isna().all():
+                df[col] = np.nan
 
     df["年"] = df["race_id"].astype(str).str[:4].astype(int)
     train_df = df[df["年"] <= 2024].copy()
