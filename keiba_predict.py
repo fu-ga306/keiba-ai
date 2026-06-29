@@ -800,11 +800,19 @@ def predict_race_pdf(race_id: str, *, history_df: pd.DataFrame, models_pack: dic
     # ×   : 複勝確率（place3モデル）上位（◎○▲△以外）→ 三連複・ヒモ
     n = len(pdf)
     has_mf = "MF勝ち確率" in pdf.columns and pdf["MF勝ち確率"].notna().any()
+
+    # ── Phase 1: 軸馬精度アップ ──────────────────────────────────────────
+    # MF+通常ブレンド (60:40) + EV>=0.1 ペナルティ
+    # 実績: EV<0→勝率28.4%, EV>=0→勝率6.7% なのでEV>=0.1の馬を◎に選びにくくする
     if has_mf:
         mf_norm  = pdf["MF勝ち確率"] / pdf["MF勝ち確率"].sum()
         win_norm = pdf["勝ち確率"]    / pdf["勝ち確率"].sum()
         blend    = 0.6 * mf_norm + 0.4 * win_norm
-        pdf["_ai_rank"] = blend.rank(ascending=False)
+        ev_val   = pdf["単勝期待値"].fillna(0.0)
+        ev_adj   = np.where(ev_val >= 0.1,
+                            np.maximum(0.55, 1.0 - ev_val.clip(0, 0.5)),
+                            1.0)
+        pdf["_ai_rank"] = (blend * ev_adj).rank(ascending=False)
     else:
         pdf["_ai_rank"] = pdf["勝ち確率"].rank(ascending=False)
     pdf["総合スコア"] = (1 - (pdf["_ai_rank"] - 1) / n) * 80 + pdf["該当戦略"].apply(lambda s: 20 if s else 0)
@@ -820,18 +828,32 @@ def predict_race_pdf(race_id: str, *, history_df: pd.DataFrame, models_pack: dic
         pdf.at[idx, "推奨ランク"] = mk
         pdf.at[idx, "印"] = mk
 
-    # △: 連対確率上位（◎○▲以外）
+    # ── Phase 2: 印付き馬精度アップ ─────────────────────────────────────
+    # △: 連対EV（連対確率 × オッズ補正）最大の馬 → 馬連・ワイドの穴ヒモ候補
+    # 単純な連対確率最高だと◎○▲と同じ人気馬が重複するため
+    # オッズ補正= sqrt(オッズ/2.0) を乗じることで中穴馬を優先しやすくする
     rest = pdf[~pdf.index.isin(assigned)]
     if not rest.empty and "連対確率" in rest.columns:
-        delta_idx = rest["連対確率"].idxmax()
+        odds_r = rest["単勝オッズ"].fillna(2.0).clip(lower=1.1)
+        delta_score = rest["連対確率"] * np.sqrt(odds_r / 2.0).clip(0.6, 2.0)
+        delta_idx = delta_score.idxmax()
         pdf.at[delta_idx, "推奨ランク"] = "△"
+        pdf.at[delta_idx, "印"] = "△"
         assigned.add(delta_idx)
 
-    # ×: 複勝確率上位（◎○▲△以外）
+    # ×: 複勝EV（複勝確率 × 推定複勝オッズ）最大の馬 → 3連複・複勝の穴ヒモ候補
+    # 実際の複勝オッズがある場合は使用、ない場合は単勝オッズから推定
     rest2 = pdf[~pdf.index.isin(assigned)]
     if not rest2.empty and "複勝確率" in rest2.columns:
-        batu_idx = rest2["複勝確率"].idxmax()
+        has_real_fuku = "複勝オッズ_min" in rest2.columns and rest2["複勝オッズ_min"].notna().any()
+        if has_real_fuku:
+            fuku_odds = rest2["複勝オッズ_min"].fillna(rest2["単勝オッズ"] / 3.5)
+        else:
+            fuku_odds = (rest2["単勝オッズ"] / 3.5).clip(lower=1.1)
+        batu_score = rest2["複勝確率"] * fuku_odds.clip(1.1, 5.0)
+        batu_idx = batu_score.idxmax()
         pdf.at[batu_idx, "推奨ランク"] = "×"
+        pdf.at[batu_idx, "印"] = "×"
 
     # ── レース情報（PDF上に格納して呼び出し元でも使えるように）
     baba_inv = {1: "良", 2: "稍重", 3: "重", 4: "不良"}
