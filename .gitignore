@@ -1,7 +1,7 @@
-# ‹@–§î•ñ
+# ï¿½@ï¿½ï¿½ï¿½ï¿½ï¿½
 .env
 
-# d‚¢ƒf[ƒ^ƒtƒ@ƒCƒ‹
+# ï¿½dï¿½ï¿½ï¿½fï¿½[ï¿½^ï¿½tï¿½@ï¿½Cï¿½ï¿½
 race_data_large.csv
 race_data_clean.csv
 race_features.csv
@@ -9,14 +9,14 @@ race_data_new_tmp_*.csv
 model_mf_result.csv
 horse_master.csv
 
-# ƒ‚ƒfƒ‹ƒtƒ@ƒCƒ‹
+# ï¿½ï¿½ï¿½fï¿½ï¿½ï¿½tï¿½@ï¿½Cï¿½ï¿½
 model.pkl
 model_mf.pkl
 
-# —\‘z‹L˜^iƒ[ƒJƒ‹ŠÇ—j
+# ï¿½\ï¿½zï¿½Lï¿½^ï¿½iï¿½ï¿½ï¿½[ï¿½Jï¿½ï¿½ï¿½Ç—ï¿½ï¿½j
 prediction_record.csv
 
-# ˆêƒtƒ@ƒCƒ‹
+# ï¿½êï¿½tï¿½@ï¿½Cï¿½ï¿½
 __pycache__/
 *.pyc
 *.log
@@ -25,3 +25,26 @@ update_log.txt
 catboost_info/
 
 test.py
+
+# logs and work files (added 2026/07)
+*_log.txt
+model_train_log*.txt
+shap_log*.txt
+scraper_log.txt
+scraper_error.txt
+features_rebuild_log.txt
+pipeline_log.txt
+
+# local settings / tools / backups
+.claude/
+ngrok.exe
+*.bak*
+*.pid
+
+# noteä¸‹æ›¸ãï¼ˆpublic ãƒªãƒã‚¸ãƒˆãƒªã«æŠ•ç¨¿å‰è¨˜äº‹ã‚’æ™’ã•ãªã„ï¼‰
+note/
+design_result_display.md
+
+# large model files (keep out of GitHub 100MB limit)
+model*.pkl.bak*
+*.pkl.bak*

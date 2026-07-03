@@ -274,11 +274,17 @@ def _save(rows, append=True):
         df.to_csv(OUTPUT_CSV, index=False, encoding="utf-8-sig")
 
 
-def build_payout_data():
+def build_payout_data(year=None):
+    """払戻データを取得する。year を指定するとその年（例:'2025'）のレースのみ取得。
+    バックテスト用途なら year='2025' で約10時間・3千レースに絞れる。"""
     print("race_features.csv を読み込み中...")
     df = pd.read_csv(FEAT_CSV, low_memory=False, usecols=["race_id"])
     all_ids = sorted(df["race_id"].astype(str).unique())
-    print(f"全レース数: {len(all_ids)}")
+    if year:
+        all_ids = [r for r in all_ids if str(r).startswith(str(year))]
+        print(f"{year}年に絞り込み: {len(all_ids)}レース")
+    else:
+        print(f"全レース数: {len(all_ids)}")
 
     done = _load_done_race_ids()
     targets = [r for r in all_ids if r not in done]
@@ -375,6 +381,11 @@ def test_single(race_id):
 
 if __name__ == "__main__":
     if len(sys.argv) > 1:
-        test_single(sys.argv[1])
+        arg = sys.argv[1]
+        # 4桁数字なら年フィルタ（例: python payout_scraper.py 2025）
+        if arg.isdigit() and len(arg) == 4:
+            build_payout_data(year=arg)
+        else:
+            test_single(arg)  # 12桁race_idなら単一テスト
     else:
         build_payout_data()

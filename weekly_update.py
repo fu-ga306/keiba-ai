@@ -37,9 +37,12 @@ def run_step(label, cmd, timeout=3600):
     """サブプロセスを実行してログに記録。失敗してもクラッシュしない。"""
     log(f"--- {label} 開始 ---")
     try:
+        env = os.environ.copy()
+        env["PYTHONUTF8"] = "1"  # Windows CP932 → UTF-8 強制（エンコードエラー防止）
         result = subprocess.run(
             cmd, cwd=BASE_DIR, capture_output=True,
-            text=True, encoding="utf-8", errors="replace", timeout=timeout
+            text=True, encoding="utf-8", errors="replace", timeout=timeout,
+            env=env
         )
         stdout = (result.stdout or "").strip()
         stderr = (result.stderr or "").strip()
@@ -58,7 +61,11 @@ def run_step(label, cmd, timeout=3600):
         log(f"  [タイムアウト] {label} が {timeout}秒 を超過しました")
         return False
     except Exception as e:
+        import traceback
+        tb = traceback.format_exc()
         log(f"  [エラー] {label}: {e}")
+        for line in tb.splitlines()[-10:]:
+            log(f"  TB: {line}")
         return False
 
 

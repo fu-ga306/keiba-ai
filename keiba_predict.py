@@ -120,6 +120,78 @@ def send_email(subject: str, body: str):
         print(f"  ❌ メール送信エラー: {e}")
 
 
+# ── 推奨馬の組み合わせ的中率（フォーメーション）─────────────────────────────
+_FORMATION_CALIB = None
+
+def _load_formation_calib():
+    """isotonicキャリブレーター（formation_calibrators.pkl）を1回だけ読む。無ければ空。"""
+    global _FORMATION_CALIB
+    if _FORMATION_CALIB is None:
+        path = os.path.join(BASE_DIR, "formation_calibrators.pkl")
+        try:
+            with open(path, "rb") as f:
+                _FORMATION_CALIB = pickle.load(f)
+        except Exception:
+            _FORMATION_CALIB = {}
+    return _FORMATION_CALIB
+
+
+def formation_probs(win_probs, idx3, idx5):
+    """勝ち確率(Plackett-Luce)から推奨馬集合の組み合わせ確率を計算する。
+    idx3=推奨3頭(◎○▲)の位置, idx5=推奨5頭(◎○▲△×)の位置。
+    戻り値: dict(s3_2ren, s3_2fuku, s5_2ren, s5_3fuku) の生確率。"""
+    from itertools import permutations
+    p = np.array(win_probs, dtype=float)
+    p = np.clip(np.nan_to_num(p, nan=0.0), 1e-12, None)
+    p = p / p.sum()
+    n = len(p)
+    S3, S5 = set(idx3), set(idx5)
+
+    def top2_in(S):
+        tot = 0.0
+        for i in S:
+            for j in S:
+                if i == j:
+                    continue
+                d = 1 - p[i]
+                if d > 1e-12:
+                    tot += p[i] * p[j] / d
+        return min(tot, 1.0)
+
+    a2 = 0.0   # S3のうち2頭以上がtop3(複勝圏)
+    b2 = 0.0   # top3すべてS5内(5頭で3着以内独占)
+    for i, j, k in permutations(range(n), 3):
+        d1 = 1 - p[i]
+        d2 = 1 - p[i] - p[j]
+        if d1 <= 1e-12 or d2 <= 1e-12:
+            continue
+        pr = p[i] * (p[j] / d1) * (p[k] / d2)
+        t3 = {i, j, k}
+        if len(t3 & S3) >= 2:
+            a2 += pr
+        if t3 <= S5:
+            b2 += pr
+    return {"s3_2ren": top2_in(S3), "s3_2fuku": a2,
+            "s5_2ren": top2_in(S5), "s5_3fuku": b2}
+
+
+def formation_probs_calibrated(win_probs, idx3, idx5):
+    """組み合わせ確率を実績ベース(isotonic)で補正して返す。補正器が無ければ生確率。"""
+    raw = formation_probs(win_probs, idx3, idx5)
+    calib = _load_formation_calib()
+    out = {}
+    for k, v in raw.items():
+        iso = calib.get(k)
+        if iso is not None:
+            try:
+                out[k] = float(iso.predict([v])[0])
+            except Exception:
+                out[k] = v
+        else:
+            out[k] = v
+    return out
+
+
 # ── レポート本文生成 ──────────────────────────────────────────────────────
 def build_report(pdf, race_id, jyo_name, race_no,
                  dist, turf, baba, cls, n_horse):
@@ -188,13 +260,27 @@ def build_report(pdf, race_id, jyo_name, race_no,
 
         gap = row.get("乖離スコア", np.nan)
         gap_s = f"{gap:+.0f}" if pd.notna(gap) else "  -"
+        # 状況フラグ（前走情報から派生）
+        _flags = []
+        _cls_chg = row.get("クラス変化", np.nan)
+        if pd.notna(_cls_chg) and _cls_chg > 0:
+            _flags.append("昇級")
+        elif pd.notna(_cls_chg) and _cls_chg < 0:
+            _flags.append("降級▲")
+        _prev_diff = row.get("前走着差_秒", np.nan)
+        if pd.notna(_prev_diff) and _prev_diff <= 0.2 and pd.notna(row.get("前走着順")) and row["前走着順"] != 1:
+            _flags.append("接戦")
+        if row.get("重賞出走フラグ", 0) == 1.0:
+            _flags.append("重賞歴")
+        flag_str = "[" + "/".join(_flags) + "]" if _flags else ""
+
         line = (
             f"{int(row['予測順位']):>2} {int(row['馬番']):>2} {str(row['馬名']):<13} "
             f"{odds_s:>6} {pop_s:>2}人 "
             f"{win_p*100:>4.1f}% {place2_p*100:>4.1f}% {place_p*100:>4.1f}% {place3_p*100:>4.1f}% "
             f"{ev_s:>6} {kelly_s:>5} "
             f"{past_wr_s:>5} {runs:>3}走 "
-            f"{interval_s:>4} {gap_s:>4}  {strategy} {mark}"
+            f"{interval_s:>4} {gap_s:>4}  {strategy}{flag_str} {mark}"
         )
         lines.append(line)
 
@@ -244,16 +330,20 @@ def build_report(pdf, race_id, jyo_name, race_no,
             block.append("")
         return block
 
-    top5_ai = pdf.sort_values("勝ち確率", ascending=False).head(5)
-    top5_ev = pdf[pdf["勝ち確率"] >= 0.03].sort_values("単勝期待値", ascending=False).head(5)
+    # top5_ai: 総合スコア(MF60%+通常40%+EVペナルティ)の上位5頭 = 印と同じ基準
+    top5_ai = pdf.sort_values("総合スコア", ascending=False).head(5)
+    # top5_ev: 通常モデル高評価かつEV<0（市場評価と近い）→ 安定した信頼馬
+    top5_ev = pdf[(pdf["単勝期待値"] < 0) & (pdf["勝ち確率"] >= 0.03)].sort_values("勝ち確率", ascending=False).head(5)
+    if top5_ev.empty:
+        top5_ev = pdf[pdf["勝ち確率"] >= 0.03].sort_values("勝ち確率", ascending=False).head(5)
 
     lines += rec_block(
-        "純粋AI予想 TOP5", "[AI]", top5_ai,
-        "モデルが算出した勝ち確率のみで選出。オッズ・人気は一切考慮しない。"
+        "AI総合予想 TOP5", "[AI]", top5_ai,
+        "MF60%+通常40%ブレンド+EVペナルティで選出。印の◎○▲と同じ基準。"
     )
     lines += rec_block(
-        "期待値ベース推奨 TOP5", "[EV]", top5_ev,
-        "期待値（勝ち確率×オッズ-1）が高い順。馬券的妙味を重視した選出。"
+        "安定高評価 TOP5", "[安定]", top5_ev,
+        "通常モデル高評価かつEV<0（市場評価と合致）。信頼度の高い実力馬。"
     )
 
     # ── 2軸比較サマリー ──────────────────────────────────────────────────
@@ -312,21 +402,71 @@ def build_report(pdf, race_id, jyo_name, race_no,
     lines.append("  ※ 期待値・オッズは参考情報として表示（印の決定には使用しません）")
     lines.append("")
 
-    # スコアリング: 印（◎○▲）は実力評価（MF勝ち確率）の順位で決める。
-    # 戦略ボーナスは外す（期待値の妙味は「買い目サマリー」で別途絞るため、
-    # 印に混ぜると実力評価が歪む）。役割分担:
-    #   印     = 実力順（MFモデル=人気を見ない実力評価）
-    #   買い目 = 期待値で絞る（期待値+0.4で回収率121%・analyze結果）
-    # USE_MF_FOR_MARKS=False で従来(通常モデル)の印に戻せる。
-    USE_MF_FOR_MARKS = True
-    if USE_MF_FOR_MARKS and pdf["MF勝ち確率"].notna().any():
-        rank_basis = "MF勝ち確率"
+    # 最終予想の順位: predict_race_pdf で計算済みの総合スコア（MF60%+通常40%+EVペナルティ）を使用。
+    # build_report 内で独自スコアを再計算していたが、印列と不一致になるため廃止。
+    # 印列の ◎○▲△× = 総合スコア順、ここでもそれに揃える。
+    final_top = pdf.sort_values("総合スコア", ascending=False).head(5)
+
+    # ── AI信頼度スコア ─────────────────────────────────────────────────
+    # TOP1とTOP2の総合スコア差。大きいほど◎が突出しており、AIが確信を持っている。
+    _scores_sorted = pdf["総合スコア"].nlargest(2).values
+    _score_gap = float(_scores_sorted[0] - _scores_sorted[1]) if len(_scores_sorted) >= 2 else 0.0
+    _honmei_ev_val = pdf.loc[pdf["印"] == "◎", "単勝期待値"].values
+    _honmei_ev = float(_honmei_ev_val[0]) if len(_honmei_ev_val) > 0 and pd.notna(_honmei_ev_val[0]) else None
+    _mf_top = pdf["MF勝ち確率"].idxmax() if ("MF勝ち確率" in pdf.columns and pdf["MF勝ち確率"].notna().any()) else None
+    _win_top = pdf["勝ち確率"].idxmax()
+    _models_agree = (_mf_top == _win_top) if _mf_top is not None else False
+
+    # 少頭数補正: 8頭以下はランダム性が高く予測精度が下がる
+    _n_horses = len(pdf)
+    _is_small_field = _n_horses <= 8
+
+    # ◎の前走情報（着差・クラス変化）
+    _honmei_row = pdf[pdf["印"] == "◎"]
+    _honmei_prev_diff = None
+    _honmei_class_chg = None
+    if not _honmei_row.empty:
+        _hr = _honmei_row.iloc[0]
+        if "前走着差_秒" in _hr.index and pd.notna(_hr.get("前走着差_秒")):
+            _honmei_prev_diff = float(_hr["前走着差_秒"])
+        if "クラス変化" in _hr.index and pd.notna(_hr.get("クラス変化")):
+            _honmei_class_chg = float(_hr["クラス変化"])
+
+    # 信頼度判定（少頭数・前走情報でペナルティ/ボーナス）
+    _effective_gap = _score_gap
+    if _is_small_field:
+        _effective_gap *= 0.8  # 少頭数は信頼度を20%ダウン
+    if _honmei_class_chg is not None and _honmei_class_chg > 0:
+        _effective_gap *= 0.85  # 昇級戦は15%ダウン
+    if _honmei_prev_diff is not None and _honmei_prev_diff <= 0.2:
+        _effective_gap *= 1.1  # 前走接戦（0.2秒以内）は10%アップ
+
+    if _effective_gap >= 15 and _models_agree and (_honmei_ev is not None and _honmei_ev < 0.1):
+        _confidence = "高★★★"
+        _confidence_note = "→ 積極的に買い推奨"
+    elif _effective_gap >= 8 or (_models_agree and _honmei_ev is not None and _honmei_ev < 0.1):
+        _confidence = "中★★"
+        _confidence_note = "→ 通常推奨"
     else:
-        rank_basis = "勝ち確率"
-    pdf["_ai_rank"]  = pdf[rank_basis].rank(ascending=False)
-    n = len(pdf)
-    pdf["_score"] = (1 - (pdf["_ai_rank"] - 1) / n) * 100
-    final_top = pdf.sort_values("_score", ascending=False).head(5)
+        _confidence = "低★"
+        _confidence_note = "→ 伯仲レース・少額か見送り推奨"
+
+    # 付加情報ラベル
+    _extra_notes = []
+    if _is_small_field:
+        _extra_notes.append(f"少頭数({_n_horses}頭)")
+    if _honmei_class_chg is not None and _honmei_class_chg > 0:
+        _extra_notes.append("◎昇級戦")
+    elif _honmei_class_chg is not None and _honmei_class_chg < 0:
+        _extra_notes.append("◎降級(有利)")
+    if _honmei_prev_diff is not None:
+        _extra_notes.append(f"◎前走着差{_honmei_prev_diff:.2f}秒")
+    _extra_str = " / ".join(_extra_notes)
+
+    lines.append(f"  [AI信頼度] {_confidence}  (スコア差:{_score_gap:.1f} / モデル合意:{'YES' if _models_agree else 'NO'}) {_confidence_note}")
+    if _extra_str:
+        lines.append(f"             {_extra_str}")
+    lines.append("")
 
     final_marks  = ["◎", "○", "▲", "△", "×"]
     final_labels = ["最強推奨", "強く推奨", "推奨", "穴候補", "注目"]
@@ -341,7 +481,7 @@ def build_report(pdf, race_id, jyo_name, race_no,
         pop   = row.get("人気", np.nan)
         wp    = row["勝ち確率"]
         ev    = row["単勝期待値"]
-        score = row["_score"]
+        score = row.get("総合スコア", row.get("_score", 0.0))
         strat = row.get("該当戦略", "")
         in_ai = row["馬名"] in ai_names
         in_ev = row["馬名"] in ev_names
@@ -384,7 +524,7 @@ def build_report(pdf, race_id, jyo_name, race_no,
     # 人気帯別バックテスト参考（MFモデル ◎単勝 3,144レース）
     lines.append("  [BT参考] MF◎ 人気帯別単勝回収率（3,144レース）")
     lines.append("  1番人気: 97.8%[NG]  2-3番人気: 133.2%  4-6番人気: 172.3%  7番人気以下: 311.9%")
-    lines.append("  MF◎xEV>=0.4: 187.4%（529回）  MF◎xEV>=0.3: 179.0%（651回）")
+    lines.append("  ※ EVフィルター廃止（実績EV>=0.3→勝率0%）。現在はAI合意+人気帯で判断。")
     lines.append("")
 
     # ── 券種推奨（3モデルによる役割判定） ────────────────────────────
@@ -425,7 +565,8 @@ def build_report(pdf, race_id, jyo_name, race_no,
     lines.append("")
 
     # ① ◎の手堅い複勝（単勝は難しいが複勝率が高い本命）
-    honmei_row = pdf.sort_values("勝ち確率", ascending=False).iloc[0]
+    _honmei_mark_df = pdf[pdf["印"] == "◎"]
+    honmei_row = _honmei_mark_df.iloc[0] if not _honmei_mark_df.empty else pdf.sort_values("総合スコア", ascending=False).iloc[0]
     h_win  = honmei_row["勝ち確率"]
     h_fuku = honmei_row["複勝確率"]
     h_odds = honmei_row.get("単勝オッズ", np.nan)
@@ -471,20 +612,23 @@ def build_report(pdf, race_id, jyo_name, race_no,
         lines.append("     該当なし。このレースは人気薄に妙味がなく、無理は禁物。")
     lines.append("")
 
-    # ③ 総合判断（このレースを買うべきか）
+    # ③ 総合判断（AI信頼度 + 妙味有無で総合判定）
     lines.append("  ③ レース総合判断")
     has_myumi = len(candidates) > 0
-    plus_ev_count = (pdf["単勝期待値"] >= 0.4).sum()
-    if plus_ev_count > 0 or has_myumi:
-        lines.append(
-            f"     妙味あり（期待値0.4以上が{plus_ev_count}頭）。"
-            f"狙い目があるレース。"
-        )
+    # 信頼度は既に計算済み（_confidence, _confidence_note, _score_gap, _models_agree）
+    _ev_str = f"EV{_honmei_ev:+.2f}" if _honmei_ev is not None else "EV不明"
+    lines.append(
+        f"     AI信頼度 {_confidence} (スコア差:{_score_gap:.1f} / モデル合意:{'YES' if _models_agree else 'NO'} / ◎{_ev_str})"
+    )
+    if _confidence == "高★★★":
+        msg = "AIが強く確信 → 単勝・馬連を中心に積極推奨。"
+    elif _confidence == "中★★":
+        msg = "AI評価は安定 → 印通りに購入。複勝で安全策も有効。"
     else:
-        lines.append(
-            "     全馬の期待値が低く、堅いか妙味のないレース。"
-            "見送り、または本命の複勝で手堅くが無難。"
-        )
+        msg = "伯仲レース(AIの確信が低い) → 少額か◎複勝のみ推奨。見送りも選択肢。"
+    if has_myumi:
+        msg += f" 妙味馬あり({len(candidates)}頭)。"
+    lines.append(f"     {msg}")
     lines.append("")
 
     # ── AI合意馬推奨（MF×通常モデル両方が上位と判断した馬）────────────
@@ -594,6 +738,25 @@ def build_report(pdf, race_id, jyo_name, race_no,
     lines.append("  ※ 複勝オッズは実オッズと異なる場合があります（keiba_auto.pyは実オッズ使用）。")
     lines.append("")
 
+    # ── 推奨馬の組み合わせ的中率（フォーメーション・実績補正済み）──────────
+    try:
+        pdf_pos = pdf.reset_index(drop=True)
+        marks = pdf_pos["印"].astype(str).values
+        wp = pd.to_numeric(pdf_pos["勝ち確率"], errors="coerce").values
+        idx3 = [i for i, m in enumerate(marks) if m in ("◎", "○", "▲")]
+        idx5 = [i for i, m in enumerate(marks) if m in ("◎", "○", "▲", "△", "×")]
+        if len(idx3) >= 3 and len(idx5) >= 5 and np.isfinite(wp).sum() >= 5:
+            fc = formation_probs_calibrated(wp, idx3, idx5)
+            lines.append("  【推奨馬の組み合わせ的中率（過去実績で補正済み）】")
+            lines.append(f"    推奨3頭のうち2頭が連対（1-2着独占）: {fc['s3_2ren']*100:.1f}%")
+            lines.append(f"    推奨3頭のうち2頭が複勝圏内        : {fc['s3_2fuku']*100:.1f}%")
+            lines.append(f"    推奨5頭のうち2頭が連対            : {fc['s5_2ren']*100:.1f}%")
+            lines.append(f"    推奨5頭のうち3頭が複勝圏内        : {fc['s5_3fuku']*100:.1f}%")
+            lines.append("  ※ 推奨3頭=◎○▲、推奨5頭=◎○▲△×。2025年実績でキャリブレーション済み。")
+            lines.append("")
+    except Exception as e:
+        pass  # 組み合わせ確率の計算失敗時はスキップ（本体予想は継続）
+
     lines.append(sep("─"))
     lines.append("  ※ AIによる予測です。投資は自己責任でお願いします。")
     lines.append("  ※ 推奨賭け率は1/4ケリー基準（保守的設定）です。")
@@ -626,13 +789,25 @@ def predict_race_pdf(race_id: str, *, history_df: pd.DataFrame, models_pack: dic
 
     win_models    = win_pack["models"]
     win_cols      = win_pack["use_cols"]
+    win_weights   = win_pack.get("weights")
     place2_models = place2_info["models"]   if place2_info else None
     place2_cols   = place2_info["use_cols"] if place2_info else None
+    place2_weights = place2_info.get("weights") if place2_info else None
     place3_models = place3_info["models"]   if place3_info else None
     place3_cols   = place3_info["use_cols"] if place3_info else None
+    place3_weights = place3_info.get("weights") if place3_info else None
     mf_models     = mf_info["models"]       if mf_info else None
     mf_cols       = mf_info["use_cols"]     if mf_info else None
+    mf_weights    = mf_info.get("weights")  if mf_info else None
     is_multi = place2_models is not None and place3_models is not None
+
+    def _wavg(models, X, weights):
+        """重み付きアンサンブル予測（weights=Noneなら均等平均）"""
+        preds = np.column_stack([m.predict_proba(X)[:, 1] for m in models])
+        if weights is None:
+            return preds.mean(axis=1)
+        w = np.asarray(weights, dtype=float); w = w / w.sum()
+        return preds @ w
 
     # 出馬表・オッズ取得
     from keiba_auto import get_race_data, build_features
@@ -659,7 +834,7 @@ def predict_race_pdf(race_id: str, *, history_df: pd.DataFrame, models_pack: dic
     # ── 勝ち確率（レース内正規化）
     print("予測中...")
     X     = pdf.reindex(columns=win_cols)
-    preds = np.mean([m.predict_proba(X)[:, 1] for m in win_models], axis=0)
+    preds = _wavg(win_models, X, win_weights)
     pdf["予測スコア"] = preds
     pdf["予測順位"]   = pd.Series(preds).rank(ascending=False).astype(int).values
     win_raw   = np.clip(np.nan_to_num(preds, nan=0.0), 0, 1)
@@ -673,9 +848,9 @@ def predict_race_pdf(race_id: str, *, history_df: pd.DataFrame, models_pack: dic
         X_p2   = pdf.reindex(columns=place2_cols)
         X_p3   = pdf.reindex(columns=place3_cols)
         p2_raw = np.clip(np.nan_to_num(
-            np.mean([m.predict_proba(X_p2)[:, 1] for m in place2_models], axis=0), nan=0.0), 0, 1)
+            _wavg(place2_models, X_p2, place2_weights), nan=0.0), 0, 1)
         p3_raw = np.clip(np.nan_to_num(
-            np.mean([m.predict_proba(X_p3)[:, 1] for m in place3_models], axis=0), nan=0.0), 0, 1)
+            _wavg(place3_models, X_p3, place3_weights), nan=0.0), 0, 1)
         n_runners = len(pdf)
         target2 = min(2, n_runners)
         target3 = min(3, n_runners)
@@ -713,7 +888,7 @@ def predict_race_pdf(race_id: str, *, history_df: pd.DataFrame, models_pack: dic
     if mf_models is not None and mf_cols is not None:
         try:
             X_mf     = pdf.reindex(columns=mf_cols)
-            mf_preds = np.mean([m.predict_proba(X_mf)[:, 1] for m in mf_models], axis=0)
+            mf_preds = _wavg(mf_models, X_mf, mf_weights)
             pdf["MF予測順位"] = pd.Series(mf_preds).rank(ascending=False).values
             pdf["乖離スコア"] = pdf["予測順位"] - pdf["MF予測順位"]
             mf_raw = np.clip(np.nan_to_num(mf_preds, nan=0.0), 0, None)
@@ -812,7 +987,16 @@ def predict_race_pdf(race_id: str, *, history_df: pd.DataFrame, models_pack: dic
         ev_adj   = np.where(ev_val >= 0.1,
                             np.maximum(0.55, 1.0 - ev_val.clip(0, 0.5)),
                             1.0)
-        pdf["_ai_rank"] = (blend * ev_adj).rank(ascending=False)
+        # 人気乖離補正: MF上位3頭 かつ 2-4番人気 → 市場が過小評価している馬に+5%
+        # BT実績: 2-3番人気◎は回収率133.2%、1番人気は97.8%(赤字)
+        # MFモデルが高評価しているのに市場人気が低い馬は狙い目として優先
+        _pop = pd.to_numeric(pdf["人気"], errors="coerce").fillna(8)
+        _mf_rank = pdf["MF勝ち確率"].rank(ascending=False)
+        _ninki_bonus = ((_mf_rank <= 3) & (_pop >= 2) & (_pop <= 4)).astype(float) * 0.05
+        blend_adj = (blend + _ninki_bonus)
+        blend_adj = blend_adj / blend_adj.sum()  # 再正規化
+
+        pdf["_ai_rank"] = (blend_adj * ev_adj).rank(ascending=False)
     else:
         pdf["_ai_rank"] = pdf["勝ち確率"].rank(ascending=False)
     pdf["総合スコア"] = (1 - (pdf["_ai_rank"] - 1) / n) * 80 + pdf["該当戦略"].apply(lambda s: 20 if s else 0)
@@ -916,9 +1100,10 @@ def predict_race(race_id: str):
         saved = pickle.load(f)
     win_models = saved.get("win", {}).get("models", saved["models"])
     win_cols   = saved.get("win", {}).get("use_cols", saved["use_cols"])
+    win_weights = saved.get("win", {}).get("weights", saved.get("weights"))
     is_multi   = saved.get("format") == "multi_v1" and saved.get("place2") and saved.get("place3")
     models_pack = {
-        "win":    {"models": win_models, "use_cols": win_cols},
+        "win":    {"models": win_models, "use_cols": win_cols, "weights": win_weights},
         "place2": saved["place2"] if is_multi else None,
         "place3": saved["place3"] if is_multi else None,
     }

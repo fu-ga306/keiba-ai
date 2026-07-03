@@ -33,6 +33,17 @@ JYO_NAMES = {
 PYTHON = r"C:/Users/別府飛河/AppData/Local/Microsoft/WindowsApps/python3.11.exe"
 
 
+# ── ダッシュボード即時更新通知 ────────────────────────────────────────────
+def notify_dashboard():
+    """Flaskダッシュボードのキャッシュをクリアして最新データを即時反映する"""
+    try:
+        import urllib.request
+        urllib.request.urlopen("http://localhost:5000/api/refresh", timeout=3)
+        print("  [Dashboard] キャッシュクリア → 最新データに更新")
+    except Exception:
+        pass  # Flask未起動の場合はスキップ（エラーにしない）
+
+
 # ── Git自動プッシュ ───────────────────────────────────────────────────────
 def git_push(message: str):
     """today_predictions.csv と prediction_record_v2.csv をGitHubにプッシュ"""
@@ -100,9 +111,10 @@ def run_morning_prediction():
         print(f"  予想実行エラー: {e}")
         return
 
-    # GitHubにプッシュ
+    # GitHubにプッシュ → ダッシュボード即時更新
     date_str = datetime.now().strftime("%Y/%m/%d")
     git_push(f"当日予想更新 {date_str} 07:00")
+    notify_dashboard()
 
 
 # ── 個別レース予想（各レース40分前実行） ──────────────────────────────────
@@ -131,8 +143,9 @@ def run_race_prediction(race_id: str, race_time: str):
         print(f"  予想実行エラー: {e}")
         return
 
-    # GitHubにプッシュ
+    # GitHubにプッシュ → ダッシュボード即時更新
     git_push(f"{jyo_name} {race_no}R 予想更新 {datetime.now().strftime('%H:%M')}")
+    notify_dashboard()
 
 
 # ── スケジュール設定 ──────────────────────────────────────────────────────

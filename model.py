@@ -25,7 +25,7 @@ FEATURE_COLS = [
     "枠番", "馬番", "斤量", "斤量_相対",
     "年齢", "is_male", "is_female", "is_castrated",
     "馬体重", "体重増減", "馬体重_相対",
-    "人気", "出走頭数", "競馬場cd", "レース番号",
+    "人気", "出走頭数", "競馬場cd", "レース番号", "日", "回",
     "過去出走数", "過去平均着順", "過去勝率", "過去複勝率",
     "過去平均上り", "直近3走平均着順",
     "過去平均タイム秒", "直近3走平均タイム秒", "過去最速タイム秒",
@@ -45,7 +45,11 @@ FEATURE_COLS = [
     "過去平均先行指数", "先行馬フラグ",
     "想定先行馬数", "想定先行馬率", "他馬想定先行馬数", "差し馬×ハイペース想定",
     "開催月", "開催季節",
-    "前走着順", "前走上り", "前走距離", "距離変化",
+    "前走着順", "前走上り", "前走距離", "距離変化", "クラス変化",
+    "前走着差_秒", "過去平均着差_秒", "近5走平均着差_秒", "近5走着差_std",
+    "前走4角位置", "過去平均4角位置", "前走脚質指数",
+    "芝ダート変更",
+    "重賞出走フラグ", "過去重賞出走数",
     "連続複勝フラグ", "連続勝利フラグ", "近走改善度",
     "平均タイム差", "騎手競馬場勝率",
     # 交互作用特徴量
@@ -55,6 +59,8 @@ FEATURE_COLS = [
     "前走好走×人気薄", "前走着順×人気_乖離",
     "斤量×年齢_負担",
     "距離延長×前走好走", "距離短縮×前走好走",
+    "休養明け×距離延長", "連闘×距離短縮",
+    "接戦×人気薄",
     # 距離変化系（長距離・距離延長の弱点対策）
     "距離変化比率", "大幅延長フラグ", "大幅短縮フラグ",
     "距離延長幅", "長距離フラグ", "大幅延長×長距離", "距離延長×先行",
@@ -71,21 +77,153 @@ FEATURE_COLS = [
     "父系_今回距離適性", "母父系_今回距離適性",
     "父系_長距離勝率", "母父系_長距離勝率",
     "父系_芝ダ適性", "父系_複勝率",
+    # 着順安定性（複勝精度向け）
+    "過去着順_std", "直近5走着順_std", "直近5走着外率",
+    # ターゲットエンコーディング（B1: 馬主・スムージング版）
+    "騎手勝率_sm", "調教師勝率_sm",
+    "馬主勝率", "馬主複勝率", "馬主勝率_sm",
+    # コース脚質バイアス（実装1）
+    "コース好走相対4角", "コース先行勝率", "コース差し複勝率",
+    "脚質コース適合", "先行有利コース×先行馬", "差し有利コース×差し馬",
+    # コース替わり（実装2）
+    "回り替わりフラグ", "直線長変化", "坂替わりフラグ", "初コースフラグ",
+    # レース内偏差値化（相対競争の強調）
+    "過去勝率_レース内偏差", "過去複勝率_レース内偏差", "直近3走平均着順_レース内偏差",
+    "過去平均上り_レース内偏差", "過去獲得賞金累計_レース内偏差", "騎手勝率_レース内偏差",
+    "父系_今回距離適性_レース内偏差", "直近5走平均着順_レース内偏差",
+    # メンバーレベル（相手の強さ）
+    "メンバー過去勝率平均", "メンバー過去勝率最大", "過去勝率_対相手",
+    "メンバークラス平均", "メンバー賞金平均", "賞金_対相手",
+]
+
+# SHAP特徴量選択（実装3）で寄与ほぼ0と判定された列。
+# select_features_shap.py の出力を貼り付けて再学習すると、これらを除外する。
+# 空リストなら全特徴量を使用（従来通り）。
+# 2026/07/02 SHAP再算出結果（170列・平均|SHAP| < 0.0005・寄与ほぼ0）:
+SHAP_DROP_COLS = [
+    "大幅短縮フラグ",
+    "馬場状態_num",
+    "前走好走×人気薄",
+    "連続複勝フラグ",
+    "距離延長×前走好走",
+    "距離短縮×前走好走",
+    "大幅延長フラグ",
+    "is_castrated",
+    "大幅延長×長距離",
+    "連続勝利フラグ",
+    "先行馬フラグ",
+    "長距離フラグ",
 ]
 
 LGB_PARAMS = {
     "objective": "binary",
     "metric": "binary_logloss",
     "learning_rate": 0.03,
-    "num_leaves": 31,
-    "min_child_samples": 20,
-    "feature_fraction": 0.8,
+    "num_leaves": 63,          # 31→63: 特徴量増加に合わせモデルを少し複雑に
+    "min_child_samples": 15,   # 20→15: 少し細かい分岐を許可
+    "feature_fraction": 0.75,  # 0.8→0.75: 特徴量増加後は少し絞る
     "bagging_fraction": 0.8,
     "bagging_freq": 1,
+    "lambda_l1": 0.05,         # L1正則化追加（過学習防止）
+    "lambda_l2": 0.05,         # L2正則化追加
     "verbose": -1,
-    "min_gain_to_split": 0.1,
+    "min_gain_to_split": 0.05, # 0.1→0.05: 新特徴量の弱いシグナルも拾う
 }
 
+
+
+def tune_lgb_params(X_train, y_train, X_val, y_val, w_train, n_trials=60):
+    """Optuna で LightGBM のハイパーパラメータを最適化する。
+    Optuna 未インストール時はデフォルトパラメータを返す。"""
+    try:
+        import optuna
+        optuna.logging.set_verbosity(optuna.logging.WARNING)
+    except ImportError:
+        print("  Optuna未インストール → デフォルトパラメータを使用")
+        return LGB_PARAMS.copy()
+
+    from sklearn.metrics import log_loss
+
+    def objective(trial):
+        params = {
+            "objective": "binary",
+            "metric": "binary_logloss",
+            "verbose": -1,
+            "bagging_freq": 1,
+            "n_estimators": 1000,
+            "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.08, log=True),
+            "num_leaves": trial.suggest_int("num_leaves", 31, 127),
+            "min_child_samples": trial.suggest_int("min_child_samples", 10, 50),
+            "feature_fraction": trial.suggest_float("feature_fraction", 0.5, 0.9),
+            "bagging_fraction": trial.suggest_float("bagging_fraction", 0.6, 1.0),
+            "lambda_l1": trial.suggest_float("lambda_l1", 0.0, 0.3),
+            "lambda_l2": trial.suggest_float("lambda_l2", 0.0, 0.3),
+            "min_gain_to_split": trial.suggest_float("min_gain_to_split", 0.0, 0.1),
+        }
+        m = lgb.LGBMClassifier(**params)
+        m.fit(
+            X_train, y_train,
+            sample_weight=w_train,
+            eval_set=[(X_val, y_val)],
+            callbacks=[lgb.early_stopping(30, verbose=False), lgb.log_evaluation(period=-1)],
+        )
+        return log_loss(y_val, m.predict_proba(X_val)[:, 1])
+
+    study = optuna.create_study(direction="minimize")
+    study.optimize(objective, n_trials=n_trials, show_progress_bar=False)
+    best = study.best_params
+    best.update({"objective": "binary", "metric": "binary_logloss", "verbose": -1, "bagging_freq": 1})
+    print(f"  Optuna完了: {n_trials}試行 best_loss={study.best_value:.4f} "
+          f"leaves={best.get('num_leaves')} lr={best.get('learning_rate'):.4f}")
+    return best
+
+
+def optimize_ensemble_weights(models, X_val, y_val):
+    """検証データでアンサンブル各モデルの重みをlog-loss最小化で最適化する。
+    非負・合計1に正規化した重みを返す。最適化失敗時は均等重み。"""
+    from sklearn.metrics import log_loss
+    preds = np.column_stack([m.predict_proba(X_val)[:, 1] for m in models])
+    n = preds.shape[1]
+    equal = np.ones(n) / n
+    if n <= 1:
+        return equal
+    try:
+        from scipy.optimize import minimize
+
+        def loss(raw):
+            w = np.abs(raw)
+            s = w.sum()
+            if s <= 0:
+                return 1e9
+            w = w / s
+            p = np.clip(preds @ w, 1e-6, 1 - 1e-6)
+            return log_loss(y_val, p)
+
+        # 複数初期値から最良を採用（Nelder-Meadは初期値依存があるため）
+        best_w, best_l = equal, loss(equal)
+        for init in [equal, np.eye(n)[0], np.eye(n)[1] if n > 1 else equal]:
+            res = minimize(loss, init, method="Nelder-Mead",
+                           options={"maxiter": 2000, "xatol": 1e-4, "fatol": 1e-6})
+            w = np.abs(res.x); w = w / w.sum()
+            if res.fun < best_l:
+                best_l, best_w = res.fun, w
+        l_equal = loss(equal)
+        print(f"  アンサンブル重み最適化: 均等log_loss={l_equal:.4f} → 最適={best_l:.4f}")
+        print(f"    重み: {[f'{x:.2f}' for x in best_w]}")
+        return best_w
+    except Exception as e:
+        print(f"  重み最適化スキップ（均等重み使用）: {e}")
+        return equal
+
+
+def weighted_proba(models, X, weights=None):
+    """重み付きアンサンブル予測。weightsがNoneなら均等平均。"""
+    preds = np.column_stack([m.predict_proba(X)[:, 1] for m in models])
+    if weights is None:
+        return preds.mean(axis=1)
+    w = np.asarray(weights, dtype=float)
+    w = w / w.sum()
+    return preds @ w
 
 
 class LambdaRankWrapper:
@@ -108,13 +246,15 @@ LGB_RANK_PARAMS = {
     "metric": "ndcg",
     "ndcg_eval_at": [3, 5],
     "learning_rate": 0.03,
-    "num_leaves": 31,
-    "min_child_samples": 20,
-    "feature_fraction": 0.8,
+    "num_leaves": 63,
+    "min_child_samples": 15,
+    "feature_fraction": 0.75,
     "bagging_fraction": 0.8,
     "bagging_freq": 1,
+    "lambda_l1": 0.05,
+    "lambda_l2": 0.05,
     "verbose": -1,
-    "min_gain_to_split": 0.1,
+    "min_gain_to_split": 0.05,
 }
 
 def add_extra_features(df):
@@ -184,7 +324,9 @@ def train_model(csv_path="race_features.csv", target="win", df=None):
     print(f"学習データ: {len(train_df)}行（〜2024）")
     print(f"検証データ: {len(test_df)}行（2025）")
 
-    use_cols = [c for c in FEATURE_COLS if c in train_df.columns]
+    use_cols = [c for c in FEATURE_COLS if c in train_df.columns and c not in SHAP_DROP_COLS]
+    if SHAP_DROP_COLS:
+        print(f"  SHAP除外: {len(SHAP_DROP_COLS)}列を除外")
     print(f"使用特徴量: {len(use_cols)}列")
 
     X_train_all = train_df[use_cols].copy()
@@ -193,16 +335,22 @@ def train_model(csv_path="race_features.csv", target="win", df=None):
     y_test      = test_df["着順_num"]
 
     # ── 時系列重み（直近年ほど重みを大きくする） ──────────────────────
-    # 2019年=基準1.0、2024年=最大重み
-    # 線形に増加：年差0→1.0, 年差5→TIME_WEIGHT_MAX
-    TIME_WEIGHT_MAX = 1.0
+    # 最古年=1.0倍、最新年=TIME_WEIGHT_MAX倍 で線形増加。
+    # 1.0だと全年同重みで無効。2.0が実用的な設定。
+    TIME_WEIGHT_MAX = 2.0
     year_min = train_df["年"].min()
     year_max = train_df["年"].max()
     year_range = max(year_max - year_min, 1)
     train_df["時系列重み"] = 1.0 + (train_df["年"] - year_min) / year_range * (TIME_WEIGHT_MAX - 1.0)
 
-    X_train_main, X_cal, y_train_main, y_cal, w_time_main, w_time_cal = train_test_split(
+    X_train_main, X_cal_full, y_train_main, y_cal_full, w_time_main, w_time_cal = train_test_split(
         X_train_all, y_train_all, train_df["時系列重み"], test_size=0.2, random_state=42
+    )
+    # X_cal_full をさらに分割: calibration/early-stopping用(X_cal) と アンサンブル重み最適化専用(X_calw)。
+    # 重み最適化を calibration と同じデータで行うと、isotonic過学習したモデルを過大評価する
+    # リークが生じる（重みがLGB単独に偏る）。独立ホールドアウトで防ぐ。
+    X_cal, X_calw, y_cal, y_calw = train_test_split(
+        X_cal_full, y_cal_full, test_size=0.4, random_state=42
     )
     # 着順重み（正例を重視）× 時系列重み（直近年を重視）
     pos_w = TARGET_POS_WEIGHT.get(target, 2.0)
@@ -210,9 +358,13 @@ def train_model(csv_path="race_features.csv", target="win", df=None):
     print(f"  時系列重み: {year_min}年=1.0倍 〜 {year_max}年={TIME_WEIGHT_MAX}倍")
     print(f"  正例重み({target}): {pos_w}倍")
 
-    # ── LightGBM ──
+    # ── LightGBM（Optunaでハイパーパラメータ最適化）──
+    print("Optunaでハイパーパラメータ最適化中（60試行）...")
+    best_lgb_params = tune_lgb_params(
+        X_train_main, y_train_main, X_cal, y_cal, w_main, n_trials=60
+    )
     print("ベースLightGBMモデルを学習中（アーリーストッピング付き）...")
-    base_model = lgb.LGBMClassifier(**LGB_PARAMS, n_estimators=5000)
+    base_model = lgb.LGBMClassifier(**best_lgb_params, n_estimators=5000)
     base_model.fit(
         X_train_main, y_train_main,
         sample_weight=w_main,
@@ -278,67 +430,70 @@ def train_model(csv_path="race_features.csv", target="win", df=None):
     else:
         print("  CatBoostスキップ（pip install catboost）")
 
-    # ── LightGBM LambdaRank（着順ランキング学習） ── ※winターゲットのみ
+    # ── LightGBM LambdaRank（着順ランキング学習） ── 全ターゲット共通
+    # ndcg_eval_at はターゲットに応じて調整: win=top3&5, place2=top2&3, place3=top3&5
+    _ndcg_at = [2, 3] if target == "place2" else [3, 5]
     lambda_wrapper = None
-    if target == "win":
-        print("LambdaRankモデルを学習中...")
-        try:
-            idx_train = X_train_main.index
-            idx_cal   = X_cal.index
+    print(f"LambdaRankモデルを学習中（ndcg@{_ndcg_at}）...")
+    try:
+        idx_train = X_train_main.index
+        idx_cal   = X_cal.index
 
-            race_id_train = train_df.loc[idx_train, "race_id"].values
-            race_id_cal   = train_df.loc[idx_cal,   "race_id"].values
+        race_id_train = train_df.loc[idx_train, "race_id"].values
+        race_id_cal   = train_df.loc[idx_cal,   "race_id"].values
 
-            sort_train = np.argsort(race_id_train, kind="stable")
-            sort_cal   = np.argsort(race_id_cal,   kind="stable")
+        sort_train = np.argsort(race_id_train, kind="stable")
+        sort_cal   = np.argsort(race_id_cal,   kind="stable")
 
-            X_rank_train = X_train_main.values[sort_train]
-            X_rank_cal   = X_cal.values[sort_cal]
+        X_rank_train = X_train_main.values[sort_train]
+        X_rank_cal   = X_cal.values[sort_cal]
 
-            chakujun_train = train_df.loc[idx_train, "着順_num"].values[sort_train]
-            chakujun_cal   = train_df.loc[idx_cal,   "着順_num"].values[sort_cal]
-            shutsu_train   = train_df.loc[idx_train, "出走頭数"].fillna(18).astype(int).values[sort_train]
-            shutsu_cal     = train_df.loc[idx_cal,   "出走頭数"].fillna(18).astype(int).values[sort_cal]
+        chakujun_train = train_df.loc[idx_train, "着順_num"].values[sort_train]
+        chakujun_cal   = train_df.loc[idx_cal,   "着順_num"].values[sort_cal]
+        shutsu_train   = train_df.loc[idx_train, "出走頭数"].fillna(18).astype(int).values[sort_train]
+        shutsu_cal     = train_df.loc[idx_cal,   "出走頭数"].fillna(18).astype(int).values[sort_cal]
 
-            y_rank_train = np.clip(shutsu_train - chakujun_train, 0, None).astype(int)
-            y_rank_cal   = np.clip(shutsu_cal   - chakujun_cal,   0, None).astype(int)
+        y_rank_train = np.clip(shutsu_train - chakujun_train, 0, None).astype(int)
+        y_rank_cal   = np.clip(shutsu_cal   - chakujun_cal,   0, None).astype(int)
 
-            _, group_train = np.unique(race_id_train[sort_train], return_counts=True)
-            _, group_cal   = np.unique(race_id_cal[sort_cal],     return_counts=True)
+        _, group_train = np.unique(race_id_train[sort_train], return_counts=True)
+        _, group_cal   = np.unique(race_id_cal[sort_cal],     return_counts=True)
 
-            train_data_rank = lgb.Dataset(X_rank_train, label=y_rank_train, group=group_train)
-            val_data_rank   = lgb.Dataset(X_rank_cal,   label=y_rank_cal,   group=group_cal,
-                                          reference=train_data_rank)
+        train_data_rank = lgb.Dataset(X_rank_train, label=y_rank_train, group=group_train)
+        val_data_rank   = lgb.Dataset(X_rank_cal,   label=y_rank_cal,   group=group_cal,
+                                      reference=train_data_rank)
 
-            rank_booster = lgb.train(
-                LGB_RANK_PARAMS,
-                train_data_rank,
-                num_boost_round=3000,
-                valid_sets=[val_data_rank],
-                callbacks=[lgb.early_stopping(100, verbose=False), lgb.log_evaluation(period=200)],
-            )
+        rank_params = dict(LGB_RANK_PARAMS)
+        rank_params["ndcg_eval_at"] = _ndcg_at
+        rank_booster = lgb.train(
+            rank_params,
+            train_data_rank,
+            num_boost_round=3000,
+            valid_sets=[val_data_rank],
+            callbacks=[lgb.early_stopping(100, verbose=False), lgb.log_evaluation(period=200)],
+        )
 
-            lambda_wrapper = LambdaRankWrapper(rank_booster)
-            print(f"  LambdaRank完了（{rank_booster.best_iteration}本）")
-        except Exception as e:
-            lambda_wrapper = None
-            print(f"  LambdaRankスキップ: {e}")
-            import traceback; traceback.print_exc()
-    else:
-        print(f"  LambdaRankは{target}では学習しません（winのみ）")
+        lambda_wrapper = LambdaRankWrapper(rank_booster)
+        models.append(lambda_wrapper)
+        print(f"  LambdaRank完了（{rank_booster.best_iteration}本）→ アンサンブルに追加")
+    except Exception as e:
+        lambda_wrapper = None
+        print(f"  LambdaRankスキップ: {e}")
+        import traceback; traceback.print_exc()
 
-    print(f"\nアンサンブル: {len(models)}モデルの平均で予測（LGB+XGB+CatBoost）")
-    if lambda_wrapper:
-        print(f"  ※LambdaRankは参考スコアとして別途計算")
+    n_base = len(models) - (1 if lambda_wrapper else 0)
+    n_total = len(models)
+    print(f"\nアンサンブル: {n_total}モデルで予測（LGB+XGB+CatBoost"
+          + ("+LambdaRank" if lambda_wrapper else "") + "）")
 
-    print(f"\nアンサンブル: {len(models)}モデルの平均で予測（LGB+XGB+CatBoost）")
-    if lambda_wrapper:
-        print(f"  ※LambdaRankは参考スコアとして別途計算")
+    # ── アンサンブル重み最適化（calibration未使用の独立ホールドアウトで探索）──
+    print("アンサンブル重みを最適化中（独立ホールドアウト使用）...")
+    ens_weights = optimize_ensemble_weights(models, X_calw, y_calw)
 
         # ── テストデータで評価 ──
     test_df = test_df.copy()
-    # target汎用のスコア列（その目的の確率）
-    test_df["予測スコア"] = np.mean([m.predict_proba(X_test)[:, 1] for m in models], axis=0)
+    # target汎用のスコア列（その目的の確率）※最適重みで加重平均
+    test_df["予測スコア"] = weighted_proba(models, X_test, ens_weights)
     test_df["予測順位"] = test_df.groupby("race_id")["予測スコア"].rank(ascending=False)
 
     # 正例実績（この target における的中）
@@ -358,7 +513,7 @@ def train_model(csv_path="race_features.csv", target="win", df=None):
         out = out.sort_values(["race_id", "予測順位"])
         out.to_csv("model_result.csv", index=False, encoding="utf-8-sig")
 
-    return models, test_df, use_cols, lambda_wrapper
+    return models, test_df, use_cols, lambda_wrapper, ens_weights
 
 
 def train_all_targets(csv_path="race_features.csv"):
@@ -371,10 +526,10 @@ def train_all_targets(csv_path="race_features.csv"):
     result = {}
     win_test_df = None
     for target in ["win", "place2", "place3"]:
-        models, test_df, use_cols, lambda_wrapper = train_model(
+        models, test_df, use_cols, lambda_wrapper, ens_weights = train_model(
             csv_path=csv_path, target=target, df=df.copy()
         )
-        entry = {"models": models, "use_cols": use_cols}
+        entry = {"models": models, "use_cols": use_cols, "weights": ens_weights}
         if lambda_wrapper is not None:
             entry["lambda_booster"] = lambda_wrapper.booster
         result[target] = entry
@@ -389,6 +544,7 @@ def train_all_targets(csv_path="race_features.csv"):
         # ↓旧形式互換（keiba_predict等が未対応でも動くように）
         "models":   result["win"]["models"],
         "use_cols": result["win"]["use_cols"],
+        "weights":  result["win"]["weights"],
         "format":   "multi_v1",
     }
     if "lambda_booster" in result["win"]:

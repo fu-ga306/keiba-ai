@@ -1,0 +1,169 @@
+{% extends "base.html" %}
+{% block title %}{{ jyo }} {{ race_no }}R — 競馬AI予想{% endblock %}
+{% block content %}
+
+<div class="page-header">
+  <a href="{{ url_for('races') }}" class="back-link">← 一覧に戻る</a>
+  <h1 class="page-title">{{ jyo }} {{ race_no }}R</h1>
+  {% if date_str %}<span class="page-date">{{ date_str }}</span>{% endif %}
+</div>
+
+<!-- レース情報 -->
+<div class="race-info-card">
+  <div class="race-info-row">
+    <span class="venue-badge lg">{{ jyo }}</span>
+    <span class="race-no-lg">{{ race_no }}R</span>
+    <span class="race-class-lg">{{ klass }}</span>
+    <span class="race-dist-lg">{{ baba_emo }} {{ dist }}m</span>
+    {% if cond %}<span class="track-cond cond-{{ cond }}">{{ cond }}</span>{% endif %}
+  </div>
+
+  <!-- 荒れスコア -->
+  <div class="are-section large">
+    <div class="are-ring-wrap">
+      <div class="are-ring-container">
+        <svg class="are-ring" viewBox="0 0 36 36">
+          <circle class="ring-track" cx="18" cy="18" r="15.9" fill="none" stroke-width="3.5"/>
+          <circle class="ring-bar {{ are_tan_cls }}" cx="18" cy="18" r="15.9" fill="none" stroke-width="3.5"
+            stroke-dasharray="{{ are_tan }} 100" stroke-linecap="round"
+            transform="rotate(-90 18 18)"/>
+        </svg>
+        <div class="are-ring-label"><span class="are-value">{{ are_tan }}</span></div>
+      </div>
+      <div class="are-desc">
+        <div class="are-type">単勝荒れ度</div>
+        <div class="are-level {{ are_tan_cls }}">{{ are_tan_lbl }}</div>
+      </div>
+    </div>
+
+    <div class="are-ring-wrap">
+      <div class="are-ring-container">
+        <svg class="are-ring" viewBox="0 0 36 36">
+          <circle class="ring-track" cx="18" cy="18" r="15.9" fill="none" stroke-width="3.5"/>
+          <circle class="ring-bar {{ are_ren_cls }}" cx="18" cy="18" r="15.9" fill="none" stroke-width="3.5"
+            stroke-dasharray="{{ are_ren }} 100" stroke-linecap="round"
+            transform="rotate(-90 18 18)"/>
+        </svg>
+        <div class="are-ring-label"><span class="are-value">{{ are_ren }}</span></div>
+      </div>
+      <div class="are-desc">
+        <div class="are-type">連系荒れ度</div>
+        <div class="are-level {{ are_ren_cls }}">{{ are_ren_lbl }}</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 馬券推奨 -->
+{% if bet_recs %}
+<section class="section-block">
+  <h2 class="section-title">💴 馬券推奨</h2>
+  {% if bet_recs and bet_recs[0].strategy %}
+  <div class="bet-strategy-banner">{{ bet_recs[0].strategy }}</div>
+  {% endif %}
+  <div class="bet-list-detail">
+    {% for b in bet_recs %}
+    <div class="bet-item-detail {{ b.cls }}">
+      <div class="bet-type-lg">{{ b.type }}</div>
+      <div class="bet-horses-list">
+        {% for h in b.horses %}
+        <span class="bet-horse-chip">{{ h }}</span>
+        {% endfor %}
+        {% if not b.horses %}<span class="bet-note-lg">{{ b.note }}</span>{% endif %}
+      </div>
+      {% if b.note and b.horses %}<div class="bet-note-lg">{{ b.note }}</div>{% endif %}
+    </div>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+<!-- シグナル分類サマリー -->
+<section class="section-block">
+  <h2 class="section-title">🏷️ シグナル分類</h2>
+  <div class="signal-summary">
+    {% for sig_key, sig_label, sig_cls in [('◎','軸','axis'),('○','複勝圏','fuku'),('▲','相手候補','aite'),('△','注意','chui'),('×','様子見','yosomi')] %}
+    {% set sig_horses = horses | selectattr('推奨ランク', 'equalto', sig_key) | list %}
+    {% if sig_horses %}
+    <div class="sig-group">
+      <div class="sig-header">
+        <span class="rank-mark rank-{{ sig_cls }}">{{ sig_key }}</span>
+        <span class="sig-label signal-{{ sig_cls }}">{{ sig_label }}</span>
+      </div>
+      {% for h in sig_horses %}
+      <div class="sig-horse">
+        <span class="uma-ban-sm">{{ h.馬番 | int }}</span>
+        <span class="uma-name-sm">{{ h.馬名 }}</span>
+        <span class="win-pct-sm">勝{{ h.win_pct }}%</span>
+        <span class="odds-sm">{{ h.単勝オッズ }}倍</span>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+    {% endfor %}
+  </div>
+</section>
+
+<!-- 全馬テーブル -->
+<section class="section-block">
+  <h2 class="section-title">🐴 全馬予想詳細</h2>
+  <div class="table-scroll">
+    <table class="horse-table">
+      <thead>
+        <tr>
+          <th>印</th>
+          <th>馬番</th>
+          <th>馬名</th>
+          <th>シグナル</th>
+          <th>人気</th>
+          <th>単勝オッズ</th>
+          <th>勝率</th>
+          <th>連対率</th>
+          <th>複勝率</th>
+          <th>単勝EV</th>
+          <th>MF順位</th>
+          <th>乖離</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for h in horses %}
+        <tr class="{{ 'row-axis' if h.signal_cls == 'axis' else '' }} {{ 'row-fuku' if h.signal_cls == 'fuku' else '' }}">
+          <td class="rank-mark rank-{{ h.signal_cls }} center">{{ h.推奨ランク }}</td>
+          <td class="center">{{ h.馬番 | int }}</td>
+          <td class="horse-name-cell">{{ h.馬名 }}</td>
+          <td><span class="signal-badge signal-{{ h.signal_cls }}">{{ h.signal_label }}</span></td>
+          <td class="center">{{ h.人気 }}</td>
+          <td class="center">{{ h.単勝オッズ }}</td>
+          <td class="center pct-cell">{{ h.win_pct }}%</td>
+          <td class="center pct-cell">{{ h.ren_pct }}%</td>
+          <td class="center pct-cell">{{ h.fuku_pct }}%</td>
+          <td class="center {{ h.ev_cls }}">{{ "%.2f"|format(h.ev_val) }}</td>
+          <td class="center">{{ h.MF予測順位 }}</td>
+          <td class="center">{{ "%.2f"|format(h.乖離スコア | float) if h.乖離スコア else '-' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- MF穴馬候補 -->
+{% if ana_candidates %}
+<section class="section-block">
+  <h2 class="section-title">💎 AI注目穴馬（市場評価と乖離あり）</h2>
+  <div class="ana-list">
+    {% for h in ana_candidates %}
+    <div class="ana-card">
+      <span class="rank-mark rank-{{ h.signal_cls }}">{{ h.推奨ランク }}</span>
+      <span class="uma-name">{{ h.馬名 }}</span>
+      <span class="pop-badge">{{ h.人気 | int }}番人気</span>
+      <span class="mf-rank">MF{{ h.MF予測順位 }}位</span>
+      <span class="win-pct">勝{{ h.win_pct }}%</span>
+      <span class="odds-val">{{ h.単勝オッズ }}倍</span>
+    </div>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+{% endblock %}

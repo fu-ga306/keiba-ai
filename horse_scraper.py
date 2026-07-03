@@ -123,7 +123,7 @@ def get_horse_profile(driver, horse_id: str) -> dict | None:
 
     driver.get(url)
     import random as _r
-    time.sleep(_r.uniform(3.5, 6.0))
+    time.sleep(_r.uniform(2.5, 4.5))
     page_source = driver.page_source
     soup = BeautifulSoup(page_source, "html.parser")
 
@@ -248,12 +248,12 @@ def build_horse_master():
         # ── IPブロック検知時の対応 ──
         if profile == "BLOCKED":
             consecutive_blocks += 1
-            print(f"⚠️ ブロック検知（連続{consecutive_blocks}回目）")
+            print(f"[!] ブロック検知（連続{consecutive_blocks}回目）")
 
             # 連続3回ブロックされたら、これ以上続けても悪化するだけなので中断
             if consecutive_blocks >= 3:
                 print("\n" + "=" * 50)
-                print("⚠️ 連続ブロックのため中断します。")
+                print("[!] 連続ブロックのため中断します。")
                 print("  取得済みデータは保存済みです。")
                 print("  数時間〜1日空けてから再実行してください。")
                 print("=" * 50)
@@ -266,7 +266,7 @@ def build_horse_master():
                 return
 
             # クールダウン: 長時間休んでドライバーを作り直す（UA・セッション刷新）
-            cooldown = _r.uniform(600, 1200)  # 10〜20分
+            cooldown = _r.uniform(7200, 10800)  # 2〜3時間
             print(f"  {cooldown/60:.0f}分クールダウンします...")
             try:
                 driver.quit()
@@ -275,14 +275,14 @@ def build_horse_master():
             time.sleep(cooldown)
             driver = create_driver()
             # この馬はスキップして次へ（ブロック中の取得は信用できない）
-            time.sleep(_r.uniform(8.0, 14.0))
+            time.sleep(_r.uniform(30.0, 60.0))
             continue
         else:
             consecutive_blocks = 0  # ブロックでなければリセット
 
         if profile and profile.get("父馬") is not None:
             results.append(profile)
-            print(f"✓ 父:{profile['父馬']}  母父:{profile['母父馬']}")
+            print(f"OK 父:{profile['父馬']}  母父:{profile['母父馬']}")
         else:
             # 404・ページなし・父馬なし → 再アクセス防止のためhorse_idだけ記録
             horse_id_clean = str(row["horse_id"]).replace(".0", "").strip()
@@ -293,20 +293,26 @@ def build_horse_master():
             })
             print("- (ページなし・地方馬等)")
 
-        # ランダム待機（bot検知回避・保守的設定）
-        time.sleep(_r.uniform(8.0, 14.0))
+        # ランダム待機（6〜10秒：3-5秒はブロックが早すぎた）
+        time.sleep(_r.uniform(6.0, 10.0))
 
-        # 50頭ごとに長めの休憩（頻度を上げて負荷分散）
+        # 50頭ごとに短い休憩
         if (i + 1) % 50 == 0:
-            rest = _r.uniform(90, 180)
+            rest = _r.uniform(120, 180)
             print(f"  [{i+1}頭完了] {rest:.0f}秒休憩中...")
             time.sleep(rest)
 
-        # 200件ごとに中間保存
-        if len(results) % 200 == 0 and results:
-            _save(results, append=True)
-            results = []
-            print(f"--- 中間保存済み ---")
+        # 200件ごとに中間保存 + 5〜8分の長休憩
+        if (i + 1) % 200 == 0:
+            if results:
+                _save(results, append=True)
+                results = []
+                print(f"--- 中間保存済み ---")
+            long_rest = _r.uniform(300, 480)
+            print(f"  [200頭インターバル] {long_rest/60:.0f}分休憩中...")
+            time.sleep(long_rest)
+
+        # セッション上限なし（全頭連続実行モード）
 
     # 残りを保存
     if results:

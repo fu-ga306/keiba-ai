@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}成績 — 競馬AI予想{% endblock %}
+{% block content %}
+
+<div class="page-header">
+  <h1 class="page-title">📊 成績・回収率</h1>
+</div>
+
+{% if summary %}
+<div class="summary-cards">
+  {% if summary.recent_hit %}
+  <div class="summary-card">
+    <div class="summary-label">直近100R 的中率</div>
+    <div class="summary-value">{{ summary.recent_hit }}</div>
+  </div>
+  {% endif %}
+  {% if summary.avg_return %}
+  <div class="summary-card">
+    <div class="summary-label">平均回収率</div>
+    <div class="summary-value">{{ summary.avg_return }}</div>
+  </div>
+  {% endif %}
+</div>
+{% endif %}
+
+{% if records %}
+<section class="section-block">
+  <h2 class="section-title">直近の予想結果</h2>
+  <div class="table-scroll">
+    <table class="result-table">
+      <thead>
+        <tr>
+          {% for key in records[0].keys() %}
+          <th>{{ key }}</th>
+          {% endfor %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in records %}
+        <tr class="{{ 'row-hit' if row.get('hit') == 1 else '' }}">
+          {% for val in row.values() %}
+          <td>{{ val if val is not none else '-' }}</td>
+          {% endfor %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% else %}
+<div class="empty-state">
+  <div class="empty-icon">📊</div>
+  <p>成績データがまだありません。</p>
+</div>
+{% endif %}
+
+{% endblock %}

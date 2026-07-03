@@ -25,7 +25,7 @@ FEATURE_COLS_MF = [
     "年齢", "is_male", "is_female", "is_castrated",
     "馬体重", "体重増減", "馬体重_相対",
     # 「人気」「単勝オッズ」を除外 ← ここが通常モデルとの違い
-    "出走頭数", "競馬場cd", "レース番号",
+    "出走頭数", "競馬場cd", "レース番号", "日", "回",
     "過去出走数", "過去平均着順", "過去勝率", "過去複勝率",
     "過去平均上り", "直近3走平均着順",
     "過去平均タイム秒", "直近3走平均タイム秒", "過去最速タイム秒",
@@ -53,7 +53,11 @@ FEATURE_COLS_MF = [
     # 開催時期
     "開催月", "開催季節",
     # 前走情報
-    "前走着順", "前走上り", "前走距離", "距離変化",
+    "前走着順", "前走上り", "前走距離", "距離変化", "クラス変化",
+    "前走着差_秒", "過去平均着差_秒", "近5走平均着差_秒", "近5走着差_std",
+    "前走4角位置", "過去平均4角位置", "前走脚質指数",
+    "芝ダート変更",
+    "重賞出走フラグ", "過去重賞出走数",
     # 連続好走・成長
     "連続複勝フラグ", "連続勝利フラグ", "近走改善度",
     # タイム差
@@ -67,6 +71,7 @@ FEATURE_COLS_MF = [
     # 「前走好走×人気薄」「前走着順×人気_乖離」は人気を含むため除外（純粋実力モデル）
     "斤量×年齢_負担",
     "距離延長×前走好走", "距離短縮×前走好走",
+    "休養明け×距離延長", "連闘×距離短縮",
     # 距離変化系（長距離・距離延長の弱点対策・市場情報なし）
     "距離変化比率", "大幅延長フラグ", "大幅短縮フラグ",
     "距離延長幅", "長距離フラグ", "大幅延長×長距離", "距離延長×先行",
@@ -89,13 +94,15 @@ LGB_PARAMS = {
     "objective":         "binary",
     "metric":            "binary_logloss",
     "learning_rate":     0.03,
-    "num_leaves":        31,
-    "min_child_samples": 20,
-    "feature_fraction":  0.8,
+    "num_leaves":        63,
+    "min_child_samples": 15,
+    "feature_fraction":  0.75,
     "bagging_fraction":  0.8,
     "bagging_freq":      1,
+    "lambda_l1":         0.05,
+    "lambda_l2":         0.05,
     "verbose":           -1,
-    "min_gain_to_split": 0.1,
+    "min_gain_to_split": 0.05,
 }
 
 
@@ -146,7 +153,7 @@ def train_market_free_model(csv_path="race_features.csv"):
     X_test      = test_df[use_cols].copy()
 
     # ── 時系列重み（直近年ほど重みを大きくする） ──────────────────────
-    TIME_WEIGHT_MAX = 1.0
+    TIME_WEIGHT_MAX = 2.0  # 最古年=1.0倍、最新年=2.0倍（model.py と同値）
     year_min = train_df["年"].min()
     year_max = train_df["年"].max()
     year_range = max(year_max - year_min, 1)
@@ -316,7 +323,7 @@ def _train_mf_one(train_df, test_df, use_cols, target):
     X_train_all = train_df[use_cols].copy()
     y_train_all = _mf_make_target(train_df["着順_num"], target)
 
-    TIME_WEIGHT_MAX = 1.0
+    TIME_WEIGHT_MAX = 2.0  # 最古年=1.0倍、最新年=2.0倍
     year_min = train_df["年"].min()
     year_max = train_df["年"].max()
     year_range = max(year_max - year_min, 1)

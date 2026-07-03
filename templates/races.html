@@ -1,0 +1,166 @@
+{% extends "base.html" %}
+{% block title %}レース一覧 — 競馬AI予想{% endblock %}
+{% block content %}
+
+<div class="page-header">
+  <h1 class="page-title">📋 レース一覧</h1>
+  {% if date_str %}<span class="page-date">{{ date_str }}</span>{% endif %}
+</div>
+
+{% if not cards %}
+<div class="empty-state">
+  <div class="empty-icon">🏇</div>
+  <p>本日の予想データはまだありません。</p>
+  <p>予想は各レース40分前に公開されます。</p>
+</div>
+{% else %}
+
+{# ── 今日の注目買い目 ────────────────────────── #}
+{% if highlights %}
+<section class="highlight-section">
+  <h2 class="highlight-title">⭐ 今日の注目買い目</h2>
+  <div class="highlight-list">
+    {% for c in highlights %}
+    <a href="{{ url_for('race_detail', race_id=c.race_id) }}" class="highlight-card-link">
+    <div class="highlight-card">
+      <div class="hl-race-info">
+        <span class="venue-badge">{{ c.jyo }}</span>
+        <span class="hl-race-no">{{ c.race_no }}R</span>
+        <span class="hl-class">{{ c.klass }}</span>
+        <span class="hl-dist">{{ c.baba_emo }}{{ c.dist }}m</span>
+      </div>
+      <div class="hl-bets">
+        {% for b in c.bet_recs %}
+        {% if b.type != '見送り' %}
+        <div class="hl-bet-row">
+          <span class="hl-bet-type {{ b.cls }}">{{ b.type }}</span>
+          <span class="hl-bet-horses">{{ b.horses | join(' · ') }}</span>
+          {% if b.note %}<span class="hl-bet-note">{{ b.note }}</span>{% endif %}
+        </div>
+        {% endif %}
+        {% endfor %}
+      </div>
+      <div class="hl-axis">
+        {% for h in c.top5 %}
+        {% if h.推奨ランク == '◎' %}
+        <span class="hl-axis-horse">
+          ◎ 馬番{{ h.馬番 | int }} {{ h.馬名 }}
+          <span class="hl-ev {{ h.ev_cls }}">EV{{ "%.2f"|format(h.ev_val) }}</span>
+          <span class="hl-odds">{{ h.単勝オッズ }}倍</span>
+        </span>
+        {% endif %}
+        {% endfor %}
+      </div>
+    </div>
+    </a>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+{# ── レースグリッド ────────────────────────── #}
+<h2 class="section-divider">全レース</h2>
+<div class="race-grid">
+  {% for card in cards %}
+  <a href="{{ url_for('race_detail', race_id=card.race_id) }}" class="race-card-link">
+  <article class="race-card {{ 'card-rec-good' if card.rec_cls == 'rec-good' else ('card-rec-pass' if card.rec_cls == 'rec-pass' else '') }}">
+
+    {# カードヘッダー #}
+    <div class="card-header">
+      <div class="race-title-row">
+        <span class="venue-badge">{{ card.jyo }}</span>
+        <span class="race-no">{{ card.race_no }}R</span>
+        <span class="race-class">{{ card.klass }}</span>
+        <span class="rec-badge {{ card.rec_cls }}">{{ card.rec_level }}</span>
+      </div>
+      <div class="race-meta">
+        <span class="race-dist">{{ card.baba_emo }} {{ card.dist }}m</span>
+        {% if card.cond %}<span class="track-cond cond-{{ card.cond }}">{{ card.cond }}</span>{% endif %}
+      </div>
+      {% if card.hot_badges %}
+      <div class="hot-badges">
+        {% for b in card.hot_badges %}
+        <span class="hot-badge {{ b.cls }}">{{ b.label }}</span>
+        {% endfor %}
+      </div>
+      {% endif %}
+    </div>
+
+    {# 荒れスコア #}
+    <div class="are-section">
+      <div class="are-ring-wrap">
+        <div class="are-ring-container">
+          <svg class="are-ring" viewBox="0 0 36 36">
+            <circle class="ring-track" cx="18" cy="18" r="15.9" fill="none" stroke-width="3.5"/>
+            <circle class="ring-bar {{ card.are_tan_cls }}" cx="18" cy="18" r="15.9" fill="none" stroke-width="3.5"
+              stroke-dasharray="{{ card.are_tan }} 100" stroke-linecap="round" transform="rotate(-90 18 18)"/>
+          </svg>
+          <div class="are-ring-label"><span class="are-value">{{ card.are_tan }}</span></div>
+        </div>
+        <div class="are-desc">
+          <div class="are-type">単勝<br>荒れ度</div>
+          <div class="are-level {{ card.are_tan_cls }}">{{ card.are_tan_lbl }}</div>
+        </div>
+      </div>
+      <div class="are-ring-wrap">
+        <div class="are-ring-container">
+          <svg class="are-ring" viewBox="0 0 36 36">
+            <circle class="ring-track" cx="18" cy="18" r="15.9" fill="none" stroke-width="3.5"/>
+            <circle class="ring-bar {{ card.are_ren_cls }}" cx="18" cy="18" r="15.9" fill="none" stroke-width="3.5"
+              stroke-dasharray="{{ card.are_ren }} 100" stroke-linecap="round" transform="rotate(-90 18 18)"/>
+          </svg>
+          <div class="are-ring-label"><span class="are-value">{{ card.are_ren }}</span></div>
+        </div>
+        <div class="are-desc">
+          <div class="are-type">連系<br>荒れ度</div>
+          <div class="are-level {{ card.are_ren_cls }}">{{ card.are_ren_lbl }}</div>
+        </div>
+      </div>
+    </div>
+
+    {# 上位馬 #}
+    <div class="horse-list">
+      {% for h in card.top5 %}
+      <div class="horse-row {{ 'is-axis' if h.signal_cls == 'axis' else ('is-fuku' if h.signal_cls == 'fuku' else '') }}">
+        <span class="rank-mark rank-{{ h.signal_cls }}">{{ h.推奨ランク }}</span>
+        <span class="uma-ban">{{ h.馬番 | int }}</span>
+        <span class="uma-name">{{ h.馬名 }}</span>
+        <span class="signal-badge signal-{{ h.signal_cls }}">{{ h.signal_label }}</span>
+        <div class="uma-stats">
+          <span class="win-pct">勝{{ h.win_pct }}%</span>
+          <span class="odds-val">{{ h.単勝オッズ }}倍</span>
+          {% if h.ev_val >= 1.0 %}<span class="ev-star">★EV{{ "%.1f"|format(h.ev_val) }}</span>{% endif %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+
+    {# 馬券推奨（見送り以外） #}
+    {% if card.bet_recs %}
+    <div class="bet-section">
+      {% if card.bet_recs[0].strategy %}
+      <div class="bet-strategy-tag">{{ card.bet_recs[0].strategy }}</div>
+      {% endif %}
+      <div class="bet-list">
+        {% for b in card.bet_recs %}
+        <div class="bet-item {{ b.cls }}">
+          <span class="bet-type">{{ b.type }}</span>
+          {% if b.horses %}
+          <span class="bet-horses">{{ b.horses | join(' / ') }}</span>
+          {% endif %}
+          {% if b.note %}<span class="bet-note">{{ b.note }}</span>{% endif %}
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+
+    <div class="card-footer">
+      <span class="detail-link">詳細・全馬を見る →</span>
+    </div>
+  </article>
+  </a>
+  {% endfor %}
+</div>
+{% endif %}
+{% endblock %}

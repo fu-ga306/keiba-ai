@@ -4,6 +4,66 @@ import re
 from datetime import datetime
 
 
+# ── 着差・通過ヘルパー ───────────────────────────────────────────────────────
+_CHAKUSA_MAP = {
+    "同着": 0.0, "ハナ": 0.05, "アタマ": 0.10, "クビ": 0.20,
+    "1/2": 0.30, "3/4": 0.35, "大": 5.0,
+}
+
+def chakusa_to_sec(s):
+    """着差文字列を秒換算（1着=0、NaN→NaN）。1馬身≒0.2秒で計算。"""
+    if pd.isna(s) or str(s).strip() == "":
+        return np.nan
+    s = str(s).strip()
+    if s in _CHAKUSA_MAP:
+        return _CHAKUSA_MAP[s]
+    # "1.1/4", "2.1/2" 形式
+    m = re.match(r"^(\d+)\.(\d+)/(\d+)$", s)
+    if m:
+        lengths = int(m.group(1)) + int(m.group(2)) / int(m.group(3))
+        return lengths * 0.2
+    # "1/2", "3/4" 形式
+    m = re.match(r"^(\d+)/(\d+)$", s)
+    if m:
+        return int(m.group(1)) / int(m.group(2)) * 0.2
+    # "1馬身", "2馬身" / "1 1/2馬身", "2.1/2馬身" 形式
+    m = re.match(r"^(\d+(?:\.\d+)?)\s*馬身$", s)
+    if m:
+        return float(m.group(1)) * 0.2
+    m = re.match(r"^(\d+)\s+(\d+)/(\d+)\s*馬身$", s)
+    if m:
+        lengths = int(m.group(1)) + int(m.group(2)) / int(m.group(3))
+        return lengths * 0.2
+    # 純数字 "1", "2", ...
+    try:
+        return float(s) * 0.2
+    except Exception:
+        return np.nan
+
+
+def _extract_4corner(passage):
+    """通過順位文字列から最終コーナー位置を抽出（"1-2-3-4" → 4.0）。"""
+    try:
+        if pd.isna(passage) or str(passage).strip() == "":
+            return np.nan
+        positions = [int(x) for x in str(passage).split("-") if x.isdigit()]
+        return float(positions[-1]) if positions else np.nan
+    except Exception:
+        return np.nan
+
+
+def _extract_1corner(passage):
+    """通過順位文字列から1コーナー位置を抽出（"8-5-3-2" → 8.0）。"""
+    try:
+        if pd.isna(passage) or str(passage).strip() == "":
+            return np.nan
+        positions = [int(x) for x in str(passage).split("-") if x.isdigit()]
+        return float(positions[0]) if positions else np.nan
+    except Exception:
+        return np.nan
+# ─────────────────────────────────────────────────────────────────────────────
+
+
 def load_and_prepare(csv_path="race_data_clean.csv", df=None):
     # df が渡されればCSVを読まずにそれを使う（予測時の一本化用）。
     if df is None:
@@ -160,6 +220,63 @@ def add_horse_history_features(df):
     df["前走着順"]   = g["着順_num"].transform(lambda x: x.shift(1))
     df["前走上り"]   = g["上り"].transform(lambda x: x.shift(1))
 
+    # クラス変化（昇降級: 正=昇級、負=降級）
+    if "クラス_num" in df.columns:
+        _prev_cls = g["クラス_num"].transform(lambda x: x.shift(1))
+        df["クラス変化"] = pd.to_numeric(df["クラス_num"], errors="coerce") - _prev_cls
+
+    # 前走着差（1着=0、それ以外は着差テキスト→秒換算）
+    if "着差" in df.columns:
+        df["_chakusa_sec"] = df.apply(
+            lambda r: 0.0 if r.get("着順_num") == 1 else chakusa_to_sec(r.get("着差")), axis=1
+        )
+        df["前走着差_秒"]     = g["_chakusa_sec"].transform(lambda x: x.shift(1))
+        df["過去平均着差_秒"] = g["_chakusa_sec"].transform(lambda x: x.shift(1).expanding().mean())
+        df["近5走平均着差_秒"] = g["_chakusa_sec"].transform(lambda x: x.shift(1).rolling(5, min_periods=1).mean())
+    else:
+        df["前走着差_秒"]      = np.nan
+        df["過去平均着差_秒"]  = np.nan
+        df["近5走平均着差_秒"] = np.nan
+
+    # 芝ダート変更フラグ（前走と今回で馬場種別が変わった）
+    if "is_turf" in df.columns:
+        _prev_turf = g["is_turf"].transform(lambda x: x.shift(1))
+        df["芝ダート変更"] = (pd.to_numeric(df["is_turf"], errors="coerce") != _prev_turf).astype(float)
+        # 初出走（前走データなし）は NaN
+        df.loc[_prev_turf.isna(), "芝ダート変更"] = np.nan
+    else:
+        df["芝ダート変更"] = np.nan
+
+    # 着差安定度（近5走の着差標準偏差）: 小=安定した馬、大=波がある馬
+    if "着差" in df.columns:
+        df["近5走着差_std"] = g["_chakusa_sec"].transform(
+            lambda x: x.shift(1).rolling(5, min_periods=2).std()
+        )
+    else:
+        df["近5走着差_std"] = np.nan
+
+    # 重賞実績（クラス_num >= 6 = G3以上の出走歴）
+    if "クラス_num" in df.columns:
+        _is_graded = (pd.to_numeric(df["クラス_num"], errors="coerce") >= 6).astype(float)
+        df["_is_graded"] = _is_graded
+        df["重賞出走フラグ"]  = g["_is_graded"].transform(lambda x: x.shift(1).expanding().max())
+        df["過去重賞出走数"]  = g["_is_graded"].transform(lambda x: x.shift(1).expanding().sum())
+    else:
+        df["重賞出走フラグ"] = np.nan
+        df["過去重賞出走数"] = np.nan
+
+    # 前走4角位置・脚質指数（1角-4角: 正=追い込み、負=先行失速）
+    if "通過" in df.columns:
+        df["_4角位置"] = df["通過"].apply(_extract_4corner)
+        df["_1角位置"] = df["通過"].apply(_extract_1corner)
+        df["前走4角位置"]   = g["_4角位置"].transform(lambda x: x.shift(1))
+        df["過去平均4角位置"] = g["_4角位置"].transform(lambda x: x.shift(1).expanding().mean())
+        df["前走脚質指数"]   = g["_1角位置"].transform(lambda x: x.shift(1)) - df["前走4角位置"]
+    else:
+        df["前走4角位置"]   = np.nan
+        df["過去平均4角位置"] = np.nan
+        df["前走脚質指数"]   = np.nan
+
     # タイム系
     if "タイム秒" in df.columns:
         df["過去平均タイム秒"]      = g["タイム秒"].transform(lambda x: x.shift(1).expanding().mean())
@@ -244,6 +361,9 @@ def add_horse_history_features(df):
                 row["直近5走勝利数"]       = np.nan
                 row["直近5走複勝数"]       = np.nan
                 row["直近5走平均着順"]     = np.nan
+                row["過去着順_std"]        = np.nan
+                row["直近5走着順_std"]     = np.nan
+                row["直近5走着外率"]       = np.nan
                 row["近走改善度"]           = np.nan
                 row["平均タイム差"]         = np.nan
                 # 【新規】距離適性・スタミナ系（長距離・距離延長の弱点対策）
@@ -340,11 +460,61 @@ def add_horse_history_features(df):
                     cur_dist = pd.to_numeric(row.get("距離", np.nan), errors="coerce")
                     prev_dist = row["前走距離"]
                     row["距離変化"] = (cur_dist - prev_dist) if pd.notna(cur_dist) and pd.notna(prev_dist) else np.nan
+                    # クラス変化（昇降級）
+                    _prev_cls = pd.to_numeric(prev.get("クラス_num", np.nan), errors="coerce")
+                    _cur_cls  = pd.to_numeric(row.get("クラス_num", np.nan), errors="coerce")
+                    row["クラス変化"] = (_cur_cls - _prev_cls) if pd.notna(_cur_cls) and pd.notna(_prev_cls) else np.nan
+                    # 前走着差_秒（1着=0.0）
+                    _prev_chk = prev.get("着順_num")
+                    _prev_cs  = prev.get("着差", np.nan)
+                    row["前走着差_秒"] = 0.0 if (_prev_chk == 1) else chakusa_to_sec(_prev_cs)
+                    # 過去平均着差_秒
+                    if "着差" in valid.columns:
+                        row["過去平均着差_秒"] = valid.apply(
+                            lambda r: 0.0 if r.get("着順_num") == 1 else chakusa_to_sec(r.get("着差")), axis=1
+                        ).mean()
+                    else:
+                        row["過去平均着差_秒"] = np.nan
+                    # 前走4角位置・脚質指数
+                    _prev_tsuka = prev.get("通過", np.nan)
+                    row["前走4角位置"] = _extract_4corner(_prev_tsuka)
+                    _1kaku = _extract_1corner(_prev_tsuka)
+                    row["前走脚質指数"] = (_1kaku - row["前走4角位置"]
+                                          if pd.notna(_1kaku) and pd.notna(row["前走4角位置"]) else np.nan)
+                    if "通過" in valid.columns:
+                        row["過去平均4角位置"] = valid["通過"].apply(_extract_4corner).mean()
+                    else:
+                        row["過去平均4角位置"] = np.nan
+                    # 着差安定度（近5走の着差 std）
+                    if "着差" in valid.columns:
+                        _cs_series = valid.apply(
+                            lambda r: 0.0 if r.get("着順_num") == 1 else chakusa_to_sec(r.get("着差")), axis=1
+                        ).dropna()
+                        row["近5走着差_std"] = _cs_series.tail(5).std() if len(_cs_series) >= 2 else np.nan
+                    else:
+                        row["近5走着差_std"] = np.nan
+                    # 重賞実績
+                    if "クラス_num" in valid.columns:
+                        _grades = pd.to_numeric(valid["クラス_num"], errors="coerce")
+                        row["重賞出走フラグ"] = float((_grades >= 6).any())
+                        row["過去重賞出走数"] = float((_grades >= 6).sum())
+                    else:
+                        row["重賞出走フラグ"] = np.nan
+                        row["過去重賞出走数"] = np.nan
                 else:
-                    row["前走着順"]  = np.nan
-                    row["前走上り"]  = np.nan
-                    row["前走距離"]  = np.nan
-                    row["距離変化"]  = np.nan
+                    row["前走着順"]      = np.nan
+                    row["前走上り"]      = np.nan
+                    row["前走距離"]      = np.nan
+                    row["距離変化"]      = np.nan
+                    row["クラス変化"]    = np.nan
+                    row["前走着差_秒"]   = np.nan
+                    row["過去平均着差_秒"] = np.nan
+                    row["前走4角位置"]   = np.nan
+                    row["過去平均4角位置"] = np.nan
+                    row["前走脚質指数"]  = np.nan
+                    row["近5走着差_std"] = np.nan
+                    row["重賞出走フラグ"] = np.nan
+                    row["過去重賞出走数"] = np.nan
 
                 # ── 距離適性・スタミナ系（長距離・距離延長の弱点対策）──
                 cur_dist2 = pd.to_numeric(row.get("距離", np.nan), errors="coerce")
@@ -416,10 +586,17 @@ def add_horse_history_features(df):
                     row["直近5走複勝数"] = int((last5["着順_num"] <= 3).sum())
                     # 直近の勢い（直近5走の平均着順、小さいほど好調）
                     row["直近5走平均着順"] = last5["着順_num"].mean()
+                    # 着順安定性（複勝精度向け）: ばらつき小=安定=複勝向き
+                    row["過去着順_std"]   = valid["着順_num"].std() if len(valid) >= 2 else np.nan
+                    row["直近5走着順_std"] = last5["着順_num"].std() if n5 >= 2 else np.nan
+                    row["直近5走着外率"]  = float((last5["着順_num"] > 3).mean())
                 else:
                     row["直近5走勝利数"]   = np.nan
                     row["直近5走複勝数"]   = np.nan
                     row["直近5走平均着順"] = np.nan
+                    row["過去着順_std"]    = np.nan
+                    row["直近5走着順_std"] = np.nan
+                    row["直近5走着外率"]   = np.nan
 
                 # ── 近走改善度（直近3走 vs 全過去の着順差） ────────────
                 if len(valid) >= 4:
@@ -459,30 +636,64 @@ def add_race_relative_features(df):
         group["馬体重_相対"] = group["馬体重"] - avg_weight
         group["人気順位"]   = group["人気"].rank()
         group["斤量_相対"]  = group["斤量"] - group["斤量"].mean()
+        # レース内ランク（1=最良。NaNは最下位扱い）
+        if "過去勝率" in group.columns:
+            group["レース内_過去勝率ランク"] = group["過去勝率"].rank(
+                ascending=False, method="min", na_option="bottom")
+        if "直近3走平均着順" in group.columns:
+            group["レース内_直近3走平均着順ランク"] = group["直近3走平均着順"].rank(
+                ascending=True, method="min", na_option="bottom")
+        if "過去平均上り" in group.columns:
+            group["レース内_過去平均上りランク"] = group["過去平均上り"].rank(
+                ascending=True, method="min", na_option="bottom")
+        if "騎手勝率" in group.columns:
+            group["レース内_騎手勝率ランク"] = group["騎手勝率"].rank(
+                ascending=False, method="min", na_option="bottom")
         rel_rows.append(group)
     return pd.concat(rel_rows, ignore_index=True)
 
 
 def add_jockey_trainer_features(df):
-    """騎手・調教師の累積勝率を特徴量として追加（リーク防止：その時点までのデータのみ）"""
+    """騎手・調教師・馬主の累積勝率を特徴量として追加（リーク防止：その時点までのデータのみ）。
+    生の累積勝率に加え、ベイズスムージング版（少数サンプルを事前平均へ収縮）も付与する。"""
     df = df.sort_values(["race_id"]).reset_index(drop=True)
+
+    # ベイズスムージング設定（少数出走のカテゴリを全体平均へ収縮）
+    K_SMOOTH   = 20      # 収縮強度（この出走数で事前:実測=1:1）
+    PRIOR_WIN  = 0.075   # 全体勝率の事前値（≒1/平均頭数）
+    PRIOR_FUKU = 0.22    # 全体複勝率の事前値（≒3/平均頭数）
+
+    has_owner = "馬主" in df.columns
 
     jockey_stats  = {}
     trainer_stats = {}
+    owner_stats   = {}
     jockey_winrate  = []
     jockey_fukusho  = []
     trainer_winrate = []
     trainer_fukusho = []
+    jockey_win_sm   = []
+    trainer_win_sm  = []
+    owner_winrate   = []
+    owner_fukusho   = []
+    owner_win_sm    = []
+
+    def _sm(wins, runs, prior):
+        """ベイズスムージング: (wins + K*prior) / (runs + K)。runs=0でもpriorを返す。"""
+        return (wins + K_SMOOTH * prior) / (runs + K_SMOOTH)
 
     for _, row in df.iterrows():
         jockey   = row["騎手"]
         trainer  = row["調教師"]
+        owner    = row["馬主"] if has_owner else None
         chakujun = row["着順_num"]
 
         if jockey not in jockey_stats:
             jockey_stats[jockey] = {"runs": 0, "wins": 0, "top3": 0}
         if trainer not in trainer_stats:
             trainer_stats[trainer] = {"runs": 0, "wins": 0, "top3": 0}
+        if has_owner and owner not in owner_stats:
+            owner_stats[owner] = {"runs": 0, "wins": 0, "top3": 0}
 
         js = jockey_stats[jockey]
         ts = trainer_stats[trainer]
@@ -490,21 +701,44 @@ def add_jockey_trainer_features(df):
         jockey_fukusho.append(js["top3"]  / js["runs"] if js["runs"] > 0 else np.nan)
         trainer_winrate.append(ts["wins"] / ts["runs"] if ts["runs"] > 0 else np.nan)
         trainer_fukusho.append(ts["top3"] / ts["runs"] if ts["runs"] > 0 else np.nan)
+        jockey_win_sm.append(_sm(js["wins"], js["runs"], PRIOR_WIN))
+        trainer_win_sm.append(_sm(ts["wins"], ts["runs"], PRIOR_WIN))
+        if has_owner:
+            os_ = owner_stats[owner]
+            owner_winrate.append(os_["wins"] / os_["runs"] if os_["runs"] > 0 else np.nan)
+            owner_fukusho.append(os_["top3"] / os_["runs"] if os_["runs"] > 0 else np.nan)
+            owner_win_sm.append(_sm(os_["wins"], os_["runs"], PRIOR_WIN))
 
         if not np.isnan(chakujun):
             jockey_stats[jockey]["runs"]   += 1
             trainer_stats[trainer]["runs"] += 1
+            if has_owner:
+                owner_stats[owner]["runs"] += 1
             if chakujun == 1:
                 jockey_stats[jockey]["wins"]   += 1
                 trainer_stats[trainer]["wins"] += 1
+                if has_owner:
+                    owner_stats[owner]["wins"] += 1
             if chakujun <= 3:
                 jockey_stats[jockey]["top3"]   += 1
                 trainer_stats[trainer]["top3"] += 1
+                if has_owner:
+                    owner_stats[owner]["top3"] += 1
 
     df["騎手勝率"]   = jockey_winrate
     df["騎手複勝率"] = jockey_fukusho
     df["調教師勝率"]   = trainer_winrate
     df["調教師複勝率"] = trainer_fukusho
+    df["騎手勝率_sm"]   = jockey_win_sm
+    df["調教師勝率_sm"] = trainer_win_sm
+    if has_owner:
+        df["馬主勝率"]    = owner_winrate
+        df["馬主複勝率"]  = owner_fukusho
+        df["馬主勝率_sm"] = owner_win_sm
+    else:
+        df["馬主勝率"] = np.nan
+        df["馬主複勝率"] = np.nan
+        df["馬主勝率_sm"] = np.nan
 
     # ── 騎手×競馬場 勝率（その時点までのデータのみ） ──────────────────
     jockey_jyo_stats = {}   # {(騎手, 競馬場cd): {runs, wins}}
@@ -579,6 +813,11 @@ def add_jockey_trainer_features(df):
     df = df.merge(
         df3[["race_id", "馬名", "騎手直近勝率", "騎手直近複勝率", "騎手調子トレンド"]],
         on=["race_id", "馬名"], how="left")
+
+    # レース内_騎手勝率ランク（騎手勝率付与後にここで計算）
+    if "騎手勝率" in df.columns:
+        df["レース内_騎手勝率ランク"] = df.groupby("race_id")["騎手勝率"].rank(
+            ascending=False, method="min", na_option="bottom")
 
     return df
 
@@ -820,6 +1059,154 @@ def add_blood_features(df, base_dir=None):
     return df
 
 
+def _dist_band(d):
+    """距離を帯に変換（短/中/長）。コースバイアス集計のキー。"""
+    d = pd.to_numeric(d, errors="coerce")
+    if pd.isna(d):
+        return None
+    if d <= 1400:
+        return "短"
+    elif d <= 2000:
+        return "中"
+    return "長"
+
+
+def build_course_bias(input_csv="race_data_clean.csv", out_csv="course_bias.csv",
+                      year_max=2024, base_dir=None):
+    """競馬場×距離帯×芝ダ ごとの脚質バイアス（先行/差し有利度）を集計してCSV保存する。
+    リーク防止のため year_max（既定2024）以前のデータのみで集計する。
+    予測時も同じCSVを参照するので学習・予測で完全一致する（sire_statsと同じ静的方式）。
+
+    出力指標:
+      コース好走相対4角 : 着順3以内馬の平均相対4角位置(0-1)。小=前有利、大=差し有利
+      コース先行勝率   : 4角3番手以内だった馬の勝率
+      コース差し複勝率 : 4角4番手以降だった馬の複勝率
+    """
+    import os as _os
+    bd = base_dir or _os.path.dirname(_os.path.abspath(__file__))
+    inp = input_csv if _os.path.isabs(input_csv) else _os.path.join(bd, input_csv)
+    outp = out_csv if _os.path.isabs(out_csv) else _os.path.join(bd, out_csv)
+
+    df = pd.read_csv(inp, low_memory=False)
+    df["race_id"] = df["race_id"].astype(str)
+    df["年"] = df["race_id"].str[:4].astype(int)
+    df = df[df["年"] <= year_max].copy()
+    df["競馬場cd"] = df["race_id"].str[4:6].astype(int)
+    df["着順_num"] = pd.to_numeric(df["着順_num"], errors="coerce")
+    df["距離"] = pd.to_numeric(df["距離"], errors="coerce")
+
+    # is_turf（無ければ馬場種別から）
+    if "is_turf" not in df.columns and "馬場種別" in df.columns:
+        df["is_turf"] = df["馬場種別"].astype(str).str.contains("芝").astype(float)
+    df["is_turf"] = pd.to_numeric(df.get("is_turf"), errors="coerce")
+
+    df["_4c"] = df["通過"].apply(_extract_4corner) if "通過" in df.columns else np.nan
+    df["_n"]  = df.groupby("race_id")["馬番"].transform("count")
+    df["_rel4c"] = df["_4c"] / df["_n"].replace(0, np.nan)
+    df["_senko"] = (df["_4c"] <= 3).astype(float)
+    df["_win"]   = (df["着順_num"] == 1).astype(float)
+    df["_t3"]    = (df["着順_num"] <= 3).astype(float)
+    df["_band"]  = df["距離"].apply(_dist_band)
+
+    rows = []
+    for (jyo, band, turf), g in df.groupby(["競馬場cd", "_band", "is_turf"]):
+        if len(g) < 30:      # サンプル不足のコースはスキップ（NaN扱い）
+            continue
+        good = g[g["_t3"] == 1]
+        senko = g[g["_senko"] == 1]
+        sashi = g[g["_senko"] == 0]
+        rows.append({
+            "競馬場cd": jyo, "_band": band, "is_turf": turf,
+            "コース好走相対4角": good["_rel4c"].mean(),
+            "コース先行勝率": senko["_win"].mean() if len(senko) > 0 else np.nan,
+            "コース差し複勝率": sashi["_t3"].mean() if len(sashi) > 0 else np.nan,
+        })
+    out = pd.DataFrame(rows)
+    out.to_csv(outp, index=False, encoding="utf-8-sig")
+    print(f"  コースバイアステーブル保存 → {outp}（{len(out)}コース）")
+    return out
+
+
+def add_course_bias_features(df, base_dir=None):
+    """コース脚質バイアス（実装1）とコース替わり（実装2）の特徴量を付与する。
+    add_extra_advanced_features の後に呼ぶこと（回り_num/直線長_m/坂あり/先行馬フラグが前提）。"""
+    import os as _os
+    bd = base_dir or _os.path.dirname(_os.path.abspath(__file__))
+    cb_path = _os.path.join(bd, "course_bias.csv")
+
+    # ── 競馬場cd / 距離帯 / is_turf を用意 ──
+    if "競馬場cd" not in df.columns:
+        df["競馬場cd"] = df["race_id"].astype(str).str[4:6].astype(int)
+    df["_band"] = df["距離"].apply(_dist_band)
+    turf = pd.to_numeric(df.get("is_turf"), errors="coerce")
+
+    # ── 実装1-A: コース全体のバイアステーブルをマージ ──
+    bias_cols = ["コース好走相対4角", "コース先行勝率", "コース差し複勝率"]
+    if _os.path.exists(cb_path):
+        cb = pd.read_csv(cb_path)
+        cb["is_turf"] = pd.to_numeric(cb["is_turf"], errors="coerce")
+        df["is_turf"] = turf
+        df = df.merge(cb, on=["競馬場cd", "_band", "is_turf"], how="left")
+    else:
+        for c in bias_cols:
+            df[c] = np.nan
+
+    # ── 実装1-B: 馬の脚質 × コース相性 ──
+    # 馬の相対脚質: 過去平均先行指数(1角平均位置) / 出走頭数（小=先行馬）
+    n_run = pd.to_numeric(df.get("出走頭数"), errors="coerce").replace(0, np.nan)
+    rel_kyakushitsu = pd.to_numeric(df.get("過去平均先行指数"), errors="coerce") / n_run
+    senko_flag = pd.to_numeric(df.get("先行馬フラグ"), errors="coerce")
+    course_front = pd.to_numeric(df["コース好走相対4角"], errors="coerce")  # 小=前有利
+    # 脚質コース適合: 馬の相対位置とコース好走位置が近いほど相性good（差の絶対値の負）
+    df["脚質コース適合"] = -(rel_kyakushitsu - course_front).abs()
+    # 先行有利コース×先行馬: コースが前有利(値小→1-値大)で先行馬なら加点
+    df["先行有利コース×先行馬"] = senko_flag * (1.0 - course_front)
+    # 差し有利コース×差し馬: コースが差し有利(値大)で差し馬なら加点
+    df["差し有利コース×差し馬"] = (1.0 - senko_flag) * course_front
+
+    # ── 実装2: コース替わり（前走→今回のコース形態変化）──
+    df = df.sort_values(["馬名", "race_id"]).reset_index(drop=True)
+    g = df.groupby("馬名")
+    for col, prev in [("回り_num", "前走回り_num"), ("直線長_m", "前走直線長_m"), ("坂あり", "前走坂あり")]:
+        if col in df.columns:
+            df[prev] = g[col].transform(lambda x: x.shift(1))
+        else:
+            df[prev] = np.nan
+    # 回り替わり（右⇄左の方向転換）
+    if "回り_num" in df.columns:
+        df["回り替わりフラグ"] = ((df["前走回り_num"].notna()) &
+                                 (df["前走回り_num"] != pd.to_numeric(df["回り_num"], errors="coerce"))).astype(float)
+        df.loc[df["前走回り_num"].isna(), "回り替わりフラグ"] = np.nan
+    else:
+        df["回り替わりフラグ"] = np.nan
+    # 直線長変化（正=長い直線へ＝差し有利化）
+    if "直線長_m" in df.columns:
+        df["直線長変化"] = pd.to_numeric(df["直線長_m"], errors="coerce") - df["前走直線長_m"]
+    else:
+        df["直線長変化"] = np.nan
+    # 坂替わり（平坦⇄急坂）
+    if "坂あり" in df.columns:
+        df["坂替わりフラグ"] = ((df["前走坂あり"].notna()) &
+                              (df["前走坂あり"] != pd.to_numeric(df["坂あり"], errors="coerce"))).astype(float)
+        df.loc[df["前走坂あり"].isna(), "坂替わりフラグ"] = np.nan
+    else:
+        df["坂替わりフラグ"] = np.nan
+    # 初コースフラグ（その馬がその競馬場cd初出走なら1）
+    # df は既に (馬名, race_id) でソート済み。馬ごとに競馬場の初出現を判定する。
+    def _first_course(sub):
+        seen = set(); out = []
+        for cd in sub:
+            out.append(1.0 if cd not in seen else 0.0)
+            seen.add(cd)
+        return out
+    df["初コースフラグ"] = np.concatenate(
+        [_first_course(s["競馬場cd"].tolist()) for _, s in df.groupby("馬名", sort=True)]
+    )
+
+    df = df.drop(columns=["_band"], errors="ignore")
+    return df
+
+
 def add_interaction_features(df):
     """
     交互作用特徴量を追加（高精度化）：
@@ -887,14 +1274,36 @@ def add_interaction_features(df):
         df["距離延長×前走好走"] = np.nan
         df["距離短縮×前走好走"] = np.nan
 
+    # ── ⑦ 前走間隔×距離変化 交互作用 ──────────────────────────────────
+    # 長期休養明けの距離延長は特にリスクが高い（体力・ペース感覚両面で不安）
+    if "前走間隔" in df.columns and "距離変化" in df.columns:
+        _kyukan = df["前走間隔"].fillna(0)
+        _dchg   = df["距離変化"].fillna(0)
+        df["休養明け×距離延長"] = ((_kyukan >= 12).astype(float)) * (_dchg.clip(lower=0) / 400.0)
+        df["連闘×距離短縮"]     = ((_kyukan <= 1).astype(float)) * ((-_dchg).clip(lower=0) / 400.0)
+    else:
+        df["休養明け×距離延長"] = np.nan
+        df["連闘×距離短縮"]     = np.nan
+
+    # ── ⑧ 前走着差×前走人気 乖離（接戦2着なのに今回人気薄 = 狙い目） ──
+    if "前走着差_秒" in df.columns and "人気" in df.columns:
+        # 前走が接戦（着差_秒<=0.3）かつ今回人気薄（人気>=5）= 見逃し候補
+        _close_finish = (df["前走着差_秒"].fillna(99) <= 0.3).astype(float)
+        _pop_low      = (pd.to_numeric(df["人気"], errors="coerce") >= 5).fillna(0).astype(float)
+        df["接戦×人気薄"] = _close_finish * _pop_low
+    else:
+        df["接戦×人気薄"] = np.nan
+
     df = df.drop(columns=["_win"], errors="ignore")
     return df
 
 
 def build_features(csv_path="race_data_clean.csv", out_path="race_features.csv"):
     print("データ読み込み中...")
+    print("コースバイアステーブルを集計中（2024以前）...")
+    build_course_bias(csv_path, "course_bias.csv", year_max=2024)
     df = load_and_prepare(csv_path)
-    print("特徴量を生成中（過去成績・騎手・血統・交互作用、時間がかかります）...")
+    print("特徴量を生成中（過去成績・騎手・血統・コース・交互作用、時間がかかります）...")
     df = _run_feature_pipeline(df)
 
     FEATURE_COLS = [
@@ -904,7 +1313,7 @@ def build_features(csv_path="race_data_clean.csv", out_path="race_features.csv")
         "年齢", "is_male", "is_female", "is_castrated",
         "馬体重", "体重増減", "馬体重_相対",
         "人気",
-        "上り", "出走頭数", "競馬場cd", "レース番号",
+        "上り", "出走頭数", "競馬場cd", "レース番号", "日", "回",
         "過去出走数", "過去平均着順", "過去勝率", "過去複勝率",
         "過去平均上り", "直近3走平均着順",
         "過去平均タイム秒", "直近3走平均タイム秒", "過去最速タイム秒",
@@ -930,7 +1339,11 @@ def build_features(csv_path="race_data_clean.csv", out_path="race_features.csv")
         # 開催時期
         "開催月", "開催季節",
         # 前走情報
-        "前走着順", "前走上り", "前走距離", "距離変化",
+        "前走着順", "前走上り", "前走距離", "距離変化", "クラス変化",
+        "前走着差_秒", "過去平均着差_秒", "近5走平均着差_秒", "近5走着差_std",
+        "前走4角位置", "過去平均4角位置", "前走脚質指数",
+        "芝ダート変更",
+        "重賞出走フラグ", "過去重賞出走数",
         # 連続好走・成長
         "連続複勝フラグ", "連続勝利フラグ", "近走改善度",
         # タイム差
@@ -944,10 +1357,44 @@ def build_features(csv_path="race_data_clean.csv", out_path="race_features.csv")
         "前走好走×人気薄", "前走着順×人気_乖離",
         "斤量×年齢_負担",
         "距離延長×前走好走", "距離短縮×前走好走",
+        "休養明け×距離延長", "連闘×距離短縮",
+        "接戦×人気薄",
         # 血統特徴量
         "父系_今回距離適性", "母父系_今回距離適性",
         "父系_長距離勝率", "母父系_長距離勝率",
         "父系_芝ダ適性", "父系_複勝率",
+        # レース内ランク
+        "レース内_過去勝率ランク", "レース内_直近3走平均着順ランク",
+        "レース内_過去平均上りランク", "レース内_騎手勝率ランク",
+        # 距離変化系
+        "距離変化比率", "大幅延長フラグ", "大幅短縮フラグ", "距離延長幅",
+        "長距離フラグ", "大幅延長×長距離", "距離延長×先行",
+        # 距離適性・スタミナ系
+        "経験最長距離", "経験範囲超過", "延長×距離経験不足", "長距離複勝率",
+        "前走余力", "延長×前走余力",
+        # 騎手直近トレンド
+        "騎手直近勝率", "騎手直近複勝率", "騎手調子トレンド",
+        # 直近5走統計
+        "直近5走勝利数", "直近5走複勝数", "直近5走平均着順",
+        # 着順安定性（複勝精度向け）
+        "過去着順_std", "直近5走着順_std", "直近5走着外率",
+        # ターゲットエンコーディング（B1: 馬主・スムージング版）
+        "騎手勝率_sm", "調教師勝率_sm",
+        "馬主勝率", "馬主複勝率", "馬主勝率_sm",
+        # コース脚質バイアス（実装1）
+        "コース好走相対4角", "コース先行勝率", "コース差し複勝率",
+        "脚質コース適合", "先行有利コース×先行馬", "差し有利コース×差し馬",
+        # コース替わり（実装2）
+        "回り替わりフラグ", "直線長変化", "坂替わりフラグ", "初コースフラグ",
+        # レース内偏差値化（相対競争の強調）
+        "過去勝率_レース内偏差", "過去複勝率_レース内偏差", "直近3走平均着順_レース内偏差",
+        "過去平均上り_レース内偏差", "過去獲得賞金累計_レース内偏差", "騎手勝率_レース内偏差",
+        "父系_今回距離適性_レース内偏差", "直近5走平均着順_レース内偏差",
+        # メンバーレベル（相手の強さ）
+        "メンバー過去勝率平均", "メンバー過去勝率最大", "過去勝率_対相手",
+        "メンバークラス平均", "メンバー賞金平均", "賞金_対相手",
+        # 賞金累計
+        "過去獲得賞金累計", "過去平均獲得賞金",
     ]
 
     # ── 乗り替わり・斤量変化: 騎手列・斤量はCSV出力しないが、ここで計算して保持 ──
@@ -1026,6 +1473,38 @@ def add_distance_stamina_features(df):
     return df
 
 
+def add_field_relative_features(df):
+    """レース内偏差値化（相対競争の強調）とメンバーレベル（相手の強さ）を付与する。
+    全特徴量が揃った後（pipeline末尾）に呼ぶこと。競馬は相対競争なので、
+    絶対値より『そのレースメンバー内での相対位置』が効く。"""
+    g = df.groupby("race_id")
+
+    # ── レース内偏差値（zスコア）: 主要な連続特徴量をレース内で標準化 ──
+    dev_cols = [
+        "過去勝率", "過去複勝率", "直近3走平均着順", "過去平均上り",
+        "過去獲得賞金累計", "騎手勝率", "父系_今回距離適性", "直近5走平均着順",
+    ]
+    for c in dev_cols:
+        if c in df.columns:
+            x = pd.to_numeric(df[c], errors="coerce")
+            m = g[c].transform("mean")
+            s = g[c].transform("std").replace(0, np.nan)
+            df[f"{c}_レース内偏差"] = (x - m) / s
+
+    # ── メンバーレベル（相手の強さ）──
+    if "過去勝率" in df.columns:
+        df["メンバー過去勝率平均"] = g["過去勝率"].transform("mean")
+        df["メンバー過去勝率最大"] = g["過去勝率"].transform("max")
+        df["過去勝率_対相手"] = pd.to_numeric(df["過去勝率"], errors="coerce") - df["メンバー過去勝率平均"]
+    if "クラス_num" in df.columns:
+        df["メンバークラス平均"] = g["クラス_num"].transform("mean")
+    if "過去獲得賞金累計" in df.columns:
+        df["メンバー賞金平均"] = g["過去獲得賞金累計"].transform("mean")
+        df["賞金_対相手"] = (pd.to_numeric(df["過去獲得賞金累計"], errors="coerce")
+                            - df["メンバー賞金平均"])
+    return df
+
+
 def _run_feature_pipeline(df):
     """load_and_prepare 済みの df に対し、学習と同じ特徴量関数を順に適用する。
     build_features（学習）と build_features_for_prediction（予測）で共通利用し、
@@ -1046,8 +1525,10 @@ def _run_feature_pipeline(df):
     if dist_avg:
         df = pd.concat(dist_avg).sort_values(["race_id", "馬番"]).reset_index(drop=True)
     df = add_extra_advanced_features(df)
+    df = add_course_bias_features(df)
     df = add_blood_features(df)
     df = add_interaction_features(df)
+    df = add_field_relative_features(df)
     if "距離" in df.columns:
         df["距離"] = pd.to_numeric(df["距離"], errors="coerce")
         df["距離"] = df["距離"].fillna(df["距離"].median())
