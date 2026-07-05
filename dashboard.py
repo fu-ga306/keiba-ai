@@ -86,6 +86,16 @@ def get_result_df(df):
         return pd.DataFrame()
     return df.dropna(subset=["hit"]).copy()
 
+def get_win_prob(row):
+    """MF勝ち確率を優先し、列が無い/値が空(NaN)の場合は勝ち確率にフォールバックする。
+    row.get("MF勝ち確率", row.get("勝ち確率")) は列自体が存在すると値が空でも
+    フォールバックされないため、pd.isna を明示的にチェックする。"""
+    wp = row.get("MF勝ち確率", np.nan)
+    if pd.isna(wp):
+        wp = row.get("勝ち確率", np.nan)
+    return wp
+
+
 def prob_bar_html(val, color, width=60):
     if pd.isna(val):
         return "-"
@@ -94,6 +104,188 @@ def prob_bar_html(val, color, width=60):
     return (f"<span style='color:var(--color-text-primary);font-size:13px'>{pct:.1f}%</span>"
             f"<span class='bar-wrap' style='width:{width}px;margin-left:6px'>"
             f"<span class='bar-inner' style='width:{w}px;background:{color}'></span></span>")
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Flask版(flask_app.py)から移植した判定ロジック
+# 荒れスコア／馬券種推奨／レース推奨レベルを算出する
+# ══════════════════════════════════════════════════════════════════════
+
+def calc_are_score(group: pd.DataFrame) -> tuple:
+    """荒れスコア: 単勝向け / 連系向け (0-100, 高=荒れやすい)"""
+    try:
+        top1_win = group.nlargest(1, "勝ち確率")["勝ち確率"].iloc[0]
+        tansho_are = max(0, min(100, int(100 - top1_win * 180)))
+    except Exception:
+        tansho_are = 50
+    try:
+        top2_ren = group.nlargest(2, "連対確率")["連対確率"].sum()
+        rentan_are = max(0, min(100, int(100 - top2_ren * 80)))
+    except Exception:
+        rentan_are = 50
+    return tansho_are, rentan_are
+
+
+def are_label(score: int) -> tuple:
+    if score >= 70:
+        return ("高", "#e74c3c")
+    elif score >= 40:
+        return ("中", "#f0b429")
+    else:
+        return ("低", "#3b82f6")
+
+
+def build_bet_recs(group: pd.DataFrame, are_tan: int = 50, are_ren: int = 50) -> list:
+    """荒れスコア・EV・MF穴馬の有無に応じて馬券種を動的に決定する"""
+    recs = []
+
+    def hl(r):
+        return f"馬番{int(r.get('馬番', 0) or 0)} {r.get('馬名', '')}"
+
+    axis = group[group["推奨ランク"] == "◎"]
+    axis_ev = float(axis.iloc[0].get("単勝期待値", 0) or 0) if len(axis) > 0 else 0
+    axis_odds = axis.iloc[0].get("単勝オッズ", "-") if len(axis) > 0 else "-"
+
+    top2_win  = group.nlargest(2, "勝ち確率")
+    top3_win  = group.nlargest(3, "勝ち確率")
+    top3_fuku = group.nlargest(3, "複勝確率")
+
+    try:
+        mf_ana = group[
+            group["推奨ランク"].isin(["◎", "○", "▲"]) &
+            (pd.to_numeric(group["人気"], errors="coerce") >= 4)
+        ]
+        has_ana = len(mf_ana) > 0
+    except Exception:
+        mf_ana = pd.DataFrame()
+        has_ana = False
+
+    low_are  = are_tan < 35 and are_ren < 35   # 安定
+    high_are = are_tan >= 65 or are_ren >= 65   # 荒れ
+
+    if low_are:
+        strategy = "🔒 安定型"
+        if axis_ev >= 1.2 and len(axis) > 0:
+            recs.append({"type": "単勝◎", "cls": "bet-tansho",
+                         "horses": [hl(axis.iloc[0])],
+                         "note": f"EV:{axis_ev:.2f} / {axis_odds}倍",
+                         "strategy": strategy})
+        if len(axis) > 0:
+            recs.append({"type": "複勝◎", "cls": "bet-fuku",
+                         "horses": [hl(axis.iloc[0])],
+                         "note": "軸1頭固め", "strategy": strategy})
+        if len(top2_win) >= 2:
+            recs.append({"type": "馬連", "cls": "bet-uren",
+                         "horses": [hl(r) for _, r in top2_win.iterrows()],
+                         "note": "◎○固め", "strategy": strategy})
+
+    elif high_are:
+        strategy = "💥 荒れ型"
+        if has_ana:
+            recs.append({"type": "ワイド穴", "cls": "bet-wide",
+                         "horses": [hl(r) for _, r in mf_ana.head(2).iterrows()],
+                         "note": "MF穴馬軸・高配当狙い", "strategy": strategy})
+            if len(top3_win) >= 3:
+                recs.append({"type": "三連複", "cls": "bet-sanrenfuku",
+                             "horses": [hl(r) for _, r in top3_win.iterrows()],
+                             "note": "穴含みBOX", "strategy": strategy})
+        else:
+            recs.append({"type": "見送り", "cls": "bet-pass",
+                         "horses": [],
+                         "note": "荒れ度高・明確な穴候補なし", "strategy": strategy})
+
+    else:
+        strategy = "⚖️ バランス型"
+        if axis_ev >= 1.0 and len(axis) > 0:
+            recs.append({"type": "単勝◎", "cls": "bet-tansho",
+                         "horses": [hl(axis.iloc[0])],
+                         "note": f"EV:{axis_ev:.2f} / {axis_odds}倍",
+                         "strategy": strategy})
+        if len(top3_fuku) >= 3:
+            recs.append({"type": "複勝3点", "cls": "bet-fuku",
+                         "horses": [hl(r) for _, r in top3_fuku.iterrows()],
+                         "note": "", "strategy": strategy})
+        if len(top2_win) >= 2:
+            note = "穴含み2頭" if has_ana else "2頭流し"
+            recs.append({"type": "ワイド", "cls": "bet-wide",
+                         "horses": [hl(r) for _, r in top2_win.iterrows()],
+                         "note": note, "strategy": strategy})
+        if has_ana and len(top3_win) >= 3:
+            recs.append({"type": "三連複", "cls": "bet-sanrenfuku",
+                         "horses": [hl(r) for _, r in top3_win.iterrows()],
+                         "note": "穴馬含みBOX", "strategy": strategy})
+
+    return recs
+
+
+def calc_rec_level(group: pd.DataFrame, are_tan: int, are_ren: int, bet_recs: list) -> tuple:
+    """レース推奨レベルを返す (label, color, score)"""
+    if bet_recs and bet_recs[0]["type"] == "見送り":
+        return "見送り", "#8892a4", 0
+
+    axis = group[group["推奨ランク"] == "◎"]
+    axis_ev = float(axis.iloc[0].get("単勝期待値", 0) or 0) if len(axis) > 0 else 0
+
+    score = axis_ev * 100
+    if are_tan < 35 and are_ren < 35:
+        score += 15
+
+    if axis_ev >= 1.2:
+        return "推奨", "#10b981", score
+    elif axis_ev >= 1.0:
+        return "参考", "#3b82f6", score
+    else:
+        return "様子見", "#8892a4", score
+
+
+BET_TYPE_COLORS = {
+    "bet-tansho":     "#dc2626",
+    "bet-fuku":       "#3b82f6",
+    "bet-uren":       "#7c3aed",
+    "bet-wide":       "#8b5cf6",
+    "bet-sanrenfuku": "#f0b429",
+    "bet-pass":       "#8892a4",
+}
+
+
+def render_bet_recs_html(bet_recs: list) -> str:
+    """build_bet_recsの結果をHTMLカードとして描画する"""
+    if not bet_recs:
+        return "<span style='color:var(--color-text-secondary);font-size:0.85rem'>推奨馬券なし</span>"
+    html = ""
+    for rec in bet_recs:
+        color = BET_TYPE_COLORS.get(rec["cls"], "#8892a4")
+        horses_s = "・".join(rec["horses"]) if rec["horses"] else "-"
+        note_s = f"<span style='color:var(--color-text-secondary);font-size:0.75rem'>（{rec['note']}）</span>" if rec.get("note") else ""
+        html += (
+            f"<div style='display:flex;align-items:center;gap:8px;padding:8px 12px;"
+            f"background:var(--color-background-secondary);border-left:3px solid {color};"
+            f"border-radius:6px;margin-bottom:6px'>"
+            f"<span style='background:{color};color:#fff;border-radius:4px;padding:2px 8px;"
+            f"font-size:0.75rem;font-weight:700;white-space:nowrap'>{rec['type']}</span>"
+            f"<span style='font-size:0.85rem;color:var(--color-text-primary)'>{horses_s}</span>"
+            f"{note_s}"
+            f"<span style='margin-left:auto;font-size:0.7rem;color:var(--color-text-secondary)'>{rec.get('strategy','')}</span>"
+            f"</div>"
+        )
+    return html
+
+
+def build_race_summary_row(jyo, race_no, race_id, group: pd.DataFrame) -> dict:
+    """全レース一覧（ハイライト表示）用に1レース分の指標をまとめる"""
+    are_tan, are_ren = calc_are_score(group)
+    bet_recs = build_bet_recs(group, are_tan, are_ren)
+    rec_level, rec_color, race_score = calc_rec_level(group, are_tan, are_ren, bet_recs)
+    axis = group[group["推奨ランク"] == "◎"] if "推奨ランク" in group.columns else pd.DataFrame()
+    axis_name = axis.iloc[0].get("馬名", "-") if len(axis) > 0 else "-"
+    axis_odds = axis.iloc[0].get("単勝オッズ", np.nan) if len(axis) > 0 else np.nan
+    return {
+        "jyo": jyo, "race_no": race_no, "race_id": race_id,
+        "are_tan": are_tan, "are_ren": are_ren,
+        "bet_recs": bet_recs,
+        "rec_level": rec_level, "rec_color": rec_color, "race_score": race_score,
+        "axis_name": axis_name, "axis_odds": axis_odds,
+    }
 
 st.sidebar.markdown("### 🏇 競馬AI")
 st.sidebar.markdown("---")
@@ -148,6 +340,66 @@ if st.session_state.page == "🏇 当日予想":
         st.info("実行コマンド: `python keiba_predict.py today`")
         st.stop()
 
+    # jyo, race_no が無ければ race_id から補完（Flask版と同じロジック）
+    if "jyo" not in df_today.columns:
+        df_today["jyo"] = df_today["race_id"].astype(str).str[4:6]
+    if "race_no" not in df_today.columns:
+        df_today["race_no"] = df_today["race_id"].astype(str).str[10:12].astype(int)
+
+    # ── 全レースの荒れスコア・推奨レベルを一括算出（Flask版 build_race_card 相当） ──
+    race_summaries = []
+    for (jyo, race_no), group in df_today.groupby(["jyo", "race_no"], sort=True):
+        race_id = str(group.iloc[0].get("race_id", ""))
+        race_summaries.append(build_race_summary_row(jyo, race_no, race_id, group))
+
+    highlights = sorted(
+        [s for s in race_summaries if s["rec_level"] == "推奨"],
+        key=lambda s: s["race_score"], reverse=True
+    )[:5]
+
+    # ── ハイライト表示（Flask版 index() の highlights 相当） ──
+    if highlights:
+        st.markdown("#### 🔥 本日のおすすめレース")
+        hl_cols = st.columns(len(highlights))
+        for col, s in zip(hl_cols, highlights):
+            odds_s = f"{s['axis_odds']:.1f}倍" if pd.notna(s["axis_odds"]) else "-"
+            col.markdown(
+                f"<div class='kpi-card' style='text-align:left'>"
+                f"<div style='font-size:0.75rem;color:var(--color-text-secondary)'>{s['jyo']} {s['race_no']}R</div>"
+                f"<div style='font-size:1.0rem;font-weight:600;margin-top:2px'>◎ {s['axis_name']}</div>"
+                f"<div style='font-size:0.8rem;color:var(--color-text-secondary)'>{odds_s}</div>"
+                f"<span style='display:inline-block;margin-top:6px;background:{s['rec_color']};color:#fff;"
+                f"border-radius:4px;padding:2px 8px;font-size:0.72rem;font-weight:700'>{s['rec_level']}</span>"
+                f"</div>", unsafe_allow_html=True
+            )
+        st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── 全レース一覧テーブル（荒れ度・推奨レベル付き） ──
+    with st.expander("📋 全レース一覧（荒れ度・推奨レベル）", expanded=False):
+        list_rows_html = ""
+        for s in sorted(race_summaries, key=lambda x: (x["jyo"], x["race_no"])):
+            are_tan_lbl, are_tan_color = are_label(s["are_tan"])
+            are_ren_lbl, are_ren_color = are_label(s["are_ren"])
+            odds_s = f"{s['axis_odds']:.1f}倍" if pd.notna(s["axis_odds"]) else "-"
+            list_rows_html += (
+                f"<tr>"
+                f"<td>{s['jyo']} {s['race_no']}R</td>"
+                f"<td>◎ {s['axis_name']} <span style='color:var(--color-text-secondary)'>({odds_s})</span></td>"
+                f"<td style='text-align:center'><span style='color:{are_tan_color};font-weight:600'>{are_tan_lbl}</span> ({s['are_tan']})</td>"
+                f"<td style='text-align:center'><span style='color:{are_ren_color};font-weight:600'>{are_ren_lbl}</span> ({s['are_ren']})</td>"
+                f"<td style='text-align:center'><span style='background:{s['rec_color']};color:#fff;border-radius:4px;padding:2px 8px;font-size:0.75rem;font-weight:700'>{s['rec_level']}</span></td>"
+                f"</tr>"
+            )
+        st.markdown(f"""
+        <table class='rt' style='width:100%;border-collapse:collapse;font-size:13px'>
+        <thead><tr>
+        <th style='text-align:left;padding:6px'>レース</th><th style='text-align:left;padding:6px'>本命</th>
+        <th style='padding:6px'>荒れ度(単勝)</th><th style='padding:6px'>荒れ度(連系)</th><th style='padding:6px'>推奨レベル</th>
+        </tr></thead><tbody>{list_rows_html}</tbody></table>
+        """, unsafe_allow_html=True)
+
+    st.markdown("---")
+
     if "jyo" in df_today.columns and "race_no" in df_today.columns:
         races = df_today[["race_id","jyo","race_no"]].drop_duplicates()
         races["label"] = races["jyo"].astype(str) + " " + races["race_no"].astype(str) + "R"
@@ -199,6 +451,43 @@ if st.session_state.page == "🏇 当日予想":
         unsafe_allow_html=True
     )
 
+    # ── 荒れスコア・レース推奨レベル・馬券種推奨（Flask版 race_detail 相当） ──
+    if "推奨ランク" in rdf.columns:
+        are_tan, are_ren = calc_are_score(rdf)
+        bet_recs = build_bet_recs(rdf, are_tan, are_ren)
+        rec_level, rec_color, race_score = calc_rec_level(rdf, are_tan, are_ren, bet_recs)
+        are_tan_lbl, are_tan_color = are_label(are_tan)
+        are_ren_lbl, are_ren_color = are_label(are_ren)
+
+        sc1, sc2, sc3 = st.columns(3)
+        sc1.markdown(
+            f"<div class='kpi-card'><div class='kpi-val' style='color:{rec_color};font-size:1.3rem'>{rec_level}</div>"
+            f"<div class='kpi-lbl'>レース推奨レベル</div></div>", unsafe_allow_html=True)
+        sc2.markdown(
+            f"<div class='kpi-card'><div class='kpi-val' style='color:{are_tan_color};font-size:1.3rem'>{are_tan_lbl} ({are_tan})</div>"
+            f"<div class='kpi-lbl'>荒れ度・単勝向け</div></div>", unsafe_allow_html=True)
+        sc3.markdown(
+            f"<div class='kpi-card'><div class='kpi-val' style='color:{are_ren_color};font-size:1.3rem'>{are_ren_lbl} ({are_ren})</div>"
+            f"<div class='kpi-lbl'>荒れ度・連系向け</div></div>", unsafe_allow_html=True)
+
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown("##### 🎫 馬券種推奨（荒れ度・EV・穴馬有無から自動判定）")
+        st.markdown(render_bet_recs_html(bet_recs), unsafe_allow_html=True)
+
+        # 穴馬候補（AI高推奨だが人気薄の馬）
+        try:
+            ana_candidates = rdf[
+                rdf["推奨ランク"].isin(["◎", "○", "▲"]) &
+                (pd.to_numeric(rdf["人気"], errors="coerce") >= 4)
+            ]
+            if len(ana_candidates) > 0:
+                names = "、".join(
+                    f"{r['馬名']}({int(r['人気'])}人気)" for _, r in ana_candidates.iterrows()
+                )
+                st.markdown(f"<div style='margin-top:6px;font-size:0.85rem;color:var(--color-text-secondary)'>💡 穴馬候補: {names}</div>", unsafe_allow_html=True)
+        except Exception:
+            pass
+
     # ── 全頭テーブル（画像2スタイル） ──
     WAKU_COLORS = {
         1: "#ffffff", 2: "#000000", 3: "#dc2626", 4: "#3b82f6",
@@ -215,7 +504,8 @@ if st.session_state.page == "🏇 当日予想":
         "連対率順": ("連対確率", False),
         "複勝率順": ("複勝確率", False),
     }
-    sort_options = {k: v for k, v in sort_options.items() if v[0] in rdf.columns}
+    sort_options = {k: v for k, v in sort_options.items()
+                    if v[0] in rdf.columns and rdf[v[0]].notna().any()}
     sort_label = st.radio("並び替え", list(sort_options.keys()), horizontal=True, key=f"sort_{rdf['race_id'].iloc[0]}")
     sort_col, sort_asc = sort_options.get(sort_label, ("勝ち確率", False))
     tdf = rdf.sort_values(sort_col, ascending=sort_asc, na_position="last").copy()
@@ -227,7 +517,7 @@ if st.session_state.page == "🏇 当日予想":
         name   = row.get("馬名", "")
         odds   = row.get("単勝オッズ", np.nan)
         pop    = row.get("人気", np.nan)
-        wp     = row.get("MF勝ち確率", row.get("勝ち確率", np.nan))  # 市場フリー優先
+        wp     = get_win_prob(row)  # 市場フリー優先（NaN時は勝ち確率にフォールバック）
         mfp    = wp  # 後方互換用
         p2     = row.get("連対確率", np.nan)
         pp     = row.get("複勝確率", np.nan)
@@ -342,7 +632,7 @@ if st.session_state.page == "🏇 当日予想":
             row = rows.iloc[0]
             odds  = row.get("単勝オッズ",np.nan)
             pop   = row.get("人気",np.nan)
-            wp    = row.get("MF勝ち確率", row.get("勝ち確率", np.nan))
+            wp    = get_win_prob(row)
             p2    = row.get("連対確率",np.nan)
             pp    = row.get("複勝確率",np.nan)
             _odds = row.get("単勝オッズ", np.nan)
