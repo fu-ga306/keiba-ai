@@ -1,3 +1,4 @@
+import os
 import requests
 from bs4 import BeautifulSoup
 import pandas as pd
@@ -14,10 +15,12 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
 }
 
-# ── メール設定 ──────────────────────────
-GMAIL_ADDRESS  = "hyu.1999.3.6@gmail.com"  # ← 書き換え
-GMAIL_APP_PASS = "pzwy zefw clly cwgt"                  # ← アプリパスワード16文字
-TO_ADDRESS     = "hyu.1999.3.6@gmail.com"
+# ── メール設定（環境変数から取得）──────────────────────────
+#   GMAIL_ADDRESS=your@gmail.com
+#   GMAIL_APP_PASS=xxxx xxxx xxxx xxxx  （Googleアプリパスワード16文字）
+GMAIL_ADDRESS  = os.environ.get("GMAIL_ADDRESS", "")
+GMAIL_APP_PASS = os.environ.get("GMAIL_APP_PASS", "")
+TO_ADDRESS     = os.environ.get("TO_ADDRESS", GMAIL_ADDRESS)
 
 FEATURE_COLS = [
     "枠番", "馬番", "斤量", "斤量_相対",
@@ -335,6 +338,10 @@ def make_email_body(results):
 
 def send_email(subject, body):
     """Gmailでメール送信"""
+    if not GMAIL_ADDRESS or not GMAIL_APP_PASS:
+        print("  ⚠ メール設定未完了（環境変数 GMAIL_ADDRESS / GMAIL_APP_PASS を設定してください）")
+        return
+
     msg = MIMEMultipart()
     msg["From"]    = GMAIL_ADDRESS
     msg["To"]      = TO_ADDRESS
