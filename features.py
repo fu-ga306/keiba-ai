@@ -123,8 +123,16 @@ def load_and_prepare(csv_path="race_data_clean.csv", df=None):
         raw = df["馬体重"].astype(str)
         parsed_w = pd.to_numeric(raw.str.extract(r"(\d+)")[0], errors="coerce")
         df["馬体重"] = df["馬体重"].where(~raw.str.contains("kg|\\(", regex=True), parsed_w)
+        # 体重増減: "466(+4)" の括弧内を数値化。予測行は 体重増減 列が履歴由来で既に存在し
+        # NaN のことが多いため、「馬体重が生テキスト(括弧付き)の行」だけ上書きして埋める。
+        # （旧実装は if "体重増減" not in df.columns で、列が存在する予測経路では常にスキップされ
+        #   本番の体重増減・体重増減_異常度が全てNaNになっていた。）
+        _delta = pd.to_numeric(raw.str.extract(r"\(([+-]?\d+)\)")[0], errors="coerce")
+        _has_paren = raw.str.contains(r"\(", regex=True)
         if "体重増減" not in df.columns:
-            df["体重増減"] = pd.to_numeric(raw.str.extract(r"\(([+-]?\d+)\)")[0], errors="coerce")
+            df["体重増減"] = _delta
+        else:
+            df["体重増減"] = df["体重増減"].where(~_has_paren, _delta)
 
     # is_turf / 馬場状態_num / クラス_num: 縦結合後、履歴由来でこれらの列は存在するが、
     # 予測対象行(予測データ由来)は値がNaN。「列の有無」でなく「値がNaN」の行を
