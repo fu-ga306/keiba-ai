@@ -1037,18 +1037,30 @@ def predict_race_pdf(race_id: str, *, history_df: pd.DataFrame, models_pack: dic
 
     # ── 役割分離型の印割り当て ─────────────────────────────────────────
     #   ◎ 本命      = 総合スコア1位（勝ち軸・MF+通常ブレンド）
-    #   ○ 対抗      = 総合スコア2位（本命に次ぐ勝ち馬）
+    #   ○ 対抗      = 連対確率(place2)最上位（◎除く）＝連対軸
     #   ▲ 3着内堅い = 複勝確率(place3)最上位（◎○除く）＝勝ち切れないが堅実に来る
     #   △ 3着内     = 複勝確率 次点（◎○▲除く）＝もう一頭の複勝候補
     #   × 穴        = 人気薄で複勝妙味のある馬（◎○▲△除く）＝一発・高配当のヒモ
     assigned = set()
 
-    # ◎○（勝ち軸）: 総合スコア上位2頭
-    order = pdf.sort_values("総合スコア", ascending=False)
-    for mk, idx in zip(("◎", "○"), order.index[:2]):
-        pdf.at[idx, "推奨ランク"] = mk
-        pdf.at[idx, "印"] = mk
-        assigned.add(idx)
+    # ◎（本命・勝ち軸）: 総合スコア最上位
+    honmei_idx = pdf["総合スコア"].idxmax()
+    pdf.at[honmei_idx, "推奨ランク"] = "◎"
+    pdf.at[honmei_idx, "印"] = "◎"
+    assigned.add(honmei_idx)
+
+    # ○（対抗・連対軸）: 連対確率(place2)最上位（◎除く）
+    #   検証(2025 3144R): 旧「総合スコア2位」より 連対率29→39%・馬券内42→53% と大幅改善。
+    #   ○=対抗＝連対軸なので勝ち軸2番手ではなく連対確率で選ぶ。連対確率が無ければ総合スコア2位。
+    _rest_maru = pdf[~pdf.index.isin(assigned)]
+    if not _rest_maru.empty:
+        if "連対確率" in pdf.columns and _rest_maru["連対確率"].notna().any():
+            maru_idx = _rest_maru["連対確率"].idxmax()
+        else:
+            maru_idx = _rest_maru["総合スコア"].idxmax()
+        pdf.at[maru_idx, "推奨ランク"] = "○"
+        pdf.at[maru_idx, "印"] = "○"
+        assigned.add(maru_idx)
 
     # ▲△（3着以内が堅い馬）: 複勝確率(place3)の高い順に、◎○以外から2頭
     if "複勝確率" in pdf.columns:
