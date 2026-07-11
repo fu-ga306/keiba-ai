@@ -105,10 +105,12 @@ def main():
     if not ok2:
         log("  [重大] 通常モデル(model.pkl)の再学習に失敗。model.pkl が更新されていない可能性大。")
 
-    # Step 3: MFモデル再学習
+    # Step 3: MFモデル再学習（改善版: シードバギング+LambdaRank。train_mf_v2.py）
+    # 旧 market_free_model.py（単一シード・LambdaRankなし）から改善版に変更。
+    # 検証(2025): MF勝率1位 26.7→27.4%、穴7人気以下 単回収246→264%。
     ok3 = run_step(
-        "MFモデル再学習",
-        [PYTHON, os.path.join(BASE_DIR, "market_free_model.py")],
+        "MFモデル再学習(改善版)",
+        [PYTHON, os.path.join(BASE_DIR, "train_mf_v2.py")],
         timeout=14400  # 4時間
     )
     if not ok3:
