@@ -100,7 +100,8 @@ def build_bet_recs(group: pd.DataFrame, are_tan: int = 50, are_ren: int = 50) ->
     recs = []
 
     def hl(r):
-        return f"馬番{int(r.get('馬番', 0) or 0)} {r.get('馬名', '')}"
+        _u = pd.to_numeric(r.get("馬番"), errors="coerce")
+        return f"馬番{int(_u) if pd.notna(_u) else '-'} {r.get('馬名', '')}"
 
     # 基本情報
     axis = group[group["推奨ランク"] == "◎"]
@@ -236,7 +237,7 @@ def build_race_card(jyo, race_no, group: pd.DataFrame) -> dict:
         pop = r.get("人気", None)
         if ev >= 1.2:
             hot_badges.append({"label": f"EV{ev:.1f}", "cls": "badge-ev"})
-        if mf_rank and pop and int(mf_rank) <= 2 and int(pop) >= 4:
+        if pd.notna(mf_rank) and pd.notna(pop) and int(mf_rank) <= 2 and int(pop) >= 4:
             hot_badges.append({"label": "MF穴", "cls": "badge-ana"})
 
     # レース推奨レベルとスコアを算出
@@ -332,7 +333,8 @@ def race_detail(race_id):
     ana_candidates = [
         h for h in horses
         if h.get("signal_cls") in ("axis", "fuku", "aite")
-        and int(h.get("人気", 0) or 0) >= 4
+        and pd.notna(pd.to_numeric(h.get("人気"), errors="coerce"))
+        and pd.to_numeric(h.get("人気"), errors="coerce") >= 4
     ]
 
     return render_template(
