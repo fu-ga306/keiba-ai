@@ -16,6 +16,7 @@ from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from webdriver_manager.chrome import ChromeDriverManager
+from model import LambdaRankWrapper  # pickle読み込みに必要
 
 # ── 設定 ──────────────────────────────────────────────────────────────────
 # 【セキュリティ修正】パスワード・パスは環境変数から取得
@@ -725,6 +726,19 @@ def make_email_body(race_id, pdf):
     )
     turf = "芝" if pdf["is_turf"].iloc[0] == 1 else "ダート"
     lines.append(f"馬場: {turf} {dist}m  状態: {baba}\n")
+
+    # ── 購入推奨度（買い指数・レース単位／honest backtestで単勝回収率に較正済み）──
+    try:
+        _kai_s = pdf["買い指数"].dropna() if "買い指数" in pdf.columns else pd.Series(dtype=float)
+        if len(_kai_s) > 0:
+            _ki  = int(_kai_s.iloc[0])
+            _rec = str(pdf["購入推奨"].iloc[0]) if "購入推奨" in pdf.columns else ""
+            _roi = str(pdf["想定単回収"].iloc[0]) if "想定単回収" in pdf.columns else ""
+            _mk  = {"積極": "[◎]", "買い": "[○]", "様子見": "[△]", "単勝見送り": "[×]"}.get(_rec, "")
+            lines.append(f"【購入推奨度】{_mk} {_rec}   買い指数 {_ki}/100   想定単勝回収 {_roi}")
+            lines.append("")
+    except Exception:
+        pass
 
     for mark, label in [("◎", "◎本命"), ("○", "○対抗"), ("▲", "▲穴馬")]:
         row_match = pdf[pdf["印"] == mark]

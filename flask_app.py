@@ -187,20 +187,33 @@ def build_bet_recs(group: pd.DataFrame, are_tan: int = 50, are_ren: int = 50) ->
 
 
 def calc_rec_level(group: pd.DataFrame, are_tan: int, are_ren: int, bet_recs: list) -> tuple:
-    """レース推奨レベルを返す (label, css_class, score)"""
+    """レース推奨レベルを返す (label, css_class, score)。
+    買い指数(honest backtestで単勝回収率に較正)を最優先で使う。
+    無い旧データはEVベースにフォールバック。"""
     # 見送り判定
     if bet_recs and bet_recs[0]["type"] == "見送り":
         return "見送り", "rec-pass", 0
 
-    # ◎のEV
+    # ── 買い指数ベース（新: 85+積極/70-84買い/55-69様子見/<55単勝見送り）──
+    if "買い指数" in group.columns:
+        kai_s = pd.to_numeric(group["買い指数"], errors="coerce").dropna()
+        if len(kai_s) > 0:
+            kai = int(kai_s.iloc[0])
+            if kai >= 85:
+                return "積極", "rec-good", kai
+            elif kai >= 70:
+                return "買い", "rec-good", kai
+            elif kai >= 55:
+                return "様子見", "rec-mid", kai
+            else:
+                return "単勝見送り", "rec-watch", kai
+
+    # ── フォールバック（旧データ・EVベース）──
     axis = group[group["推奨ランク"] == "◎"]
     axis_ev = float(axis.iloc[0].get("単勝期待値", 0) or 0) if len(axis) > 0 else 0
-
-    # スコア: EV × 100 + 安定ボーナス
     score = axis_ev * 100
     if are_tan < 35 and are_ren < 35:
-        score += 15  # 安定レースボーナス
-
+        score += 15
     if axis_ev >= 1.2:
         return "推奨", "rec-good", score
     elif axis_ev >= 1.0:
