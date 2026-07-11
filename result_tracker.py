@@ -21,57 +21,69 @@ JYO_NAMES = {
 }
 
 
-def get_race_result(race_id):
-    """レース結果をSeleniumで取得"""
-    from selenium import webdriver
-    from selenium.webdriver.chrome.service import Service
-    from selenium.webdriver.chrome.options import Options
-    from webdriver_manager.chrome import ChromeDriverManager
-
-    options = Options()
-    options.add_argument("--headless")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("--log-level=3")
-
-    driver = webdriver.Chrome(
-        service=Service(ChromeDriverManager().install()),
-        options=options
+def _parse_result_table(soup, race_id):
+    """RaceTable01 を結果DataFrameにパース（requests/Selenium共通）。"""
+    table = soup.find("table", class_="RaceTable01")
+    if table is None:
+        return None
+    rows = []
+    for tr in table.find_all("tr")[1:]:
+        tds = tr.find_all("td")
+        if len(tds) >= 5:
+            rows.append([td.get_text(strip=True) for td in tds])
+    if not rows:
+        return None
+    df = pd.DataFrame(rows)
+    col_names = ["着順", "枠番", "馬番", "馬名", "性齢", "斤量", "騎手", "タイム"]
+    n = df.shape[1]
+    df.columns = (
+        col_names[:n]
+        if n <= len(col_names)
+        else col_names + list(range(n - len(col_names)))
     )
+    df["着順_num"] = pd.to_numeric(df["着順"], errors="coerce")
+    df["race_id"]  = race_id
+    return df
+
+
+def get_race_result(race_id):
+    """レース結果を取得。まず requests(Chromeなし・高速)、取れなければ Selenium にフォールバック。
+    （従来は1レースごとにChrome起動で36レース照合に約12分かかっていた→requestsで数十秒に短縮）"""
+    race_id = str(race_id)
+    url = f"https://race.netkeiba.com/race/result.html?race_id={race_id}"
+
+    # ── ① requests（高速。netkeiba結果ページはUTF-8で静的取得可） ──
     try:
-        url = f"https://race.netkeiba.com/race/result.html?race_id={race_id}"
-        driver.get(url)
-        time.sleep(3)
-        soup = BeautifulSoup(driver.page_source, "html.parser")
-        table = soup.find("table", class_="RaceTable01")
-        if table is None:
-            return None
+        r = requests.get(url, headers=HEADERS, timeout=15)
+        r.encoding = "utf-8"
+        df = _parse_result_table(BeautifulSoup(r.text, "html.parser"), race_id)
+        if df is not None:
+            return df
+    except Exception as e:
+        print(f"  requests失敗({race_id}) → Selenium試行: {e}")
 
-        rows = []
-        for tr in table.find_all("tr")[1:]:
-            tds = tr.find_all("td")
-            if len(tds) >= 5:
-                rows.append([td.get_text(strip=True) for td in tds])
-        if not rows:
-            return None
+    # ── ② Selenium フォールバック（requestsで取れない場合のみ） ──
+    try:
+        from selenium import webdriver
+        from selenium.webdriver.chrome.service import Service
+        from selenium.webdriver.chrome.options import Options
+        from webdriver_manager.chrome import ChromeDriverManager
 
-        df = pd.DataFrame(rows)
-        col_names = ["着順", "枠番", "馬番", "馬名", "性齢", "斤量", "騎手", "タイム"]
-        n = df.shape[1]
-        df.columns = (
-            col_names[:n]
-            if n <= len(col_names)
-            else col_names + list(range(n - len(col_names)))
+        options = Options()
+        for a in ("--headless", "--no-sandbox", "--disable-dev-shm-usage", "--log-level=3"):
+            options.add_argument(a)
+        driver = webdriver.Chrome(
+            service=Service(ChromeDriverManager().install()), options=options
         )
-        df["着順_num"] = pd.to_numeric(df["着順"], errors="coerce")
-        df["race_id"]  = race_id
-        return df
-
+        try:
+            driver.get(url)
+            time.sleep(3)
+            return _parse_result_table(BeautifulSoup(driver.page_source, "html.parser"), race_id)
+        finally:
+            driver.quit()
     except Exception as e:
         print(f"  結果取得エラー: {race_id} → {e}")
         return None
-    finally:
-        driver.quit()
 
 
 def load_records():

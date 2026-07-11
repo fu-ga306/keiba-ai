@@ -39,7 +39,7 @@ def main():
         res = get_race_result(rid)
         if res is None:
             print(f"  結果取得失敗: {rid}")
-            time.sleep(5)
+            time.sleep(1)
             continue
         res = res[["馬名", "着順_num"]].copy()
         res["race_id"] = rid
@@ -47,7 +47,7 @@ def main():
         m = p.merge(res, on=["race_id", "馬名"], how="left")
         merged_all.append(m)
         print(f"  取得: {rid} ({len(m)}頭)")
-        time.sleep(5)
+        time.sleep(0.4)   # requests化で高速。過負荷防止の礼儀待機のみ
 
     if not merged_all:
         print("結果が取得できませんでした")
