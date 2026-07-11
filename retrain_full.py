@@ -95,20 +95,34 @@ def main():
         sys.exit(1)
 
     # Step 2: 通常モデル再学習
-    run_step(
+    # model.py は Optuna60試行×3ターゲット＋XGB/Cat/LambdaRank で約2.5h。
+    # 以前 timeout=3600(1h) で強制終了され model.pkl が保存されない事故があったため 4h に延長。
+    ok2 = run_step(
         "通常モデル再学習",
         [PYTHON, os.path.join(BASE_DIR, "model.py")],
-        timeout=3600
+        timeout=14400  # 4時間
     )
+    if not ok2:
+        log("  [重大] 通常モデル(model.pkl)の再学習に失敗。model.pkl が更新されていない可能性大。")
 
     # Step 3: MFモデル再学習
-    run_step(
+    ok3 = run_step(
         "MFモデル再学習",
         [PYTHON, os.path.join(BASE_DIR, "market_free_model.py")],
-        timeout=3600
+        timeout=14400  # 4時間
     )
+    if not ok3:
+        log("  [重大] MFモデル(model_mf.pkl)の再学習に失敗。")
 
     # Step 4: GitHub push
+    # モデル再学習が失敗している場合、中途半端な状態を公開しないよう push をスキップする。
+    if not (ok2 and ok3):
+        log("--- GitHub push スキップ（モデル再学習が未完了のため） ---")
+        log("  → 失敗ステップを個別に再実行してから push してください。")
+        elapsed = datetime.now() - start
+        log(f"完了(一部失敗)  所要時間: {elapsed}")
+        return
+
     log("--- GitHub push ---")
     try:
         push_files = [

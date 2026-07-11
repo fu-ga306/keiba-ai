@@ -18,7 +18,15 @@ HORSE_CSV      = os.path.join(BASE_DIR, "horse_master.csv")
 OUTPUT_CSV     = os.path.join(BASE_DIR, "sire_stats.csv")
 
 
-def build_sire_stats():
+def build_sire_stats(max_year=None, suffix=""):
+    """種牡馬成績を集計して保存する。
+
+    max_year: 指定するとその年以前のレースだけで集計する（リーク対策）。
+      None    → 全期間（本番予測用。sire_stats_father.csv 等）
+      2024    → 2024年以前のみ（学習・バックテスト用。sire_stats_father_train.csv 等）
+      race_id 先頭4桁を年として判定する。
+    suffix: 出力ファイル名の接尾辞（学習用は "_train"）。
+    """
     print("race_data_clean.csv を読み込み中...")
     race_df = pd.read_csv(RACE_CSV, low_memory=False)
     print(f"  {len(race_df)}行")
@@ -31,6 +39,15 @@ def build_sire_stats():
     race_df["horse_id"]  = race_df["horse_id"].astype(str).str.replace(".0", "", regex=False).str.strip()
     horse_df["horse_id"] = horse_df["horse_id"].astype(str).str.replace(".0", "", regex=False).str.strip()
     df = race_df.merge(horse_df[["horse_id", "父馬", "母父馬"]], on="horse_id", how="left")
+
+    # ── リーク対策: max_year 以前のレースだけで集計 ──
+    # 種牡馬成績に未来（テスト期間=2025）の結果が混ざると、その血統特徴量が
+    # テスト成績を先取りしてしまう。学習・BT用は 2024 以前で切ることで honest にする。
+    if max_year is not None:
+        yr = pd.to_numeric(df["race_id"].astype(str).str[:4], errors="coerce")
+        before = len(df)
+        df = df[yr <= max_year].copy()
+        print(f"  {max_year}年以前でフィルタ: {before} → {len(df)}行")
 
     print(f"結合後: {len(df)}行  父馬情報あり: {df['父馬'].notna().sum()}行")
 
@@ -96,11 +113,12 @@ def build_sire_stats():
     bms_df   = calc_sire_stats(df, "母父馬", "母父")
     print(f"  母父馬: {len(bms_df)}頭分")
 
-    # 保存
-    sire_df.to_csv(OUTPUT_CSV.replace(".csv", "_father.csv"),
-                   index=False, encoding="utf-8-sig")
-    bms_df.to_csv(OUTPUT_CSV.replace(".csv", "_bms.csv"),
-                  index=False, encoding="utf-8-sig")
+    # 保存（suffix で学習用 "_train" と本番用 "" を区別）
+    father_out   = OUTPUT_CSV.replace(".csv", f"_father{suffix}.csv")
+    bms_out      = OUTPUT_CSV.replace(".csv", f"_bms{suffix}.csv")
+    combined_out = OUTPUT_CSV.replace(".csv", f"{suffix}.csv")
+    sire_df.to_csv(father_out, index=False, encoding="utf-8-sig")
+    bms_df.to_csv(bms_out, index=False, encoding="utf-8-sig")
 
     # 統合版も保存
     sire_df["種別"] = "父"
@@ -108,12 +126,12 @@ def build_sire_stats():
     sire_df = sire_df.rename(columns={"父名": "種牡馬名"})
     bms_df  = bms_df.rename(columns={"母父名": "種牡馬名"})
     combined = pd.concat([sire_df, bms_df], ignore_index=True)
-    combined.to_csv(OUTPUT_CSV, index=False, encoding="utf-8-sig")
+    combined.to_csv(combined_out, index=False, encoding="utf-8-sig")
 
-    print(f"\n保存完了:")
-    print(f"  {OUTPUT_CSV}")
-    print(f"  {OUTPUT_CSV.replace('.csv', '_father.csv')}")
-    print(f"  {OUTPUT_CSV.replace('.csv', '_bms.csv')}")
+    print(f"\n保存完了{'（学習用≤'+str(max_year)+'）' if max_year else '（本番用・全期間）'}:")
+    print(f"  {combined_out}")
+    print(f"  {father_out}")
+    print(f"  {bms_out}")
 
     # サンプル表示
     print("\n父馬成績サンプル（勝率上位5頭・産駒20頭以上）:")
@@ -123,5 +141,17 @@ def build_sire_stats():
     return sire_df, bms_df
 
 
+TRAIN_MAX_YEAR = 2024  # 学習・バックテストで許可する最新年（テスト年2025を漏らさない）
+
 if __name__ == "__main__":
-    build_sire_stats()
+    # ① 本番予測用（全期間）: sire_stats_father.csv 等
+    print("=" * 50)
+    print("[1/2] 本番用スナップショット（全期間）を集計")
+    print("=" * 50)
+    build_sire_stats(max_year=None, suffix="")
+
+    # ② 学習・BT用（≤2024）: sire_stats_father_train.csv 等 ← リーク対策
+    print("\n" + "=" * 50)
+    print(f"[2/2] 学習用スナップショット（≤{TRAIN_MAX_YEAR}）を集計")
+    print("=" * 50)
+    build_sire_stats(max_year=TRAIN_MAX_YEAR, suffix="_train")

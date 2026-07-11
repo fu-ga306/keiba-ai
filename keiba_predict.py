@@ -20,6 +20,7 @@ import pandas as pd
 from datetime import datetime
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from model import LambdaRankWrapper  # pickle読み込みに必要
 
 warnings.filterwarnings("ignore")
 
@@ -402,10 +403,13 @@ def build_report(pdf, race_id, jyo_name, race_no,
     lines.append("  ※ 期待値・オッズは参考情報として表示（印の決定には使用しません）")
     lines.append("")
 
-    # 最終予想の順位: predict_race_pdf で計算済みの総合スコア（MF60%+通常40%+EVペナルティ）を使用。
-    # build_report 内で独自スコアを再計算していたが、印列と不一致になるため廃止。
-    # 印列の ◎○▲△× = 総合スコア順、ここでもそれに揃える。
-    final_top = pdf.sort_values("総合スコア", ascending=False).head(5)
+    # 最終予想の順位: predict_race_pdf が付与した印列（◎○▲△×）をそのまま表示する。
+    # ◎○=総合スコア(勝ち軸)、▲△=複勝確率(3着内堅い)、×=人気薄の穴、と役割分離済み。
+    # ここで総合スコア順に再導出すると印列と不一致になるため、印列を正順で並べる。
+    _mk_ord = {"◎": 0, "○": 1, "▲": 2, "△": 3, "×": 4}
+    final_top = pdf[pdf["印"].isin(_mk_ord)].copy()
+    final_top["_mk_ord"] = final_top["印"].map(_mk_ord)
+    final_top = final_top.sort_values("_mk_ord").head(5)
 
     # ── AI信頼度スコア ─────────────────────────────────────────────────
     # TOP1とTOP2の総合スコア差。大きいほど◎が突出しており、AIが確信を持っている。
@@ -468,15 +472,16 @@ def build_report(pdf, race_id, jyo_name, race_no,
         lines.append(f"             {_extra_str}")
     lines.append("")
 
-    final_marks  = ["◎", "○", "▲", "△", "×"]
-    final_labels = ["最強推奨", "強く推奨", "推奨", "穴候補", "注目"]
+    # 役割ラベル（印の意味に対応）
+    final_label_map = {"◎": "本命", "○": "対抗", "▲": "3着内堅い",
+                       "△": "3着内", "×": "穴"}
 
     lines.append("  ┌─────────────────────────────────────────────────────────┐")
     for i, (_, row) in enumerate(final_top.iterrows()):
         if i >= 5:
             break
-        mk    = final_marks[i]
-        lbl   = final_labels[i]
+        mk    = str(row["印"])
+        lbl   = final_label_map.get(mk, "")
         odds  = row.get("単勝オッズ", np.nan)
         pop   = row.get("人気", np.nan)
         wp    = row["勝ち確率"]
@@ -562,6 +567,26 @@ def build_report(pdf, race_id, jyo_name, race_no,
     # ── [妙味重視の狙い目（回収率重視）] ────────────────────────────
     lines.append(header("[妙味重視の狙い目（回収率重視）]", "─"))
     lines.append("  市場(人気)を出し抜ける可能性のある買い方。妙味がなければ「見送り推奨」。")
+    lines.append("")
+
+    # ⓪ 回収率用◎（妙味軸）: MF最上位が人気馬寄りの◎と別馬のとき提示
+    #    BT(2025): 発生率42%・複勝率44.9%・◎平均人気4.6。的中用◎とは別の「妙味の軸」。
+    lines.append("  ⓪ 回収率用◎（妙味軸）── 的中用◎(人気寄り)とは別に、MFが推す価値馬")
+    if "妙味軸" in pdf.columns and (pdf["妙味軸"] == "◎妙").any():
+        m_row = pdf[pdf["妙味軸"] == "◎妙"].iloc[0]
+        m_odds = m_row.get("単勝オッズ", np.nan)
+        m_pop  = m_row.get("人気", np.nan)
+        m_fuku = m_row.get("複勝確率", np.nan)
+        m_ev   = m_row.get("単勝期待値", np.nan)
+        m_odds_s = f"{m_odds:.1f}倍" if pd.notna(m_odds) else "未確定"
+        m_pop_s  = f"{int(m_pop)}番人気" if pd.notna(m_pop) else "-"
+        lines.append(
+            f"     ◎妙 {m_row['馬名']}（{m_odds_s} {m_pop_s}） "
+            f"複勝率{m_fuku*100:.1f}% 期待値{_ev(m_ev)}"
+        )
+        lines.append("     → 市場が過小評価。複勝・ワイドの軸、or 単勝妙味として狙う価値。")
+    else:
+        lines.append("     該当なし（MFの本命＝的中用◎と一致 → 軸に一本化。素直に◎を信頼）。")
     lines.append("")
 
     # ① ◎の手堅い複勝（単勝は難しいが複勝率が高い本命）
@@ -1004,63 +1029,102 @@ def predict_race_pdf(race_id: str, *, history_df: pd.DataFrame, models_pack: dic
     pdf["推奨ランク"] = ""
     pdf["印"]        = ""
 
-    # ◎○▲ (上位3頭)
-    top3 = pdf.sort_values("総合スコア", ascending=False).head(3)
-    assigned = set(top3.index)
-    for i, (idx, _) in enumerate(top3.iterrows()):
-        mk = ("◎", "○", "▲")[i]
+    # ── 役割分離型の印割り当て ─────────────────────────────────────────
+    #   ◎ 本命      = 総合スコア1位（勝ち軸・MF+通常ブレンド）
+    #   ○ 対抗      = 総合スコア2位（本命に次ぐ勝ち馬）
+    #   ▲ 3着内堅い = 複勝確率(place3)最上位（◎○除く）＝勝ち切れないが堅実に来る
+    #   △ 3着内     = 複勝確率 次点（◎○▲除く）＝もう一頭の複勝候補
+    #   × 穴        = 人気薄で複勝妙味のある馬（◎○▲△除く）＝一発・高配当のヒモ
+    assigned = set()
+
+    # ◎○（勝ち軸）: 総合スコア上位2頭
+    order = pdf.sort_values("総合スコア", ascending=False)
+    for mk, idx in zip(("◎", "○"), order.index[:2]):
         pdf.at[idx, "推奨ランク"] = mk
         pdf.at[idx, "印"] = mk
+        assigned.add(idx)
 
-    # ── Phase 2: 印付き馬精度アップ ─────────────────────────────────────
-    # △: 連対EV（連対確率 × オッズ補正）最大の馬 → 馬連・ワイドの穴ヒモ候補
-    # 単純な連対確率最高だと◎○▲と同じ人気馬が重複するため
-    # オッズ補正= sqrt(オッズ/2.0) を乗じることで中穴馬を優先しやすくする
-    rest = pdf[~pdf.index.isin(assigned)]
-    if not rest.empty and "連対確率" in rest.columns:
-        odds_r = rest["単勝オッズ"].fillna(2.0).clip(lower=1.1)
-        delta_score = rest["連対確率"] * np.sqrt(odds_r / 2.0).clip(0.6, 2.0)
-        delta_idx = delta_score.idxmax()
-        pdf.at[delta_idx, "推奨ランク"] = "△"
-        pdf.at[delta_idx, "印"] = "△"
-        assigned.add(delta_idx)
+    # ▲△（3着以内が堅い馬）: 複勝確率(place3)の高い順に、◎○以外から2頭
+    if "複勝確率" in pdf.columns:
+        fuku_rest = pdf[~pdf.index.isin(assigned)].sort_values("複勝確率", ascending=False)
+        for mk, idx in zip(("▲", "△"), fuku_rest.index[:2]):
+            pdf.at[idx, "推奨ランク"] = mk
+            pdf.at[idx, "印"] = mk
+            assigned.add(idx)
 
-    # ×: 複勝EV（複勝確率 × 推定複勝オッズ）最大の馬 → 3連複・複勝の穴ヒモ候補
-    # 実際の複勝オッズがある場合は使用、ない場合は単勝オッズから推定
-    rest2 = pdf[~pdf.index.isin(assigned)]
-    if not rest2.empty and "複勝確率" in rest2.columns:
-        has_real_fuku = "複勝オッズ_min" in rest2.columns and rest2["複勝オッズ_min"].notna().any()
-        if has_real_fuku:
-            fuku_odds = rest2["複勝オッズ_min"].fillna(rest2["単勝オッズ"] / 3.5)
+    # ×（穴）: 人気薄で複勝妙味のある馬。◎○▲△以外から。
+    #   複勝妙味 = 複勝確率 × 推定複勝オッズ（人気薄ほど配当が大きく妙味）。
+    #   まず人気薄(人気>=6)に限定、居なければ残り全体の複勝妙味最大にフォールバック。
+    rest_x = pdf[~pdf.index.isin(assigned)].copy()
+    if not rest_x.empty and "複勝確率" in rest_x.columns:
+        if "複勝オッズ_min" in rest_x.columns and rest_x["複勝オッズ_min"].notna().any():
+            fuku_odds = rest_x["複勝オッズ_min"].fillna(rest_x["単勝オッズ"] / 3.5)
         else:
-            fuku_odds = (rest2["単勝オッズ"] / 3.5).clip(lower=1.1)
-        batu_score = rest2["複勝確率"] * fuku_odds.clip(1.1, 5.0)
-        batu_idx = batu_score.idxmax()
+            fuku_odds = (rest_x["単勝オッズ"] / 3.5).clip(lower=1.1)
+        rest_x["_ana_score"] = rest_x["複勝確率"] * fuku_odds.clip(1.1, 8.0)
+        _pop_x = pd.to_numeric(rest_x["人気"], errors="coerce").fillna(99)
+        ana_pool = rest_x[_pop_x >= 6]           # 人気薄=穴の条件
+        if ana_pool.empty:
+            ana_pool = rest_x                     # 該当なければ残り全体から
+        batu_idx = ana_pool["_ana_score"].idxmax()
         pdf.at[batu_idx, "推奨ランク"] = "×"
         pdf.at[batu_idx, "印"] = "×"
 
+    # ── 妙味軸（回収率用◎）: MF勝率が最上位の馬。◎(総合スコア最上位=的中用軸)と
+    #   別馬のときだけ付与する。◎は人気馬に寄りやすく単勝回収が赤字になりがち一方、
+    #   MF単独最上位は市場と別の価値馬(平均4.6番人気)を指し、複勝率も高い。
+    #   BT(2025/3144R): 発生1311R・複勝率44.9%・単回収242.6%・複回収124.0%。
+    #   ◎と一致する場合は軸に一本化（=妙味印なし）。単純に別軸候補を1つ提示するだけで、
+    #   既存の◎○▲△×・券種推奨・総合スコアには一切影響しない additive 設計。
+    pdf["妙味軸"] = ""
+    if has_mf:
+        try:
+            _honmei_idx = pdf["総合スコア"].idxmax()
+            _mf_top_idx = pdf["MF勝ち確率"].idxmax()
+            if _mf_top_idx != _honmei_idx:
+                pdf.at[_mf_top_idx, "妙味軸"] = "◎妙"
+        except Exception as e:
+            print(f"  妙味軸スキップ: {e}")
+
     # ── レース情報（PDF上に格納して呼び出し元でも使えるように）
     baba_inv = {1: "良", 2: "稍重", 3: "重", 4: "不良"}
-    cls_inv  = {1: "新馬", 2: "未勝利", 3: "1勝クラス", 4: "2勝クラス",
-                5: "3勝クラス", 6: "オープン", 7: "G3", 8: "G2", 9: "G1"}
+    # クラス_num は keiba_auto/scraper と同じ 1-8 スケール（新馬・未勝利=1, 1勝=2, 2勝=3,
+    # 3勝=4, OP=5, G3=6, G2=7, G1=8）。以前の cls_inv は 1→新馬,2→未勝利,3→1勝… と
+    # 1つズレており、全クラスが1つ下に誤表示されていた。正しい逆マップに修正。
+    # ※num=1 は 新馬/未勝利 が同値のため、実クラス名(レースクラス)を優先して区別する。
+    cls_inv  = {1: "未勝利", 2: "1勝クラス", 3: "2勝クラス", 4: "3勝クラス",
+                5: "オープン", 6: "G3", 7: "G2", 8: "G1"}
     pdf.attrs["jyo_name"] = jyo_name
     pdf.attrs["race_no"]  = race_no
     pdf.attrs["dist"]     = int(pdf["距離"].iloc[0])      if pd.notna(pdf["距離"].iloc[0])      else "不明"
     pdf.attrs["turf"]     = "芝" if pdf["is_turf"].iloc[0] == 1 else "ダート"
-    pdf.attrs["baba"]     = baba_inv.get(int(pdf["馬場状態_num"].iloc[0])
-                                         if pd.notna(pdf["馬場状態_num"].iloc[0]) else 0, "不明")
-    pdf.attrs["cls"]      = cls_inv.get(int(pdf["クラス_num"].iloc[0])
-                                        if pd.notna(pdf["クラス_num"].iloc[0]) else 0, "不明")
+
+    # 馬場・クラスは get_race_data が取得した実文字列(race_df)を最優先で使う。
+    # 数値からの逆マップは 新馬↔未勝利 の同値やスケールズレで誤るため。
+    # race_df に文字列が無い/未発表(馬場が朝は未確定)のときのみ数値逆マップにフォールバック。
+    def _race_str(col):
+        if col in race_df.columns:
+            v = race_df[col].dropna()
+            if len(v) > 0 and str(v.iloc[0]).strip() and str(v.iloc[0]).strip().lower() != "nan":
+                return str(v.iloc[0]).strip()
+        return None
+    _baba_str = _race_str("馬場状態")
+    _cls_str  = _race_str("レースクラス")
+    pdf.attrs["baba"] = _baba_str or baba_inv.get(
+        int(pdf["馬場状態_num"].iloc[0]) if pd.notna(pdf["馬場状態_num"].iloc[0]) else 0, "不明")
+    pdf.attrs["cls"]  = _cls_str or cls_inv.get(
+        int(pdf["クラス_num"].iloc[0]) if pd.notna(pdf["クラス_num"].iloc[0]) else 0, "不明")
 
     # ── today_predictions.csv 保存
     try:
         save_cols = [
             "race_id", "馬名", "馬番", "枠番",
             "単勝オッズ", "人気",
+            "馬体重", "体重増減",
             "勝ち確率", "連対確率", "複勝確率", "3着内確率",
             "単勝期待値", "推奨賭け率",
             "乖離スコア", "MF予測順位", "MF勝ち確率",
-            "該当戦略", "推奨ランク", "総合スコア", "券種推奨",
+            "該当戦略", "推奨ランク", "総合スコア", "券種推奨", "妙味軸",
             "予測順位", "連対順位", "複勝順位",
             "過去勝率", "過去出走数", "前走間隔",
         ]

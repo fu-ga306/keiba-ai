@@ -176,63 +176,76 @@ def load_and_prepare(csv_path="race_data_clean.csv", df=None):
 
 
 def add_horse_history_features(df):
-    """各馬の過去成績を特徴量として追加（当日データ混入なし・高速化版）"""
+    """各馬の過去成績を特徴量として追加（当日データ混入なし）。
 
+    ※高速化版: 旧実装は g[col].transform(lambda x: x.shift(1).expanding().mean()) を
+      約20回使い、馬ごとにPythonラムダを呼ぶため 40k行で約8分かかっていた（新馬戦の
+      履歴フォールバックでハングの主因）。値は完全に保ったまま、群内 shift(1) →
+      grouped expanding/rolling（pandasのC実装）に置き換えて 20倍以上 高速化した。
+    """
     df = df.sort_values(["馬名", "race_id"]).reset_index(drop=True)
+    g = df.groupby("馬名", sort=False)
+    names = df["馬名"]
+    df["_win"]  = (df["着順_num"] == 1).astype(float)
+    df["_top3"] = (df["着順_num"] <= 3).astype(float)
 
-    # ── 高速化：よく使う集計をgroupby一括処理（shift(1)でリーク防止） ──
-    g = df.groupby("馬名")
-    df["_win"]   = (df["着順_num"] == 1).astype(float)
-    df["_top3"]  = (df["着順_num"] <= 3).astype(float)
+    def _pe(col, how, k=None):
+        """群内 shift(1) 後に grouped expanding/rolling を適用。
+        旧 g[col].transform(lambda x: x.shift(1).<op>()) と数値的に完全同一で高速。"""
+        s = g[col].shift(1).groupby(names, sort=False)
+        if   how == "count": r = s.expanding().count()
+        elif how == "mean":  r = s.expanding().mean()
+        elif how == "sum":   r = s.expanding().sum()
+        elif how == "min":   r = s.expanding().min()
+        elif how == "max":   r = s.expanding().max()
+        elif how == "std":   r = s.expanding().std()
+        elif how == "rmean": r = s.rolling(k, min_periods=1).mean()
+        elif how == "rstd":  r = s.rolling(k, min_periods=2).std()
+        # grouped結果は群順のMultiIndex。df.index順に並べ直して numpy配列で返す。
+        # ※Seriesのまま df[col]=... すると index不一致で1要素ずつ挿入され激遅(8000行×19列=15万回)。
+        return r.reset_index(level=0, drop=True).reindex(df.index).to_numpy()
 
-    # 過去平均着順・勝率・複勝率（expanding + shift）
-    df["過去出走数"]       = g["着順_num"].transform(lambda x: x.shift(1).expanding().count())
-    df["過去平均着順"]     = g["着順_num"].transform(lambda x: x.shift(1).expanding().mean())
-    df["過去勝率"]         = g["_win"].transform(lambda x: x.shift(1).expanding().mean())
-    df["過去複勝率"]       = g["_top3"].transform(lambda x: x.shift(1).expanding().mean())
-    df["直近3走平均着順"]  = g["着順_num"].transform(lambda x: x.shift(1).rolling(3, min_periods=1).mean())
-    df["過去平均上り"]     = g["上り"].transform(lambda x: x.shift(1).expanding().mean())
-    df["直近3走平均上り"]  = g["上り"].transform(lambda x: x.shift(1).rolling(3, min_periods=1).mean())
-    df["過去最速上り"]     = g["上り"].transform(lambda x: x.shift(1).expanding().min())
-    df["上り偏差"]         = g["上り"].transform(lambda x: x.shift(1).expanding().std())
-    df["過去平均体重増減"] = g["体重増減"].transform(lambda x: x.shift(1).expanding().mean())
+    df["過去出走数"]       = _pe("着順_num", "count")
+    df["過去平均着順"]     = _pe("着順_num", "mean")
+    df["過去勝率"]         = _pe("_win", "mean")
+    df["過去複勝率"]       = _pe("_top3", "mean")
+    df["直近3走平均着順"]  = _pe("着順_num", "rmean", 3)
+    df["過去平均上り"]     = _pe("上り", "mean")
+    df["直近3走平均上り"]  = _pe("上り", "rmean", 3)
+    df["過去最速上り"]     = _pe("上り", "min")
+    df["上り偏差"]         = _pe("上り", "std")
+    df["過去平均体重増減"] = _pe("体重増減", "mean")
     # ── 過去獲得賞金（B-4: 実力指標）─────────────────────────────────
     if "賞金" in df.columns:
-        df["過去獲得賞金累計"] = g["賞金"].transform(lambda x: x.shift(1).expanding().sum())
-        df["過去平均獲得賞金"] = g["賞金"].transform(lambda x: x.shift(1).expanding().mean())
+        df["過去獲得賞金累計"] = _pe("賞金", "sum")
+        df["過去平均獲得賞金"] = _pe("賞金", "mean")
     else:
         df["過去獲得賞金累計"] = np.nan
         df["過去平均獲得賞金"] = np.nan
-    # ── ⑥ 馬体重変化の個体差特徴量 ──────────────────────────────────
-    # 馬ごとに体重増減の標準偏差(個体の変動範囲)を計算し、
-    # 今回の増減がその馬にとって「いつも通りか異常か」をzスコアで表す。
-    df["体重増減_過去標準偏差"] = g["体重増減"].transform(
-        lambda x: x.shift(1).expanding().std()
-    )
+    # ── ⑥ 馬体重変化の個体差特徴量（今回の増減がその馬にとって異常かをzスコア化）──
+    df["体重増減_過去標準偏差"] = _pe("体重増減", "std")
     df["体重増減_異常度"] = (
         (df["体重増減"] - df["過去平均体重増減"])
         / df["体重増減_過去標準偏差"].replace(0, np.nan)
-    )
-    # 標準偏差が極端に小さい/データ不足でinf・NaNになる場合はクリップ
-    df["体重増減_異常度"] = df["体重増減_異常度"].clip(-5, 5)
+    ).clip(-5, 5)
 
     # 前走情報
-    df["前走着順"]   = g["着順_num"].transform(lambda x: x.shift(1))
-    df["前走上り"]   = g["上り"].transform(lambda x: x.shift(1))
+    df["前走着順"] = g["着順_num"].shift(1)
+    df["前走上り"] = g["上り"].shift(1)
 
     # クラス変化（昇降級: 正=昇級、負=降級）
     if "クラス_num" in df.columns:
-        _prev_cls = g["クラス_num"].transform(lambda x: x.shift(1))
+        _prev_cls = g["クラス_num"].shift(1)
         df["クラス変化"] = pd.to_numeric(df["クラス_num"], errors="coerce") - _prev_cls
 
-    # 前走着差（1着=0、それ以外は着差テキスト→秒換算）
+    # 前走着差（1着=0、それ以外は着差テキスト→秒換算）※axis=1 apply を map でベクトル化
     if "着差" in df.columns:
-        df["_chakusa_sec"] = df.apply(
-            lambda r: 0.0 if r.get("着順_num") == 1 else chakusa_to_sec(r.get("着差")), axis=1
+        df["_chakusa_sec"] = np.where(
+            df["着順_num"] == 1, 0.0, df["着差"].map(chakusa_to_sec)
         )
-        df["前走着差_秒"]     = g["_chakusa_sec"].transform(lambda x: x.shift(1))
-        df["過去平均着差_秒"] = g["_chakusa_sec"].transform(lambda x: x.shift(1).expanding().mean())
-        df["近5走平均着差_秒"] = g["_chakusa_sec"].transform(lambda x: x.shift(1).rolling(5, min_periods=1).mean())
+        df["前走着差_秒"]     = g["_chakusa_sec"].shift(1)
+        df["過去平均着差_秒"] = _pe("_chakusa_sec", "mean")
+        df["近5走平均着差_秒"] = _pe("_chakusa_sec", "rmean", 5)
     else:
         df["前走着差_秒"]      = np.nan
         df["過去平均着差_秒"]  = np.nan
@@ -240,27 +253,23 @@ def add_horse_history_features(df):
 
     # 芝ダート変更フラグ（前走と今回で馬場種別が変わった）
     if "is_turf" in df.columns:
-        _prev_turf = g["is_turf"].transform(lambda x: x.shift(1))
+        _prev_turf = g["is_turf"].shift(1)
         df["芝ダート変更"] = (pd.to_numeric(df["is_turf"], errors="coerce") != _prev_turf).astype(float)
-        # 初出走（前走データなし）は NaN
         df.loc[_prev_turf.isna(), "芝ダート変更"] = np.nan
     else:
         df["芝ダート変更"] = np.nan
 
-    # 着差安定度（近5走の着差標準偏差）: 小=安定した馬、大=波がある馬
+    # 着差安定度（近5走の着差標準偏差）
     if "着差" in df.columns:
-        df["近5走着差_std"] = g["_chakusa_sec"].transform(
-            lambda x: x.shift(1).rolling(5, min_periods=2).std()
-        )
+        df["近5走着差_std"] = _pe("_chakusa_sec", "rstd", 5)
     else:
         df["近5走着差_std"] = np.nan
 
     # 重賞実績（クラス_num >= 6 = G3以上の出走歴）
     if "クラス_num" in df.columns:
-        _is_graded = (pd.to_numeric(df["クラス_num"], errors="coerce") >= 6).astype(float)
-        df["_is_graded"] = _is_graded
-        df["重賞出走フラグ"]  = g["_is_graded"].transform(lambda x: x.shift(1).expanding().max())
-        df["過去重賞出走数"]  = g["_is_graded"].transform(lambda x: x.shift(1).expanding().sum())
+        df["_is_graded"] = (pd.to_numeric(df["クラス_num"], errors="coerce") >= 6).astype(float)
+        df["重賞出走フラグ"]  = _pe("_is_graded", "max")
+        df["過去重賞出走数"]  = _pe("_is_graded", "sum")
     else:
         df["重賞出走フラグ"] = np.nan
         df["過去重賞出走数"] = np.nan
@@ -948,10 +957,15 @@ def add_extra_advanced_features(df):
     return df
 
 
-def add_blood_features(df, base_dir=None):
+def add_blood_features(df, base_dir=None, use_train_snapshot=False):
     """
     sire_stats.csv（種牡馬成績）と horse_master.csv（各馬の父・母父）から
     血統特徴量を付与する。血統データは途中でもよい（無い馬はNaN）。
+
+    use_train_snapshot=True のとき sire_stats_father_train.csv（≤2024集計）を使う。
+      学習・バックテスト時はこちら → テスト年(2025)の結果が血統統計に漏れない。
+    False（本番予測）のときは全期間版 sire_stats_father.csv を使う。
+      _train版が存在しない場合は自動で全期間版にフォールバック。
 
     付与する特徴量:
       父系_今回距離適性  : その馬の父系の、今回距離帯での勝率
@@ -964,8 +978,16 @@ def add_blood_features(df, base_dir=None):
     import os as _os
     bd = base_dir or _os.path.dirname(_os.path.abspath(__file__))
     horse_path = _os.path.join(bd, "horse_master.csv")
-    father_path = _os.path.join(bd, "sire_stats_father.csv")
-    bms_path    = _os.path.join(bd, "sire_stats_bms.csv")
+    # 学習/BTは ≤2024版（リーク対策）、本番は全期間版。_train が無ければ全期間版に自動フォールバック。
+    _suffix = "_train" if use_train_snapshot else ""
+    father_path = _os.path.join(bd, f"sire_stats_father{_suffix}.csv")
+    bms_path    = _os.path.join(bd, f"sire_stats_bms{_suffix}.csv")
+    if use_train_snapshot and not _os.path.exists(father_path):
+        print("  [血統] _train版が無いため全期間版にフォールバック（リーク注意）")
+        father_path = _os.path.join(bd, "sire_stats_father.csv")
+        bms_path    = _os.path.join(bd, "sire_stats_bms.csv")
+    else:
+        print(f"  [血統] スナップショット: {_os.path.basename(father_path)}")
 
     # データが無ければ全部NaNで返す（血統未取得でも動くように）
     blood_cols = ["父系_今回距離適性", "母父系_今回距離適性",
@@ -1016,42 +1038,47 @@ def add_blood_features(df, base_dir=None):
         else:
             return "長距離"
 
-    f_dist, b_dist, f_long, b_long, f_turf, f_fuku = [], [], [], [], [], []
-    for _, row in df.iterrows():
-        sire = row.get("父馬")
-        bmsire = row.get("母父馬")
-        dist = pd.to_numeric(row.get("距離"), errors="coerce")
-        band = dist_band_col(dist)
-        is_turf = row.get("is_turf", np.nan)
+    # ── ベクトル化（旧実装は df.iterrows() で全行ループしており、予測時に履歴絞り込みが
+    #   空振り→全32万行にフォールバックすると新馬戦などで数十分ハングしていた。
+    #   .map / np.select で同一の値を高速算出する（正常行では旧実装と完全一致）。──
+    def _cmap(d, col):
+        return {k: v.get(col, np.nan) for k, v in d.items()}
 
-        # 父系 今回距離適性
-        fs = father_d.get(sire)
-        if fs and band:
-            f_dist.append(fs.get(f"父_{band}勝率", np.nan))
-            f_long.append(fs.get("父_長距離勝率", np.nan))
-            f_fuku.append(fs.get("父_複勝率", np.nan))
-            if pd.notna(is_turf):
-                f_turf.append(fs.get("父_芝勝率" if is_turf == 1 else "父_ダート勝率", np.nan))
-            else:
-                f_turf.append(np.nan)
-        else:
-            f_dist.append(np.nan); f_long.append(np.nan)
-            f_fuku.append(np.nan); f_turf.append(np.nan)
+    sire   = df["父馬"]   if "父馬"   in df.columns else pd.Series(np.nan, index=df.index)
+    bmsire = df["母父馬"] if "母父馬" in df.columns else pd.Series(np.nan, index=df.index)
+    dist   = pd.to_numeric(df["距離"], errors="coerce") if "距離" in df.columns else pd.Series(np.nan, index=df.index)
+    is_turf = pd.to_numeric(df["is_turf"], errors="coerce") if "is_turf" in df.columns else pd.Series(np.nan, index=df.index)
 
-        # 母父系
-        bs = bms_d.get(bmsire)
-        if bs and band:
-            b_dist.append(bs.get(f"母父_{band}勝率", np.nan))
-            b_long.append(bs.get("母父_長距離勝率", np.nan))
-        else:
-            b_dist.append(np.nan); b_long.append(np.nan)
+    # 距離帯（短/中/長）。旧 dist_band_col と同じ境界。距離NaN→"" で band無効扱い。
+    band = pd.Series(
+        np.select([dist <= 1400, dist <= 2000, dist > 2000],
+                  ["短距離", "中距離", "長距離"], default=""),
+        index=df.index)
+    band_valid = band != ""
 
-    df["父系_今回距離適性"]  = f_dist
-    df["母父系_今回距離適性"] = b_dist
-    df["父系_長距離勝率"]    = f_long
-    df["母父系_長距離勝率"]  = b_long
-    df["父系_芝ダ適性"]      = f_turf
-    df["父系_複勝率"]        = f_fuku
+    def _by_band(d, prefix):
+        s = sire if prefix == "父" else bmsire
+        short = s.map(_cmap(d, f"{prefix}_短距離勝率"))
+        mid   = s.map(_cmap(d, f"{prefix}_中距離勝率"))
+        lng   = s.map(_cmap(d, f"{prefix}_長距離勝率"))
+        return pd.Series(np.select(
+            [band == "短距離", band == "中距離", band == "長距離"],
+            [short.to_numpy(), mid.to_numpy(), lng.to_numpy()], default=np.nan),
+            index=df.index)
+
+    # 父系（すべて「父馬既知 かつ band有効」のときのみ値を持つ＝旧 if fs and band と同義）
+    f_turf_win = sire.map(_cmap(father_d, "父_芝勝率"))
+    f_dirt_win = sire.map(_cmap(father_d, "父_ダート勝率"))
+    df["父系_今回距離適性"] = _by_band(father_d, "父")
+    df["父系_長距離勝率"]   = sire.map(_cmap(father_d, "父_長距離勝率")).where(band_valid)
+    df["父系_複勝率"]       = sire.map(_cmap(father_d, "父_複勝率")).where(band_valid)
+    df["父系_芝ダ適性"]     = pd.Series(
+        np.where(is_turf == 1, f_turf_win, np.where(is_turf == 0, f_dirt_win, np.nan)),
+        index=df.index).where(band_valid & is_turf.notna())
+
+    # 母父系
+    df["母父系_今回距離適性"] = _by_band(bms_d, "母父")
+    df["母父系_長距離勝率"]   = bmsire.map(_cmap(bms_d, "母父_長距離勝率")).where(band_valid)
 
     n_blood = df["父系_今回距離適性"].notna().sum()
     print(f"  血統特徴量を付与: {n_blood}/{len(df)}行 ({n_blood/len(df)*100:.1f}%)")
@@ -1304,7 +1331,7 @@ def build_features(csv_path="race_data_clean.csv", out_path="race_features.csv")
     build_course_bias(csv_path, "course_bias.csv", year_max=2024)
     df = load_and_prepare(csv_path)
     print("特徴量を生成中（過去成績・騎手・血統・コース・交互作用、時間がかかります）...")
-    df = _run_feature_pipeline(df)
+    df = _run_feature_pipeline(df, use_train_snapshot=True)  # 学習: 血統は≤2024版でリーク防止
 
     FEATURE_COLS = [
         "race_id", "馬名", "着順_num",
@@ -1505,10 +1532,11 @@ def add_field_relative_features(df):
     return df
 
 
-def _run_feature_pipeline(df):
+def _run_feature_pipeline(df, use_train_snapshot=False):
     """load_and_prepare 済みの df に対し、学習と同じ特徴量関数を順に適用する。
     build_features（学習）と build_features_for_prediction（予測）で共通利用し、
-    特徴量計算の二重管理（学習と予測のズレ）を防ぐ。"""
+    特徴量計算の二重管理（学習と予測のズレ）を防ぐ。
+    use_train_snapshot: 血統統計に ≤2024版を使う（学習/BTのリーク対策）。"""
     df = add_horse_history_features(df)
     df = add_distance_stamina_features(df)
     df = add_race_relative_features(df)
@@ -1526,7 +1554,7 @@ def _run_feature_pipeline(df):
         df = pd.concat(dist_avg).sort_values(["race_id", "馬番"]).reset_index(drop=True)
     df = add_extra_advanced_features(df)
     df = add_course_bias_features(df)
-    df = add_blood_features(df)
+    df = add_blood_features(df, use_train_snapshot=use_train_snapshot)
     df = add_interaction_features(df)
     df = add_field_relative_features(df)
     if "距離" in df.columns:
@@ -1556,21 +1584,42 @@ def build_features_for_prediction(race_df, history_df):
     #   ・調教師成績 → 予測対象の調教師のレース
     #   ・血統 → sire_stats CSV から引く(履歴不要)
     # これらの和集合だけ残せば、計算結果は全履歴使用時と同一になる。
+    target_horses = target_jockeys = target_trainers = set()
     try:
-        target_horses   = set(race_df["馬名"].dropna().astype(str)) if "馬名" in race_df.columns else set()
-        target_jockeys  = set(race_df["騎手"].dropna().astype(str)) if "騎手" in race_df.columns else set()
-        target_trainers = set(race_df["調教師"].dropna().astype(str)) if "調教師" in race_df.columns else set()
+        def _norm(s):
+            return s.dropna().astype(str).str.strip()
+        target_horses   = set(_norm(race_df["馬名"]))   if "馬名"   in race_df.columns else set()
+        target_jockeys  = set(_norm(race_df["騎手"]))   if "騎手"   in race_df.columns else set()
+        target_trainers = set(_norm(race_df["調教師"])) if "調教師" in race_df.columns else set()
         mask = pd.Series(False, index=history_df.index)
         if target_horses and "馬名" in history_df.columns:
-            mask |= history_df["馬名"].astype(str).isin(target_horses)
+            mask |= history_df["馬名"].astype(str).str.strip().isin(target_horses)
         if target_jockeys and "騎手" in history_df.columns:
-            mask |= history_df["騎手"].astype(str).isin(target_jockeys)
+            mask |= history_df["騎手"].astype(str).str.strip().isin(target_jockeys)
         if target_trainers and "調教師" in history_df.columns:
-            mask |= history_df["調教師"].astype(str).isin(target_trainers)
+            mask |= history_df["調教師"].astype(str).str.strip().isin(target_trainers)
         if mask.any():
             history_df = history_df[mask].copy()
-    except Exception:
-        pass  # 絞り込み失敗時は全履歴を使う（安全側）
+    except Exception as _e:
+        print(f"  [予測] 履歴絞り込みエラー（安全弁で制限します）: {_e}")
+
+    # ── 安全弁: 単一レース予測で全履歴(約32万行)を特徴量計算に回すと、新馬戦など
+    #   絞り込みが空振りしたケースで数十分ハングする（add_horse_history_features 内の
+    #   per-row ループが O(行数)・約11ms/行のため。将来ここをベクトル化予定）。
+    #   過大なままなら「対象馬の過去走＋直近レース」に限定して上限を課す。
+    #   通常レースは絞り込み後 約5〜11k行なので下記(20000)は no-op。新馬フォールバック時のみ
+    #   発火し 32万行→2万行(約4分)に抑える。
+    _MAX_PRED_HISTORY = 20000
+    if len(history_df) > _MAX_PRED_HISTORY:
+        keep = pd.Series(False, index=history_df.index)
+        if target_horses and "馬名" in history_df.columns:
+            keep |= history_df["馬名"].astype(str).str.strip().isin(target_horses)  # 対象馬走は必ず残す
+        remain = _MAX_PRED_HISTORY - int(keep.sum())
+        if remain > 0:
+            recent_idx = history_df.loc[~keep].sort_values("race_id").tail(remain).index
+            keep.loc[recent_idx] = True
+        print(f"  [予測] 履歴が過大({len(history_df)}行) → {int(keep.sum())}行に制限（絞り込み空振りの安全弁）")
+        history_df = history_df[keep].copy()
 
     # 予測対象に無い列を NaN で補い、履歴と列を揃える（縦結合のため）
     for col in history_df.columns:
@@ -1583,7 +1632,7 @@ def build_features_for_prediction(race_df, history_df):
 
     combined = pd.concat([history_df, race_df[history_df.columns]], ignore_index=True)
     combined = load_and_prepare(df=combined)
-    combined = _run_feature_pipeline(combined)
+    combined = _run_feature_pipeline(combined, use_train_snapshot=False)  # 本番: 血統は全期間版
 
     # 予測対象レースの行だけ取り出す
     result = combined[combined["race_id"].isin(target_ids)].copy()

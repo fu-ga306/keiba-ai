@@ -513,6 +513,14 @@ def train_model(csv_path="race_features.csv", target="win", df=None):
         out = out.sort_values(["race_id", "予測順位"])
         out.to_csv("model_result.csv", index=False, encoding="utf-8-sig")
 
+    elif target in ("place2", "place3"):
+        # ○▲△×バックテスト用: 連対/複勝モデルのテスト予測を出力する。
+        # 予測スコア=この目的(2着内/3着内)の確率、予測順位=レース内でのその確率順位。
+        _cols = [c for c in ["race_id","馬名","着順_num","予測スコア","予測順位","単勝オッズ","人気"]
+                 if c in test_df.columns]
+        out = test_df[_cols].copy().sort_values(["race_id", "予測順位"])
+        out.to_csv(f"model_result_{target}.csv", index=False, encoding="utf-8-sig")
+
     return models, test_df, use_cols, lambda_wrapper, ens_weights
 
 
