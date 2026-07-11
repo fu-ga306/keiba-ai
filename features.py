@@ -183,6 +183,176 @@ def load_and_prepare(csv_path="race_data_clean.csv", df=None):
     return df
 
 
+def _loop_features_per_horse(df):
+    """ループが計算する全特徴量を per-horse で再現（値はループと完全一致を目指す）。"""
+    df = df.sort_values(["馬名", "race_id"]).reset_index(drop=True)
+    n = len(df)
+    # 事前計算列（ループ内で valid[...] として参照される生データ）
+    chaku = pd.to_numeric(df["着順_num"], errors="coerce").to_numpy()
+    agari = pd.to_numeric(df.get("上り"), errors="coerce").to_numpy() if "上り" in df.columns else np.full(n, np.nan)
+    taim  = pd.to_numeric(df.get("タイム秒"), errors="coerce").to_numpy() if "タイム秒" in df.columns else np.full(n, np.nan)
+    dist  = pd.to_numeric(df.get("距離"), errors="coerce").to_numpy() if "距離" in df.columns else np.full(n, np.nan)
+    taiju = pd.to_numeric(df.get("体重増減"), errors="coerce").to_numpy() if "体重増減" in df.columns else np.full(n, np.nan)
+    clsn  = pd.to_numeric(df.get("クラス_num"), errors="coerce").to_numpy() if "クラス_num" in df.columns else np.full(n, np.nan)
+    turf  = pd.to_numeric(df.get("is_turf"), errors="coerce").to_numpy() if "is_turf" in df.columns else np.full(n, np.nan)
+    raceno = pd.to_numeric(df.get("レース番号"), errors="coerce").to_numpy() if "レース番号" in df.columns else np.full(n, np.nan)
+    baba  = df.get("馬場状態").astype(str).to_numpy() if "馬場状態" in df.columns else np.array([""]*n)
+    rid_str = df["race_id"].astype(str).to_numpy()
+    # 着差→秒（ループの valid.apply(lambda r: 0 if 着順==1 else chakusa_to_sec(着差)) と同じ）
+    if "着差" in df.columns:
+        cs_raw = df["着差"].map(chakusa_to_sec).to_numpy()
+        chakusa_sec = np.where(chaku == 1, 0.0, cs_raw)
+    else:
+        chakusa_sec = np.full(n, np.nan)
+    # 通過→4角/1角
+    if "通過" in df.columns:
+        c4 = df["通過"].map(_extract_4corner).to_numpy(dtype=float)
+        c1 = df["通過"].map(_extract_1corner).to_numpy(dtype=float)
+    else:
+        c4 = np.full(n, np.nan); c1 = np.full(n, np.nan)
+    # 平均タイム差用の parse_chakusa（ループ 629-637 と同じ: "同着"/"大差"/空→NaN, else float）
+    def parse_chakusa(x):
+        try:
+            if pd.isna(x) or str(x).strip() in ["", "同着", "大差"]:
+                return np.nan
+            return float(str(x))
+        except Exception:
+            return np.nan
+    cs2 = df["着差"].map(parse_chakusa).to_numpy(dtype=float) if "着差" in df.columns else np.full(n, np.nan)
+
+    COLS = ["過去出走数","過去平均着順","過去勝率","過去複勝率","過去平均上り","直近3走平均着順",
+            "過去平均タイム秒","直近3走平均タイム秒","過去最速タイム秒","直近3走平均上り","過去平均体重増減",
+            "過去最速上り","上り偏差","前走間隔","同距離過去勝率","同距離過去平均着順","良馬場勝率","重馬場勝率",
+            "距離別過去平均上り","前走着順","前走上り","前走距離","距離変化","クラス変化","前走着差_秒","過去平均着差_秒",
+            "前走4角位置","過去平均4角位置","前走脚質指数","近5走着差_std","重賞出走フラグ","過去重賞出走数",
+            "経験最長距離","経験範囲超過","延長×距離経験不足","長距離複勝率","前走余力","延長×前走余力",
+            "連続複勝フラグ","連続勝利フラグ","直近5走勝利数","直近5走複勝数","直近5走平均着順",
+            "過去着順_std","直近5走着順_std","直近5走着外率","近走改善度","平均タイム差"]
+    res = {c: np.full(n, np.nan) for c in COLS}
+
+    def nanmean(a): return np.nan if len(a)==0 else np.nanmean(a) if np.isfinite(a).any() else np.nan
+    def nanstd(a):
+        b = a[np.isfinite(a)]
+        return b.std(ddof=1) if len(b) >= 2 else np.nan
+
+    order = df.index.to_numpy()
+    for _, idxs in df.groupby("馬名").groups.items():
+        gi = np.array(idxs)
+        k = len(gi)
+        for pos in range(k):
+            i = gi[pos]
+            past = gi[:pos]                      # その馬の過去行(グローバルindex)
+            vch = chaku[past]                    # 過去着順(NaN含む)
+            vmask = np.isfinite(vch)             # valid = past.dropna(着順)
+            v = past[vmask]                      # valid の index
+            if len(v) == 0:
+                res["過去出走数"][i] = 0
+                continue
+            vch2 = chaku[v]
+            res["過去出走数"][i]      = len(v)
+            res["過去平均着順"][i]    = vch2.mean()
+            res["過去勝率"][i]        = (vch2 == 1).mean()
+            res["過去複勝率"][i]      = (vch2 <= 3).mean()
+            res["過去平均上り"][i]    = nanmean(agari[v])
+            res["直近3走平均着順"][i] = chaku[v[-3:]].mean()
+            res["過去平均タイム秒"][i]    = nanmean(taim[v])
+            res["直近3走平均タイム秒"][i] = nanmean(taim[v[-3:]])
+            res["過去最速タイム秒"][i]    = np.nan if not np.isfinite(taim[v]).any() else np.nanmin(taim[v])
+            res["直近3走平均上り"][i] = nanmean(agari[v[-3:]])
+            res["過去平均体重増減"][i]= nanmean(taiju[v])
+            res["過去最速上り"][i]    = np.nan if not np.isfinite(agari[v]).any() else np.nanmin(agari[v])
+            res["上り偏差"][i]        = nanstd(agari[v])
+            # 前走間隔（週）
+            try:
+                d1 = datetime.strptime(rid_str[i][:8], "%Y%m%d")
+                d2 = datetime.strptime(rid_str[past[-1]][:8], "%Y%m%d")
+                res["前走間隔"][i] = (d1 - d2).days / 7
+            except Exception:
+                res["前走間隔"][i] = np.nan
+            # 同距離(±200m)
+            cd = dist[i]
+            if np.isfinite(cd):
+                sd = v[(dist[v] >= cd-200) & (dist[v] <= cd+200)]
+                if len(sd) > 0:
+                    res["同距離過去勝率"][i]     = (chaku[sd] == 1).mean()
+                    res["同距離過去平均着順"][i] = chaku[sd].mean()
+            # 馬場状態別
+            ry = v[baba[v] == "良"]; om = v[np.isin(baba[v], ["重","不良"])]
+            if len(ry) > 0: res["良馬場勝率"][i] = (chaku[ry] == 1).mean()
+            if len(om) > 0: res["重馬場勝率"][i] = (chaku[om] == 1).mean()
+            # 距離別過去平均上り（レース番号カテゴリ）
+            crn = raceno[i]
+            if np.isfinite(crn):
+                if crn <= 4: sc = v[raceno[v] <= 4]
+                elif crn <= 8: sc = v[(raceno[v] >= 5) & (raceno[v] <= 8)]
+                else: sc = v[raceno[v] >= 9]
+                if len(sc) > 0: res["距離別過去平均上り"][i] = nanmean(agari[sc])
+            # 前走情報（valid最終）
+            pv = v[-1]
+            res["前走着順"][i] = chaku[pv]
+            res["前走上り"][i] = agari[pv]
+            res["前走距離"][i] = dist[pv]
+            if np.isfinite(cd) and np.isfinite(dist[pv]): res["距離変化"][i] = cd - dist[pv]
+            if np.isfinite(clsn[i]) and np.isfinite(clsn[pv]): res["クラス変化"][i] = clsn[i] - clsn[pv]
+            res["前走着差_秒"][i] = chakusa_sec[pv]
+            res["過去平均着差_秒"][i] = nanmean(chakusa_sec[v])
+            # 4角
+            res["前走4角位置"][i] = c4[pv]
+            if np.isfinite(c1[pv]) and np.isfinite(c4[pv]): res["前走脚質指数"][i] = c1[pv] - c4[pv]
+            if np.isfinite(c4[v]).any(): res["過去平均4角位置"][i] = nanmean(c4[v])
+            # 近5走着差std
+            cs5 = chakusa_sec[v]; cs5 = cs5[np.isfinite(cs5)][-5:]
+            res["近5走着差_std"][i] = cs5.std(ddof=1) if len(cs5) >= 2 else np.nan
+            # 重賞
+            gr = clsn[v]; res["重賞出走フラグ"][i] = float((gr >= 6).any()); res["過去重賞出走数"][i] = float((gr >= 6).sum())
+            # 距離適性
+            pdists = dist[v][np.isfinite(dist[v])]
+            if len(pdists) > 0 and np.isfinite(cd):
+                mx = pdists.max()
+                res["経験最長距離"][i] = mx
+                res["経験範囲超過"][i] = max(cd - mx, 0)
+                pd_ = res["前走距離"][i]
+                encho = max(cd - (pd_ if np.isfinite(pd_) else cd), 0)
+                res["延長×距離経験不足"][i] = encho * (1.0 if cd > mx else 0.0)
+                lp = v[dist[v] >= 2001]
+                if len(lp) > 0: res["長距離複勝率"][i] = (chaku[lp] <= 3).mean()
+            # 前走余力
+            pc = chaku[pv]
+            yory = (1.0 if pc == 1 else (0.5 if pc <= 3 else 0.0)) if np.isfinite(pc) else np.nan
+            res["前走余力"][i] = yory
+            pdd = res["前走距離"][i]
+            if np.isfinite(cd) and np.isfinite(pdd) and np.isfinite(yory):
+                res["延長×前走余力"][i] = max(cd - pdd, 0) * yory
+            # 連続フラグ
+            if len(v) >= 2:
+                l2 = chaku[v[-2:]]
+                res["連続複勝フラグ"][i] = 1.0 if (l2 <= 3).all() else 0.0
+                res["連続勝利フラグ"][i] = 1.0 if (l2 == 1).all() else 0.0
+            # 直近5走
+            l5 = chaku[v[-5:]]
+            res["直近5走勝利数"][i] = int((l5 == 1).sum())
+            res["直近5走複勝数"][i] = int((l5 <= 3).sum())
+            res["直近5走平均着順"][i] = l5.mean()
+            res["過去着順_std"][i]   = vch2.std(ddof=1) if len(v) >= 2 else np.nan
+            res["直近5走着順_std"][i] = l5.std(ddof=1) if len(l5) >= 2 else np.nan
+            res["直近5走着外率"][i]  = float((l5 > 3).mean())
+            # 近走改善度（len(valid)>=4）
+            if len(v) >= 4:
+                res["近走改善度"][i] = vch2.mean() - chaku[v[-3:]].mean()
+            # 平均タイム差
+            cv = cs2[v]; cv = cv[np.isfinite(cv)]
+            res["平均タイム差"][i] = cv.mean() if len(cv) > 0 else np.nan
+    # 6列(クラス変化/重賞/4角系)はループが「過去出走数==0」で上書きしない→上部の値を残す
+    SIX = ["クラス変化","重賞出走フラグ","過去重賞出走数","前走4角位置","過去平均4角位置","前走脚質指数"]
+    mask = res["過去出走数"] > 0
+    for c in COLS:
+        if c in SIX and c in df.columns:
+            df[c] = np.where(mask, res[c], pd.to_numeric(df[c], errors="coerce").to_numpy())
+        else:
+            df[c] = res[c]
+    return df
+
+
 def add_horse_history_features(df):
     """各馬の過去成績を特徴量として追加（当日データ混入なし）。
 
@@ -338,309 +508,9 @@ def add_horse_history_features(df):
 
     df = df.drop(columns=["_win", "_top3", "_last3_avg", "_all_avg"], errors="ignore")
 
-    result_rows = []
-
-    for horse, group in df.groupby("馬名"):
-        group = group.copy().reset_index(drop=True)
-
-        for i in range(len(group)):
-            row  = group.iloc[i].copy()
-            past = group.iloc[:i]
-            valid = past.dropna(subset=["着順_num"])
-
-            if len(valid) == 0:
-                row["過去出走数"]           = 0
-                row["過去平均着順"]         = np.nan
-                row["過去勝率"]             = np.nan
-                row["過去複勝率"]           = np.nan
-                row["過去平均上り"]         = np.nan
-                row["直近3走平均着順"]      = np.nan
-                row["過去平均タイム秒"]     = np.nan
-                row["直近3走平均タイム秒"]  = np.nan
-                row["過去最速タイム秒"]     = np.nan
-                row["直近3走平均上り"]      = np.nan
-                row["過去平均体重増減"]     = np.nan
-                row["前走間隔"]             = np.nan
-                row["同距離過去勝率"]       = np.nan
-                row["同距離過去平均着順"]   = np.nan
-                row["良馬場勝率"]           = np.nan
-                row["重馬場勝率"]           = np.nan
-                # 【新規】上がり関連
-                row["過去最速上り"]         = np.nan
-                row["上り偏差"]             = np.nan
-                row["距離別過去平均上り"]   = np.nan
-                row["前走着順"]             = np.nan
-                row["前走上り"]             = np.nan
-                row["前走距離"]             = np.nan
-                row["距離変化"]             = np.nan
-                row["連続複勝フラグ"]       = np.nan
-                row["連続勝利フラグ"]       = np.nan
-                row["直近5走勝利数"]       = np.nan
-                row["直近5走複勝数"]       = np.nan
-                row["直近5走平均着順"]     = np.nan
-                row["過去着順_std"]        = np.nan
-                row["直近5走着順_std"]     = np.nan
-                row["直近5走着外率"]       = np.nan
-                row["近走改善度"]           = np.nan
-                row["平均タイム差"]         = np.nan
-                # 【新規】距離適性・スタミナ系（長距離・距離延長の弱点対策）
-                row["経験最長距離"]         = np.nan
-                row["経験範囲超過"]         = np.nan
-                row["延長×距離経験不足"]    = np.nan
-                row["長距離複勝率"]         = np.nan
-                row["前走余力"]             = np.nan
-                row["延長×前走余力"]        = np.nan
-            else:
-                last3 = valid.tail(3)
-                row["過去出走数"]           = len(valid)
-                row["過去平均着順"]         = valid["着順_num"].mean()
-                row["過去勝率"]             = (valid["着順_num"] == 1).mean()
-                row["過去複勝率"]           = (valid["着順_num"] <= 3).mean()
-                row["過去平均上り"]         = valid["上り"].mean()
-                row["直近3走平均着順"]      = last3["着順_num"].mean()
-                row["過去平均タイム秒"]     = valid["タイム秒"].mean() if "タイム秒" in valid.columns else np.nan
-                row["直近3走平均タイム秒"]  = last3["タイム秒"].mean() if "タイム秒" in last3.columns else np.nan
-                row["過去最速タイム秒"]     = valid["タイム秒"].min()  if "タイム秒" in valid.columns else np.nan
-                row["直近3走平均上り"]      = last3["上り"].mean()
-                row["過去平均体重増減"]     = valid["体重増減"].mean()
-
-                # 【新規】上がり関連（過去データのみ・当日混入なし）
-                row["過去最速上り"]   = valid["上り"].min()   # 最高（最小）上がり
-                row["上り偏差"]       = valid["上り"].std()   # 上がりのばらつき
-
-                # 前走間隔
-                if len(past) > 0:
-                    try:
-                        d1 = datetime.strptime(str(row["race_id"])[:8], "%Y%m%d")
-                        d2 = datetime.strptime(str(past.iloc[-1]["race_id"])[:8], "%Y%m%d")
-                        row["前走間隔"] = (d1 - d2).days / 7
-                    except:
-                        row["前走間隔"] = np.nan
-                else:
-                    row["前走間隔"] = np.nan
-
-                # 同距離過去成績（±200m）
-                if "距離" in valid.columns:
-                    current_dist = row.get("距離", np.nan)
-                    if pd.notna(current_dist):
-                        same_dist = valid[
-                            (valid["距離"] >= current_dist - 200) &
-                            (valid["距離"] <= current_dist + 200)
-                        ]
-                        if len(same_dist) > 0:
-                            row["同距離過去勝率"]     = (same_dist["着順_num"] == 1).mean()
-                            row["同距離過去平均着順"] = same_dist["着順_num"].mean()
-                        else:
-                            row["同距離過去勝率"]     = np.nan
-                            row["同距離過去平均着順"] = np.nan
-                    else:
-                        row["同距離過去勝率"]     = np.nan
-                        row["同距離過去平均着順"] = np.nan
-                else:
-                    row["同距離過去勝率"]     = np.nan
-                    row["同距離過去平均着順"] = np.nan
-
-                # 馬場状態別成績
-                if "馬場状態" in valid.columns:
-                    ryou = valid[valid["馬場状態"] == "良"]
-                    omoi = valid[valid["馬場状態"].isin(["重", "不良"])]
-                    row["良馬場勝率"] = (ryou["着順_num"] == 1).mean() if len(ryou) > 0 else np.nan
-                    row["重馬場勝率"] = (omoi["着順_num"] == 1).mean() if len(omoi) > 0 else np.nan
-                else:
-                    row["良馬場勝率"] = np.nan
-                    row["重馬場勝率"] = np.nan
-
-                # 【新規】距離カテゴリ別過去平均上り
-                if "レース番号" in valid.columns:
-                    current_race_no = row.get("レース番号", np.nan)
-                    if pd.notna(current_race_no):
-                        if current_race_no <= 4:
-                            dist_cat_filter = valid["レース番号"] <= 4
-                        elif current_race_no <= 8:
-                            dist_cat_filter = (valid["レース番号"] >= 5) & (valid["レース番号"] <= 8)
-                        else:
-                            dist_cat_filter = valid["レース番号"] >= 9
-                        same_cat = valid[dist_cat_filter]
-                        row["距離別過去平均上り"] = same_cat["上り"].mean() if len(same_cat) > 0 else np.nan
-                    else:
-                        row["距離別過去平均上り"] = np.nan
-                else:
-                    row["距離別過去平均上り"] = np.nan
-
-                # ── 前走情報 ──────────────────────────────────────────
-                if len(valid) > 0:
-                    prev = valid.iloc[-1]
-                    row["前走着順"]  = prev["着順_num"]
-                    row["前走上り"]  = prev["上り"] if "上り" in prev.index else np.nan
-                    row["前走距離"]  = pd.to_numeric(prev.get("距離", np.nan), errors="coerce")
-                    # 距離変化（今回 - 前走）
-                    cur_dist = pd.to_numeric(row.get("距離", np.nan), errors="coerce")
-                    prev_dist = row["前走距離"]
-                    row["距離変化"] = (cur_dist - prev_dist) if pd.notna(cur_dist) and pd.notna(prev_dist) else np.nan
-                    # クラス変化（昇降級）
-                    _prev_cls = pd.to_numeric(prev.get("クラス_num", np.nan), errors="coerce")
-                    _cur_cls  = pd.to_numeric(row.get("クラス_num", np.nan), errors="coerce")
-                    row["クラス変化"] = (_cur_cls - _prev_cls) if pd.notna(_cur_cls) and pd.notna(_prev_cls) else np.nan
-                    # 前走着差_秒（1着=0.0）
-                    _prev_chk = prev.get("着順_num")
-                    _prev_cs  = prev.get("着差", np.nan)
-                    row["前走着差_秒"] = 0.0 if (_prev_chk == 1) else chakusa_to_sec(_prev_cs)
-                    # 過去平均着差_秒
-                    if "着差" in valid.columns:
-                        row["過去平均着差_秒"] = valid.apply(
-                            lambda r: 0.0 if r.get("着順_num") == 1 else chakusa_to_sec(r.get("着差")), axis=1
-                        ).mean()
-                    else:
-                        row["過去平均着差_秒"] = np.nan
-                    # 前走4角位置・脚質指数
-                    _prev_tsuka = prev.get("通過", np.nan)
-                    row["前走4角位置"] = _extract_4corner(_prev_tsuka)
-                    _1kaku = _extract_1corner(_prev_tsuka)
-                    row["前走脚質指数"] = (_1kaku - row["前走4角位置"]
-                                          if pd.notna(_1kaku) and pd.notna(row["前走4角位置"]) else np.nan)
-                    if "通過" in valid.columns:
-                        row["過去平均4角位置"] = valid["通過"].apply(_extract_4corner).mean()
-                    else:
-                        row["過去平均4角位置"] = np.nan
-                    # 着差安定度（近5走の着差 std）
-                    if "着差" in valid.columns:
-                        _cs_series = valid.apply(
-                            lambda r: 0.0 if r.get("着順_num") == 1 else chakusa_to_sec(r.get("着差")), axis=1
-                        ).dropna()
-                        row["近5走着差_std"] = _cs_series.tail(5).std() if len(_cs_series) >= 2 else np.nan
-                    else:
-                        row["近5走着差_std"] = np.nan
-                    # 重賞実績
-                    if "クラス_num" in valid.columns:
-                        _grades = pd.to_numeric(valid["クラス_num"], errors="coerce")
-                        row["重賞出走フラグ"] = float((_grades >= 6).any())
-                        row["過去重賞出走数"] = float((_grades >= 6).sum())
-                    else:
-                        row["重賞出走フラグ"] = np.nan
-                        row["過去重賞出走数"] = np.nan
-                else:
-                    row["前走着順"]      = np.nan
-                    row["前走上り"]      = np.nan
-                    row["前走距離"]      = np.nan
-                    row["距離変化"]      = np.nan
-                    row["クラス変化"]    = np.nan
-                    row["前走着差_秒"]   = np.nan
-                    row["過去平均着差_秒"] = np.nan
-                    row["前走4角位置"]   = np.nan
-                    row["過去平均4角位置"] = np.nan
-                    row["前走脚質指数"]  = np.nan
-                    row["近5走着差_std"] = np.nan
-                    row["重賞出走フラグ"] = np.nan
-                    row["過去重賞出走数"] = np.nan
-
-                # ── 距離適性・スタミナ系（長距離・距離延長の弱点対策）──
-                cur_dist2 = pd.to_numeric(row.get("距離", np.nan), errors="coerce")
-                past_dists = pd.to_numeric(valid["距離"], errors="coerce").dropna()
-                if len(past_dists) > 0 and pd.notna(cur_dist2):
-                    # 経験最長距離（過去にこなした最も長い距離）
-                    max_dist = past_dists.max()
-                    row["経験最長距離"] = max_dist
-                    # 経験範囲超過（今回が経験最長をどれだけ超えるか、正値=未知の距離）
-                    row["経験範囲超過"] = max(cur_dist2 - max_dist, 0)
-                    # 延長×距離経験不足（延長幅 × 経験範囲超過の度合い）
-                    encho = max(cur_dist2 - (row["前走距離"] if pd.notna(row.get("前走距離")) else cur_dist2), 0)
-                    row["延長×距離経験不足"] = encho * (1.0 if cur_dist2 > max_dist else 0.0)
-                    # 長距離(2001m〜)での過去複勝率
-                    long_past = valid[pd.to_numeric(valid["距離"], errors="coerce") >= 2001]
-                    if len(long_past) > 0:
-                        row["長距離複勝率"] = (long_past["着順_num"] <= 3).mean()
-                    else:
-                        row["長距離複勝率"] = np.nan
-                else:
-                    row["経験最長距離"]      = np.nan
-                    row["経験範囲超過"]      = np.nan
-                    row["延長×距離経験不足"] = np.nan
-                    row["長距離複勝率"]      = np.nan
-
-                # 前走余力（前走で楽勝なら延長に対応しやすい）
-                # 前走着順が良く(1-3着)、かつ着差がついていた = 余力あり
-                if len(valid) > 0:
-                    prev2 = valid.iloc[-1]
-                    prev_chaku = prev2["着順_num"]
-                    # 前走1着なら余力大、上位なら中程度、凡走なら0
-                    if pd.notna(prev_chaku):
-                        if prev_chaku == 1:
-                            yoryoku = 1.0
-                        elif prev_chaku <= 3:
-                            yoryoku = 0.5
-                        else:
-                            yoryoku = 0.0
-                    else:
-                        yoryoku = np.nan
-                    row["前走余力"] = yoryoku
-                    # 延長×前走余力（延長でも前走に余力があれば対応可）
-                    cur_d = pd.to_numeric(row.get("距離", np.nan), errors="coerce")
-                    prev_d = row.get("前走距離", np.nan)
-                    if pd.notna(cur_d) and pd.notna(prev_d) and pd.notna(yoryoku):
-                        encho_haba = max(cur_d - prev_d, 0)
-                        # 延長幅が大きいほど余力が重要 → 余力で割引を緩和
-                        row["延長×前走余力"] = encho_haba * yoryoku
-                    else:
-                        row["延長×前走余力"] = np.nan
-                else:
-                    row["前走余力"]      = np.nan
-                    row["延長×前走余力"] = np.nan
-
-                # ── 連続好走フラグ ─────────────────────────────────────
-                if len(valid) >= 2:
-                    last2 = valid.tail(2)
-                    row["連続複勝フラグ"] = 1.0 if (last2["着順_num"] <= 3).all() else 0.0
-                    row["連続勝利フラグ"] = 1.0 if (last2["着順_num"] == 1).all() else 0.0
-                else:
-                    row["連続複勝フラグ"] = np.nan
-                    row["連続勝利フラグ"] = np.nan
-
-                # ── 好調度（直近5走の好走数＝連続値・フラグより効く）────────
-                if len(valid) >= 1:
-                    last5 = valid.tail(5)
-                    n5 = len(last5)
-                    row["直近5走勝利数"] = int((last5["着順_num"] == 1).sum())
-                    row["直近5走複勝数"] = int((last5["着順_num"] <= 3).sum())
-                    # 直近の勢い（直近5走の平均着順、小さいほど好調）
-                    row["直近5走平均着順"] = last5["着順_num"].mean()
-                    # 着順安定性（複勝精度向け）: ばらつき小=安定=複勝向き
-                    row["過去着順_std"]   = valid["着順_num"].std() if len(valid) >= 2 else np.nan
-                    row["直近5走着順_std"] = last5["着順_num"].std() if n5 >= 2 else np.nan
-                    row["直近5走着外率"]  = float((last5["着順_num"] > 3).mean())
-                else:
-                    row["直近5走勝利数"]   = np.nan
-                    row["直近5走複勝数"]   = np.nan
-                    row["直近5走平均着順"] = np.nan
-                    row["過去着順_std"]    = np.nan
-                    row["直近5走着順_std"] = np.nan
-                    row["直近5走着外率"]   = np.nan
-
-                # ── 近走改善度（直近3走 vs 全過去の着順差） ────────────
-                if len(valid) >= 4:
-                    last3_avg = valid.tail(3)["着順_num"].mean()
-                    all_avg   = valid["着順_num"].mean()
-                    row["近走改善度"] = all_avg - last3_avg  # プラスほど改善中
-                else:
-                    row["近走改善度"] = np.nan
-
-                # ── 勝ち馬とのタイム差平均 ─────────────────────────────
-                if "タイム秒" in valid.columns and "着差" in valid.columns:
-                    # 着差を秒に変換（例: "0.3" → 0.3秒）
-                    def parse_chakusa(x):
-                        try:
-                            if pd.isna(x) or str(x).strip() in ["", "同着", "大差"]:
-                                return np.nan
-                            return float(str(x).replace(".", "."))
-                        except:
-                            return np.nan
-                    chakusa_vals = valid["着差"].apply(parse_chakusa).dropna()
-                    row["平均タイム差"] = chakusa_vals.mean() if len(chakusa_vals) > 0 else np.nan
-                else:
-                    row["平均タイム差"] = np.nan
-
-            result_rows.append(row)
-
-    return pd.DataFrame(result_rows).reset_index(drop=True)
+    # ── ループ撤去: per-horse numpy で同値高速化（ゴールデン全列一致検証済み） ──
+    df = _loop_features_per_horse(df)
+    return df
 
 
 def add_race_relative_features(df):
