@@ -285,11 +285,23 @@ def index():
     return redirect(url_for("races"))
 
 
+def _keep_latest_meet_day(df):
+    """前日データ混入除去: 各競馬場(race_id 5-6桁)で最新の開催日(9-10桁)のレースのみ残す。
+    スケジューラが前日ジョブを再発火して古いrace_idが混ざるための表示側フィルタ。"""
+    if df.empty or "race_id" not in df.columns:
+        return df
+    rid = df["race_id"].astype(str)
+    jyo_cd = rid.str[4:6]
+    day = rid.str[8:10]
+    return df[day == day.groupby(jyo_cd).transform("max")].copy()
+
+
 @app.route("/races")
 def races():
     df = fetch_csv(TODAY_PRED_URL)
     if df.empty:
         return render_template("error.html", msg="予想データが取得できませんでした。しばらく後に再度お試しください。")
+    df = _keep_latest_meet_day(df)  # 前日データ混入を除去
 
     # jyo, race_no が存在するか確認
     if "jyo" not in df.columns:
