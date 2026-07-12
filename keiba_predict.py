@@ -1218,6 +1218,24 @@ def predict_race(race_id: str):
         print("エラー: race_id は12桁の数字で指定してください（例: 202606050811）")
         sys.exit(1)
 
+    # ── 前日レースの再予想スキップ（スケジューラがschedule.every().day.at()で前日の
+    #   各レース予想ジョブを翌日も再発火し、前日のrace_idを予想・メールしてしまう問題への防御）。
+    #   today_predictions.csv 内で、この競馬場(race_id 5-6桁)の最新開催日(9-10桁)より
+    #   古い開催日のレースは前日以前の残骸なので、予想・メール送信せずスキップする。
+    try:
+        _tp = os.path.join(BASE_DIR, "today_predictions.csv")
+        if os.path.exists(_tp):
+            _rid = pd.read_csv(_tp, usecols=["race_id"])["race_id"].astype(str)
+            _same = _rid[_rid.str[4:6] == race_id[4:6]]
+            if len(_same) > 0:
+                _maxday = _same.str[8:10].max()
+                if race_id[8:10] < _maxday:
+                    print(f"  [スキップ] {race_id} は前日以前のレース"
+                          f"(開催{race_id[8:10]}日目 < 最新{_maxday}日目)。予想・メール送信せず終了。")
+                    return
+    except Exception:
+        pass  # 判定不能時は通常通り予想する（安全側）
+
     # ── モデル読み込み → models_pack に統一
     print("モデル読み込み中...")
     with open(os.path.join(BASE_DIR, "model.pkl"), "rb") as f:
