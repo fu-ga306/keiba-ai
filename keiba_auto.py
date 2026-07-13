@@ -183,6 +183,14 @@ def get_today_races():
             time_match = re.search(r"(\d{1,2}:\d{2})", text)
             if time_match:
                 race_info[race_id] = time_match.group(1)
+        # 開催日ガード: JRA実開催は必ず12レース/場以上。0<件数<閾値 は
+        # 非開催日にnetkeibaが前売り/次開催の出馬表を一時的に見せた誤検出とみなし、
+        # 「本日は非開催」として空を返す（メール送信・予想・プッシュを全経路で抑止）。
+        MIN_RACE_DAY = 6
+        if 0 < len(race_info) < MIN_RACE_DAY:
+            print(f"  ⚠ レース数{len(race_info)}件は異常（非開催日/前売り誤検出）"
+                  f"→ 本日は非開催として扱い、予想・メールを抑止します")
+            return {}
         return race_info
     finally:
         driver.quit()

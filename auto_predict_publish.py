@@ -90,6 +90,16 @@ def run_morning_prediction():
     print(f"[{now}] 朝の一括予想開始")
     print(f"{'='*50}")
 
+    # 開催日ガード: 非開催日は予想・プッシュをスキップ（get_today_racesが
+    # 最小レース数チェック込みで空を返す→誤メール/誤予想を防止）。
+    try:
+        from keiba_auto import get_today_races
+        if not get_today_races():
+            print(f"[{now}] 本日は非開催（レース取得0件）→ 朝の一括予想をスキップ")
+            return
+    except Exception as e:
+        print(f"  開催日チェックでエラー（続行）: {e}")
+
     # today_predictions.csv をリセット
     out_path = os.path.join(BASE_DIR, "today_predictions.csv")
     if os.path.exists(out_path):
