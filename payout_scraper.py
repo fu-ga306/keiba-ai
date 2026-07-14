@@ -21,8 +21,10 @@ netkeiba のレース結果ページから全券種の払戻データを取得�
 """
 import os
 import sys
+import re
 import time
 import random
+import requests
 import pandas as pd
 from bs4 import BeautifulSoup
 
@@ -167,90 +169,108 @@ def parse_payout(soup, race_id):
 
 
 def parse_result_combos(result_td):
-    """Resultセルから組み合わせを抽出。同着なら複数返す。
-    馬番は <span> または <div> 単位でまとまっている。
-    例: 馬連同着 → ["04-11", "04-14"]
+    """Resultセルから組み合わせを抽出。券種ごとに「組」の数が異なる。
+
+    netkeibaの実構造:
+      - ul基盤(枠連/馬連/馬単/ワイド/3連複/3連単): <ul>が1組に対応し、
+        ul内の<li><span>馬番</span></li>がその組の構成馬。
+        ワイドや同着では<ul>が複数 → 複数組を返す。
+      - div基盤(単勝/複勝): <div><span>馬番</span></div>が並び、
+        digitを持つspanが1頭=1組（複勝は3頭=3組、各馬別払戻）。
+    例: 馬連 → ["03-10"]、ワイド → ["03-10","03-05","05-10"]、複勝 → ["03","10","05"]
     """
     combos = []
-    # liごと（同着が別liに入る構造）
-    lis = result_td.find_all("li")
-    if lis:
-        for li in lis:
-            nums = [s.get_text(strip=True) for s in li.find_all("span")]
+    uls = result_td.find_all("ul")
+    if uls:
+        # ul = 1組。ul内のliのspan(馬番)を連結して1組とする。
+        for ul in uls:
+            nums = [s.get_text(strip=True) for s in ul.find_all("span")]
             nums = [n for n in nums if n.isdigit()]
             if nums:
                 combos.append("-".join(n.zfill(2) for n in nums))
-        if combos:
-            return combos
+        return combos
 
-    # divごと（Result_Box が複数あるパターン）
-    divs = result_td.find_all("div", recursive=False)
-    if len(divs) > 1:
-        for div in divs:
-            nums = [s.get_text(strip=True) for s in div.find_all("span")]
-            nums = [n for n in nums if n.isdigit()]
-            if nums:
-                combos.append("-".join(n.zfill(2) for n in nums))
-        if combos:
-            return combos
-
-    # span を直接並べるパターン（単勝・複勝など、または同着なしの組み合わせ）
-    spans = [s.get_text(strip=True) for s in result_td.find_all("span")]
-    spans = [s for s in spans if s.isdigit()]
-    if spans:
-        # 複勝のように1頭ずつが別組（=別払戻）の場合と、
-        # 馬連のように複数頭で1組の場合がある。
-        # ここでは「全部つなげて1組」とし、複勝など1頭単位は
-        # 呼び出し側の払戻数で分割対応する。
-        combos.append("-".join(s.zfill(2) for s in spans))
-    return combos
+    # div基盤（単勝・複勝）: digitを持つspanが1頭=1組
+    nums = [s.get_text(strip=True) for s in result_td.find_all("span")]
+    nums = [n for n in nums if n.isdigit()]
+    return [n.zfill(2) for n in nums]
 
 
 def parse_payout_amounts(payout_td):
-    """Payoutセルから払戻金（円）を数値リストで返す。同着なら複数。
-    例: "3,630円1,100円" → [3630, 1100]
+    """Payoutセルから払戻金（円）を数値リストで返す。
+    複勝/ワイドは1spanに <br> 区切りで複数金額が入る。
+    例: "570円<br>200円<br>1,130円" → [570, 200, 1130]
     """
-    amounts = []
-    # spanごとに金額が入る
-    spans = payout_td.find_all("span")
-    if spans:
-        for sp in spans:
-            txt = sp.get_text(strip=True).replace(",", "").replace("円", "")
-            if txt.isdigit():
-                amounts.append(int(txt))
-    if amounts:
-        return amounts
-
-    # spanがない場合、テキストを<br>や円で分割
-    raw = payout_td.get_text(separator="\n", strip=True)
-    for part in raw.replace("円", "\n").split("\n"):
-        p = part.replace(",", "").strip()
-        if p.isdigit():
-            amounts.append(int(p))
-    return amounts
+    txt = payout_td.get_text(separator="\n")
+    return [int(m.replace(",", "")) for m in re.findall(r"([\d,]+)円", txt)]
 
 
 def parse_ninki(ninki_td):
-    """Ninkiセルから人気を数値リストで返す。同着なら複数。"""
-    ninkis = []
-    txt = ninki_td.get_text(separator="\n", strip=True)
-    for part in txt.replace("人気", "\n").split("\n"):
-        p = part.strip()
-        if p.isdigit():
-            ninkis.append(int(p))
-    return ninkis
+    """Ninkiセルから人気を数値リストで返す。複勝は3個・同着は複数。
+    例: "9人気1人気12人気" → [9, 1, 12]
+    """
+    txt = ninki_td.get_text(separator="\n")
+    return [int(m) for m in re.findall(r"(\d+)人気", txt)]
 
 
-def get_payout(driver, race_id):
-    """1レースの払戻データを取得。BLOCKEDならその旨を返す。"""
+# ── HTTP取得（requests優先・Seleniumフォールバック）──────────────────────
+_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                  "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+}
+_session = None
+_fallback_driver = None
+
+
+def _get_session():
+    global _session
+    if _session is None:
+        _session = requests.Session()
+        _session.headers.update(_HEADERS)
+    return _session
+
+
+def _get_fallback_driver():
+    """Seleniumフォールバック用ドライバを遅延生成（requestsがブロック時のみ使用）。"""
+    global _fallback_driver
+    if _fallback_driver is None:
+        _fallback_driver = create_driver()
+    return _fallback_driver
+
+
+def _close_fallback_driver():
+    global _fallback_driver
+    if _fallback_driver is not None:
+        try:
+            _fallback_driver.quit()
+        except Exception:
+            pass
+        _fallback_driver = None
+
+
+def get_payout(race_id):
+    """1レースの払戻データを取得。requests優先、ブロック/失敗時のみSelenium。
+    返り値: 行リスト / [](払戻表なし=結果未確定/存在しない) / "BLOCKED"（ブロック検知）。"""
     url = f"https://race.netkeiba.com/race/result.html?race_id={race_id}"
-    driver.get(url)
-    time.sleep(random.uniform(3.5, 6.0))
-    page = driver.page_source
-    if is_blocked(page):
+    # ① requests優先（軽量・高速・ブロックされにくい）
+    try:
+        r = _get_session().get(url, timeout=15)
+        r.encoding = r.apparent_encoding
+        if not is_blocked(r.text):
+            return parse_payout(BeautifulSoup(r.text, "html.parser"), race_id)
+    except Exception:
+        pass
+    # ② Seleniumフォールバック（requestsがブロック/失敗時のみ）
+    try:
+        d = _get_fallback_driver()
+        d.get(url)
+        time.sleep(random.uniform(3.5, 6.0))
+        page = d.page_source
+        if is_blocked(page):
+            return "BLOCKED"
+        return parse_payout(BeautifulSoup(page, "html.parser"), race_id)
+    except Exception:
         return "BLOCKED"
-    soup = BeautifulSoup(page, "html.parser")
-    return parse_payout(soup, race_id)
 
 
 def _load_done_race_ids():
@@ -295,22 +315,12 @@ def build_payout_data(year=None):
         print("全レース取得済みです")
         return
 
-    driver = create_driver()
     buffer = []
     consecutive_blocks = 0
 
     for i, race_id in enumerate(targets):
         print(f"[{i+1}/{len(targets)}] {race_id}", end=" ")
-        try:
-            result = get_payout(driver, race_id)
-        except Exception as e:
-            print(f"エラー、再起動: {e}")
-            try:
-                driver.quit()
-            except Exception:
-                pass
-            driver = create_driver()
-            continue
+        result = get_payout(race_id)   # requests優先・自動フォールバック
 
         if result == "BLOCKED":
             consecutive_blocks += 1
@@ -319,53 +329,47 @@ def build_payout_data(year=None):
                 print("\n連続ブロックのため中断します。取得済みは保存済み。")
                 print("数時間〜1日空けて再実行してください。")
                 _save(buffer); buffer = []
-                try: driver.quit()
-                except Exception: pass
+                _close_fallback_driver()
                 return
             cooldown = random.uniform(600, 1200)
             print(f"  {cooldown/60:.0f}分クールダウン...")
-            try: driver.quit()
-            except Exception: pass
+            _close_fallback_driver()
             time.sleep(cooldown)
-            driver = create_driver()
             continue
         else:
             consecutive_blocks = 0
 
         if result:
             buffer.extend(result)
-            n_doutaku = sum(1 for r in result if result.count(r) > 1)
             print(f"✓ {len(result)}件")
         else:
             print("- 払戻取得できず")
 
-        # 待機（保守的）
-        time.sleep(random.uniform(8.0, 14.0))
+        # 礼儀待機（requests優先で軽量。ブロック回避のため適度に）
+        time.sleep(random.uniform(2.0, 3.5))
 
-        # 50レースごとに休憩
-        if (i + 1) % 50 == 0:
-            rest = random.uniform(90, 180)
+        # 100レースごとに小休憩
+        if (i + 1) % 100 == 0:
+            rest = random.uniform(20, 40)
             print(f"  [{i+1}レース完了] {rest:.0f}秒休憩...")
             time.sleep(rest)
 
-        # 100レースごとに中間保存
-        if (i + 1) % 100 == 0 and buffer:
+        # 200レースごとに中間保存
+        if (i + 1) % 200 == 0 and buffer:
             _save(buffer)
             buffer = []
             print("--- 中間保存 ---")
 
     if buffer:
         _save(buffer)
-    try: driver.quit()
-    except Exception: pass
+    _close_fallback_driver()
     print(f"\n完了！ → {OUTPUT_CSV}")
 
 
 def test_single(race_id):
-    """単一レースのテスト取得（同着対応の確認用）。"""
-    driver = create_driver()
+    """単一レースのテスト取得（同着対応・組み合わせ分離の確認用）。"""
     try:
-        result = get_payout(driver, race_id)
+        result = get_payout(race_id)
         if result == "BLOCKED":
             print("ブロックされました")
             return
@@ -375,8 +379,7 @@ def test_single(race_id):
             print(f"  {r['券種']:6} {r['組み合わせ']:12} "
                   f"{r['払戻金']:>8}円  {r['人気']}人気")
     finally:
-        try: driver.quit()
-        except Exception: pass
+        _close_fallback_driver()
 
 
 if __name__ == "__main__":
