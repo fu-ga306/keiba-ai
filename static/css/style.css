@@ -143,10 +143,27 @@ body {
 .rec-mid   { background: #fef9c3; color: #713f12; border: 1px solid #f59e0b; }
 .rec-watch { background: #f3f4f6; color: #6b7280; border: 1px solid #d1d5db; }
 .rec-pass  { background: #fee2e2; color: #7f1d1d; border: 1px solid #ef4444; }
+.rec-hot   { background: #fecaca; color: #7f1d1d; border: 1px solid #dc2626;
+             box-shadow: 0 0 6px rgba(220,38,38,.5); }
 
 /* カード枠の色分け */
 .card-rec-good { border-color: #10b981 !important; border-width: 2px !important; }
+.card-rec-hot  { border-color: #dc2626 !important; border-width: 2px !important;
+                 box-shadow: 0 0 10px rgba(220,38,38,.25); }
 .card-rec-pass { opacity: .65; }
+
+/* ─── レース判定・買い目（マトリクス連動）─── */
+.size-badge { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 20px;
+              background: #ddd6fe; color: #4c1d95; border: 1px solid #8b5cf6; }
+.hl-myo    { font-size: 14px; font-weight: 700; color: #fbbf24; margin: 6px 0 2px; }
+.hl-reason { font-size: 11px; color: #cbd5e1; margin-top: 4px; }
+.plan-reason { font-size: 13px; color: var(--text-sub, #6b7280); margin: 4px 0 10px; }
+.bets-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.bets-table th { text-align: left; padding: 6px 8px; background: #f1f5f9;
+                 color: #334155; font-size: 11px; }
+.bets-table td { padding: 7px 8px; border-bottom: 1px solid #e5e7eb; }
+.bets-combo { font-weight: 700; font-family: ui-monospace, monospace; }
+.bets-note { font-size: 11px; color: #9ca3af; margin-top: 8px; }
 
 /* ─── ハイライトセクション ─── */
 .highlight-section {

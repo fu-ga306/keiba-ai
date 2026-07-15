@@ -15,10 +15,10 @@
 </div>
 {% else %}
 
-{# ── 今日の注目買い目 ────────────────────────── #}
+{# ── 今日の推奨レース（🔥勝負/✅買い・買い目つき） ────────────── #}
 {% if highlights %}
 <section class="highlight-section">
-  <h2 class="highlight-title">⭐ 今日の注目買い目</h2>
+  <h2 class="highlight-title">🔥 今日の推奨レース</h2>
   <div class="highlight-list">
     {% for c in highlights %}
     <a href="{{ url_for('race_detail', race_id=c.race_id) }}" class="highlight-card-link">
@@ -26,31 +26,28 @@
       <div class="hl-race-info">
         <span class="venue-badge">{{ c.jyo }}</span>
         <span class="hl-race-no">{{ c.race_no }}R</span>
+        <span class="rec-badge {{ c.rec_cls }}">{{ c.rec_level }}</span>
+        {% if c.plan_size and c.plan_size != '-' %}<span class="size-badge">資金:{{ c.plan_size }}</span>{% endif %}
         <span class="hl-class">{{ c.klass }}</span>
         <span class="hl-dist">{{ c.baba_emo }}{{ c.dist }}m</span>
       </div>
+      {% if c.myo_info %}
+      <div class="hl-myo">💎 {{ c.myo_info }} を軸に買う</div>
+      {% endif %}
+      {% if c.my_bets %}
       <div class="hl-bets">
-        {% for b in c.bet_recs %}
-        {% if b.type != '見送り' %}
+        {% for b in c.my_bets %}
         <div class="hl-bet-row">
-          <span class="hl-bet-type {{ b.cls }}">{{ b.type }}</span>
-          <span class="hl-bet-horses">{{ b.horses | join(' · ') }}</span>
-          {% if b.note %}<span class="hl-bet-note">{{ b.note }}</span>{% endif %}
+          <span class="hl-bet-type">{{ b.kind }}</span>
+          <span class="hl-bet-horses">{{ b.combo }}</span>
+          <span class="hl-bet-note">{{ b.points }}点 / BT{{ b.bt }}%</span>
         </div>
-        {% endif %}
         {% endfor %}
       </div>
-      <div class="hl-axis">
-        {% for h in c.top5 %}
-        {% if h.推奨ランク == '◎' %}
-        <span class="hl-axis-horse">
-          ◎ 馬番{{ h.馬番 | int }} {{ h.馬名 }}
-          <span class="hl-ev {{ h.ev_cls }}">EV{{ "%.2f"|format(h.ev_val) }}</span>
-          <span class="hl-odds">{{ h.単勝オッズ }}倍</span>
-        </span>
-        {% endif %}
-        {% endfor %}
-      </div>
+      {% endif %}
+      {% if c.plan_reason %}
+      <div class="hl-reason">{{ c.plan_reason }}</div>
+      {% endif %}
     </div>
     </a>
     {% endfor %}
@@ -63,7 +60,7 @@
 <div class="race-grid">
   {% for card in cards %}
   <a href="{{ url_for('race_detail', race_id=card.race_id) }}" class="race-card-link">
-  <article class="race-card {{ 'card-rec-good' if card.rec_cls == 'rec-good' else ('card-rec-pass' if card.rec_cls == 'rec-pass' else '') }}">
+  <article class="race-card {{ 'card-rec-hot' if card.rec_cls == 'rec-hot' else ('card-rec-good' if card.rec_cls == 'rec-good' else ('card-rec-pass' if card.rec_cls == 'rec-pass' else '')) }}">
 
     {# カードヘッダー #}
     <div class="card-header">
@@ -135,8 +132,25 @@
       {% endfor %}
     </div>
 
-    {# 馬券推奨（見送り以外） #}
-    {% if card.bet_recs %}
+    {# 推奨買い目（マトリクス判定・today_bets連動） #}
+    {% if card.my_bets %}
+    <div class="bet-section">
+      {% if card.myo_info %}<div class="bet-strategy-tag">💎 {{ card.myo_info }}</div>{% endif %}
+      <div class="bet-list">
+        {% for b in card.my_bets %}
+        <div class="bet-item">
+          <span class="bet-type">{{ b.kind }}</span>
+          <span class="bet-horses">{{ b.combo }}</span>
+          <span class="bet-note">{{ b.points }}点 BT{{ b.bt }}%</span>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+    {% elif card.plan_reason %}
+    <div class="bet-section">
+      <div class="bet-item"><span class="bet-note">{{ card.plan_reason }}</span></div>
+    </div>
+    {% elif card.bet_recs %}
     <div class="bet-section">
       {% if card.bet_recs[0].strategy %}
       <div class="bet-strategy-tag">{{ card.bet_recs[0].strategy }}</div>

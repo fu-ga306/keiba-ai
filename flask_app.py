@@ -17,6 +17,7 @@ app.config["TEMPLATES_AUTO_RELOAD"] = True
 GITHUB_RAW = "https://raw.githubusercontent.com/fu-ga306/keiba-ai/main"
 TODAY_PRED_URL = f"{GITHUB_RAW}/today_predictions.csv"
 RECORD_URL = f"{GITHUB_RAW}/prediction_record_v2.csv"
+TODAY_BETS_URL = f"{GITHUB_RAW}/today_bets.csv"
 
 _cache = {}
 CACHE_TTL = 300  # 5分キャッシュ
@@ -194,7 +195,21 @@ def calc_rec_level(group: pd.DataFrame, are_tan: int, are_ren: int, bet_recs: li
     if bet_recs and bet_recs[0]["type"] == "見送り":
         return "見送り", "rec-pass", 0
 
-    # ── 買い指数ベース（新: 85+積極/70-84買い/55-69様子見/<55単勝見送り）──
+    # ── レース判定ベース（2026-07-16: 購入推奨=勝負/買い/少額/見送り に連動）──
+    if "購入推奨" in group.columns:
+        lab_s = group["購入推奨"].dropna().astype(str)
+        lab = lab_s.iloc[0] if len(lab_s) else ""
+        kai_s = pd.to_numeric(group.get("買い指数"), errors="coerce").dropna()
+        kai = int(kai_s.iloc[0]) if len(kai_s) else 0
+        if lab == "勝負":
+            return "🔥勝負", "rec-hot", kai
+        elif lab == "買い":
+            return "✅買い", "rec-good", kai
+        elif lab == "少額":
+            return "⚠少額", "rec-mid", kai
+        elif lab == "見送り":
+            return "見送り", "rec-pass", kai
+    # ── 旧・買い指数ベース（85+積極/70-84買い/55-69様子見/<55単勝見送り）──
     if "買い指数" in group.columns:
         kai_s = pd.to_numeric(group["買い指数"], errors="coerce").dropna()
         if len(kai_s) > 0:
@@ -222,7 +237,32 @@ def calc_rec_level(group: pd.DataFrame, are_tan: int, are_ren: int, bet_recs: li
         return "様子見", "rec-watch", score
 
 
-def build_race_card(jyo, race_no, group: pd.DataFrame) -> dict:
+def build_my_bets(race_id: str, bets_df: pd.DataFrame) -> list[dict]:
+    """today_bets.csv から当該レースの推奨買い目を表示用に集約する。
+    買い方ごとに1行（点数・BT回収率・組み合わせ要約）。"""
+    if bets_df is None or bets_df.empty or "race_id" not in bets_df.columns:
+        return []
+    sub = bets_df[bets_df["race_id"].astype(str) == str(race_id)]
+    if sub.empty:
+        return []
+    out = []
+    order = {"単勝": 0, "複勝": 1, "馬単": 2, "馬連": 3, "ワイド": 4, "3連複": 5, "3連単": 6}
+    for (kind, name), g in sub.groupby(["券種", "買い方"], sort=False):
+        combos = [str(c) for c in g["組み合わせ"]]
+        if "総流し" in str(name):
+            axis = combos[0].split("-")[0]
+            combo_s = f"{int(axis)} → 総流し"
+        elif len(combos) <= 4:
+            combo_s = " / ".join(combos)
+        else:
+            combo_s = f"{combos[0]} 他{len(combos)-1}点"
+        bt = g["BT回収率"].iloc[0] if "BT回収率" in g.columns else ""
+        out.append({"kind": kind, "name": str(name), "combo": combo_s,
+                    "points": len(g), "bt": bt, "ord": order.get(kind, 9)})
+    return sorted(out, key=lambda x: x["ord"])
+
+
+def build_race_card(jyo, race_no, group: pd.DataFrame, bets_df: pd.DataFrame = None) -> dict:
     group = group.copy()
     are_tan, are_ren = calc_are_score(group)
     bet_recs = build_bet_recs(group, are_tan, are_ren)
@@ -256,10 +296,29 @@ def build_race_card(jyo, race_no, group: pd.DataFrame) -> dict:
     # レース推奨レベルとスコアを算出
     rec_level, rec_cls, race_score = calc_rec_level(group, are_tan, are_ren, bet_recs)
 
+    # レース単位の買い目プラン（today_bets.csv連動・2026-07-16）
+    my_bets = build_my_bets(race_id, bets_df)
+    plan_reason = str(first.get("想定単回収", "") or "")
+    plan_size = str(first.get("買いサイズ", "") or "")
+    myo_row = group[group.get("妙味軸", pd.Series(dtype=str)) == "◎妙"] if "妙味軸" in group.columns else group.iloc[0:0]
+    myo_info = ""
+    if len(myo_row):
+        _m = myo_row.iloc[0]
+        _pop = pd.to_numeric(_m.get("人気"), errors="coerce")
+        _ban = pd.to_numeric(_m.get("馬番"), errors="coerce")
+        if pd.notna(_ban):
+            myo_info = f"◎妙 {int(_ban)}番 {_m.get('馬名', '')}"
+            if pd.notna(_pop):
+                myo_info += f"（{int(_pop)}人気）"
+
     return {
         "jyo": jyo,
         "race_no": race_no,
         "race_id": race_id,
+        "my_bets": my_bets,
+        "plan_reason": plan_reason,
+        "plan_size": plan_size,
+        "myo_info": myo_info,
         "dist": dist,
         "baba": baba,
         "baba_emo": baba_emo,
@@ -313,15 +372,17 @@ def races():
     if "予想日時" in df.columns:
         date_str = str(df["予想日時"].iloc[0])[:10]
 
+    bets_df = fetch_csv(TODAY_BETS_URL)
+
     cards = []
     for (jyo, race_no), group in df.groupby(["jyo", "race_no"], sort=True):
-        cards.append(build_race_card(jyo, race_no, group))
+        cards.append(build_race_card(jyo, race_no, group, bets_df))
 
-    # 推奨レースをスコア順に並べてハイライト抽出
+    # 推奨レース（🔥勝負・✅買い）を指数順にハイライト抽出
     highlights = sorted(
-        [c for c in cards if c["rec_cls"] == "rec-good"],
+        [c for c in cards if c["rec_cls"] in ("rec-hot", "rec-good")],
         key=lambda c: c["race_score"], reverse=True
-    )[:5]
+    )[:8]
 
     return render_template("races.html", cards=cards, highlights=highlights, date_str=date_str)
 
@@ -341,7 +402,14 @@ def race_detail(race_id):
     are_tan, are_ren = calc_are_score(group)
     bet_recs = build_bet_recs(group, are_tan, are_ren)
 
+    # レース判定＋推奨買い目（today_bets.csv連動）
+    bets_df = fetch_csv(TODAY_BETS_URL)
+    my_bets = build_my_bets(race_id, bets_df)
+    rec_level, rec_cls, _ = calc_rec_level(group, are_tan, are_ren, bet_recs)
+
     first = group.iloc[0]
+    plan_reason = str(first.get("想定単回収", "") or "")
+    plan_size = str(first.get("買いサイズ", "") or "")
     jyo = first.get("jyo", "")
     race_no = first.get("race_no", "")
     dist = first.get("距離", "")
@@ -374,6 +442,11 @@ def race_detail(race_id):
         cond=cond,
         klass=klass,
         date_str=date_str,
+        my_bets=my_bets,
+        rec_level=rec_level,
+        rec_cls=rec_cls,
+        plan_reason=plan_reason,
+        plan_size=plan_size,
         are_tan=are_tan,
         are_ren=are_ren,
         are_tan_lbl=are_tan_lbl,

@@ -16,6 +16,7 @@
     <span class="race-class-lg">{{ klass }}</span>
     <span class="race-dist-lg">{{ baba_emo }} {{ dist }}m</span>
     {% if cond %}<span class="track-cond cond-{{ cond }}">{{ cond }}</span>{% endif %}
+    {% if rec_level %}<span class="rec-badge {{ rec_cls }}">{{ rec_level }}</span>{% endif %}
   </div>
 
   <!-- 荒れスコア -->
@@ -54,10 +55,35 @@
   </div>
 </div>
 
+<!-- 推奨買い目（マトリクス判定・実払戻BT連動） -->
+<section class="section-block">
+  <h2 class="section-title">💰 推奨買い目</h2>
+  {% if plan_reason %}<p class="plan-reason">判定理由: {{ plan_reason }}{% if plan_size and plan_size != '-' %} ／ 資金配分: <b>{{ plan_size }}</b>{% endif %}</p>{% endif %}
+  {% if my_bets %}
+  <table class="bets-table">
+    <thead><tr><th>券種</th><th>買い方</th><th>組み合わせ</th><th>点数</th><th>BT回収率</th></tr></thead>
+    <tbody>
+      {% for b in my_bets %}
+      <tr>
+        <td><b>{{ b.kind }}</b></td>
+        <td>{{ b.name }}</td>
+        <td class="bets-combo">{{ b.combo }}</td>
+        <td>{{ b.points }}点</td>
+        <td>BT{{ b.bt }}%</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="bets-note">※ BT=2025年3,144レースの実払戻バックテスト回収率。翌日に実結果と自動照合されます。</p>
+  {% else %}
+  <p class="bets-note">このレースは購入非推奨です。資金は🔥勝負レース（妙4-9人気）に温存してください。</p>
+  {% endif %}
+</section>
+
 <!-- 馬券推奨 -->
 {% if bet_recs %}
 <section class="section-block">
-  <h2 class="section-title">💴 馬券推奨</h2>
+  <h2 class="section-title">💴 馬券推奨（参考・旧ロジック）</h2>
   {% if bet_recs and bet_recs[0].strategy %}
   <div class="bet-strategy-banner">{{ bet_recs[0].strategy }}</div>
   {% endif %}
