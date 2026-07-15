@@ -1187,6 +1187,23 @@ def predict_race_pdf(race_id: str, *, history_df: pd.DataFrame, models_pack: dic
         ]
         save_cols = [c for c in save_cols if c in pdf.columns]
         save_df   = pdf[save_cols].copy()
+
+        # ── 能力値パラメータ（レース内百分位 0-100・ダッシュボード表示用）──
+        #   各馬の特徴を6軸で相対評価: 勝負力/安定感/末脚/先行力/距離適性/実績
+        def _pct(col, invert=False):
+            if col not in pdf.columns:
+                return pd.Series(np.nan, index=pdf.index)
+            s = pd.to_numeric(pdf[col], errors="coerce")
+            if s.notna().sum() < 2:
+                return pd.Series(np.nan, index=pdf.index)
+            return (s.rank(pct=True, ascending=not invert) * 100).round(0)
+        save_df["能力_勝負"]   = _pct("勝ち確率")                      # 勝ち切る力
+        save_df["能力_安定"]   = _pct("複勝確率")                      # 馬券内の堅さ
+        save_df["能力_末脚"]   = _pct("過去最速上り", invert=True)     # 上がりは小さいほど速い
+        save_df["能力_先行"]   = _pct("過去平均先行指数")              # 前に行く力
+        save_df["能力_距離"]   = _pct("同距離過去平均着順", invert=True)  # 今回距離への適性
+        save_df["能力_実績"]   = _pct("過去勝率")                      # 地力・実績
+
         save_df["jyo"]      = jyo_name
         save_df["race_no"]  = race_no
         save_df["距離"]     = pdf.attrs["dist"]

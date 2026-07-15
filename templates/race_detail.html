@@ -130,6 +130,38 @@
   </div>
 </section>
 
+<!-- 能力値パラメータ -->
+{% if param_horses %}
+<section class="section-block">
+  <h2 class="section-title">📊 能力値パラメータ（レース内相対・100が最上位）</h2>
+  <div class="ability-grid">
+    {% for ph in param_horses %}
+    <div class="ability-card {{ 'ability-myo' if ph.is_myo else '' }}">
+      <div class="ability-head">
+        <span class="rank-mark rank-{{ ph.signal_cls }}">{{ ph.mark }}</span>
+        <span class="uma-ban-sm">{{ ph.ban }}</span>
+        <span class="ability-name">{{ ph.name }}</span>
+        {% if ph.is_myo %}<span class="myo-chip">💎妙</span>{% endif %}
+      </div>
+      <div class="ability-bars">
+        {% for a in ph.abilities %}
+        <div class="ability-row">
+          <span class="ability-label">{{ a.label }}</span>
+          <div class="ability-track">
+            <div class="ability-fill {{ 'fill-hi' if a.val and a.val >= 75 else ('fill-mid' if a.val and a.val >= 45 else 'fill-lo') }}"
+                 style="width: {{ a.val if a.val is not none else 0 }}%"></div>
+          </div>
+          <span class="ability-val">{{ a.val if a.val is not none else '—' }}</span>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  <p class="bets-note">※ 各値はこのレース出走馬の中での相対順位（百分位）。「—」は初出走などデータ不足。</p>
+</section>
+{% endif %}
+
 <!-- 全馬テーブル -->
 <section class="section-block">
   <h2 class="section-title">🐴 全馬予想詳細</h2>

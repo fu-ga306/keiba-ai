@@ -422,6 +422,29 @@ def race_detail(race_id):
     are_tan_lbl, are_tan_cls = are_label(are_tan)
     are_ren_lbl, are_ren_cls = are_label(are_ren)
 
+    # 能力値パラメータ（印付き馬＋◎妙、レース内百分位0-100を6軸バー表示）
+    ABILITY_AXES = [("能力_勝負", "勝負力"), ("能力_安定", "安定感"), ("能力_末脚", "末脚"),
+                    ("能力_先行", "先行力"), ("能力_距離", "距離適性"), ("能力_実績", "実績")]
+    param_horses = []
+    if "能力_勝負" in group.columns:
+        for h in horses:
+            is_myo = str(h.get("妙味軸", "")) == "◎妙"
+            if not (h.get("推奨ランク") in VALID_RANKS or is_myo):
+                continue
+            abilities = []
+            for col, label in ABILITY_AXES:
+                v = pd.to_numeric(h.get(col), errors="coerce")
+                abilities.append({"label": label, "val": int(v) if pd.notna(v) else None})
+            ban = pd.to_numeric(h.get("馬番"), errors="coerce")
+            param_horses.append({
+                "mark": h.get("推奨ランク") or ("◎妙" if is_myo else ""),
+                "is_myo": is_myo,
+                "ban": int(ban) if pd.notna(ban) else "-",
+                "name": h.get("馬名", ""),
+                "signal_cls": h.get("signal_cls", ""),
+                "abilities": abilities,
+            })
+
     # 穴馬候補: AI高推奨だが人気薄の馬
     ana_candidates = [
         h for h in horses
@@ -447,6 +470,7 @@ def race_detail(race_id):
         rec_cls=rec_cls,
         plan_reason=plan_reason,
         plan_size=plan_size,
+        param_horses=param_horses,
         are_tan=are_tan,
         are_ren=are_ren,
         are_tan_lbl=are_tan_lbl,
