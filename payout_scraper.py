@@ -277,7 +277,7 @@ def _load_done_race_ids():
     """既に取得済みのrace_idを返す（再開用）。"""
     if os.path.exists(OUTPUT_CSV):
         try:
-            df = pd.read_csv(OUTPUT_CSV)
+            df = pd.read_csv(OUTPUT_CSV, low_memory=False, usecols=["race_id"])
             return set(df["race_id"].astype(str).unique())
         except Exception:
             return set()
