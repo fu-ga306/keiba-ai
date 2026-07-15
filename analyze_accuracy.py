@@ -72,6 +72,14 @@ def main():
             avg = sub["着順_num"].mean()
             print(f"  {mark}: 頭数{len(sub):3d}  勝率{win:5.1f}%  "
                   f"連対率{ren:5.1f}%  複勝率{fuku:5.1f}%  平均着順{avg:.1f}")
+    # ◎妙（妙味軸=回収率エンジン）も照合
+    if "妙味軸" in df.columns:
+        sub = df[df["妙味軸"] == "◎妙"]
+        if len(sub) > 0:
+            win = (sub["着順_num"] == 1).mean() * 100
+            fuku = (sub["着順_num"] <= 3).mean() * 100
+            print(f"  ◎妙: 頭数{len(sub):3d}  勝率{win:5.1f}%  複勝率{fuku:5.1f}%  "
+                  f"(BT: 勝率15.1%/単勝ROI167%)")
 
     # ── 2. 予測順位 vs 実着順の相関 ──
     print("\n" + "=" * 55)
@@ -185,6 +193,71 @@ def main():
                   f"連対率{ren:5.1f}%  複勝率{fuku:5.1f}%")
     else:
         print("  券種推奨列なし(新モデルの予想データが必要)")
+
+    # ── 8. 推奨買い目の実払戻照合（today_bets.csv × payout） ──
+    print("\n" + "=" * 55)
+    print("8. 推奨買い目の実払戻照合（回収率検証）")
+    print("=" * 55)
+    bets_path = os.path.join(BASE_DIR, "today_bets.csv")
+    if os.path.exists(bets_path):
+        try:
+            from payout_scraper import get_payout, _close_fallback_driver
+            bets = pd.read_csv(bets_path, dtype={"race_id": str, "組み合わせ": str})
+            pay_map = {}
+            for rid in sorted(bets["race_id"].unique()):
+                res = get_payout(rid)
+                if res == "BLOCKED" or not res:
+                    print(f"  払戻取得できず: {rid}")
+                    time.sleep(1)
+                    continue
+                for r in res:
+                    combo = str(r["組み合わせ"])
+                    if r["券種"] in ("馬連", "ワイド", "3連複", "枠連"):
+                        combo = "-".join(sorted(combo.split("-")))
+                    pay_map[(rid, r["券種"], combo)] = r["払戻金"]
+                time.sleep(0.4)
+            _close_fallback_driver()
+
+            def _bet_key(row):
+                combo = str(row["組み合わせ"])
+                if row["券種"] in ("馬連", "ワイド", "3連複"):
+                    combo = "-".join(sorted(combo.split("-")))
+                return (row["race_id"], row["券種"], combo)
+
+            bets["払戻"] = bets.apply(lambda r: pay_map.get(_bet_key(r), 0), axis=1)
+            bets["的中"] = bets["払戻"] > 0
+            total_n, total_ret = len(bets), bets["払戻"].sum()
+            print(f"  総点数{total_n}  的中{int(bets['的中'].sum())}  "
+                  f"全体回収率{total_ret/(total_n*100)*100:.1f}%（100円均等買い想定）")
+            print(f"  {'買い方':20} {'点数':>5} {'的中率':>7} {'回収率':>8}  {'BT':>6}")
+            for name, g2 in bets.groupby("買い方"):
+                roi = g2["払戻"].sum() / (len(g2) * 100) * 100
+                bt = g2["BT回収率"].iloc[0] if "BT回収率" in g2.columns else "-"
+                print(f"  {str(name):20} {len(g2):5d}  {g2['的中'].mean()*100:5.1f}%  "
+                      f"{roi:6.1f}%  {bt:>4}%")
+
+            # bets_result_log.csv に日次追記（同日上書き）
+            blog = os.path.join(BASE_DIR, "bets_result_log.csv")
+            today_s = datetime.now().strftime("%Y-%m-%d")
+            log_rows = []
+            for name, g2 in bets.groupby("買い方"):
+                log_rows.append({"日付": today_s, "買い方": name, "点数": len(g2),
+                                 "的中数": int(g2["的中"].sum()),
+                                 "回収率": round(g2["払戻"].sum() / (len(g2) * 100) * 100, 1)})
+            log_rows.append({"日付": today_s, "買い方": "＝合計＝", "点数": total_n,
+                             "的中数": int(bets["的中"].sum()),
+                             "回収率": round(total_ret / (total_n * 100) * 100, 1)})
+            blog_df = pd.DataFrame(log_rows)
+            if os.path.exists(blog):
+                _ex = pd.read_csv(blog)
+                _ex = _ex[_ex["日付"] != today_s]
+                blog_df = pd.concat([_ex, blog_df], ignore_index=True)
+            blog_df.to_csv(blog, index=False, encoding="utf-8-sig")
+            print(f"  買い目ログ保存: {blog}")
+        except Exception as e:
+            print(f"  買い目照合エラー: {e}")
+    else:
+        print("  today_bets.csv なし（新ポリシーでの予想実行後に照合できます）")
 
     print("\n分析完了")
 

@@ -519,26 +519,17 @@ def build_report(pdf, race_id, jyo_name, race_no,
         )
         if tag_s:
             lines.append(f"  │           {tag_s}")
-        # ◎が1番人気 → 単勝は回収率93.1%（赤字）のため見送り推奨
-        if i == 0 and pd.notna(pop) and int(pop) == 1:
-            lines.append("  │  [注意] 1番人気◎ → 単勝回収率93.1%（赤字）/ 単勝見送り推奨")
-            lines.append("  │         複勝・ワイドの軸 or 人気薄との組み合わせで勝負")
-        # ◎が7番人気以下 → 回収率291.8%の好機
-        elif i == 0 and pd.notna(pop) and int(pop) >= 7:
-            lines.append("  │  [狙い目] 7番人気以下◎ → 回収率291.8% / 単勝積極的に狙う")
-        elif i == 0 and pd.notna(pop) and int(pop) >= 4:
-            lines.append("  │  [妙味] 4-6番人気◎ → 回収率174.1% / 単勝で妙味あり(厚め)")
-        elif i == 0 and pd.notna(pop) and int(pop) >= 2:
-            lines.append("  │  [買い] 2-3番人気◎ → 単勝回収率123.8% / 単勝は買い")
+        # ◎は馬券内軸(place3-1位・BT複勝率64.2%)。単勝の主役は◎妙。
+        if i == 0:
+            lines.append("  │  [役割] ◎=馬券内軸(BT複勝率64.2%)。単勝・高配当の主役は◎妙(下の妙味軸)")
         if i < 4:
             lines.append("  ├─────────────────────────────────────────────────────────┤")
     lines.append("  └─────────────────────────────────────────────────────────┘")
     lines.append("")
-    # 人気帯別バックテスト（本番◎=ブレンド再現・2025 honest 3,144レース・単勝オッズ実測）
-    lines.append("  [BT] 本番◎ 人気帯別単勝回収率（2025 honest 3,144R）")
-    lines.append("  1番人気: 93.1%[見送り]  2-3番人気: 123.8%[買い]  4-6番人気: 174.1%  7番人気以下: 291.8%")
-    lines.append("  【鉄則】◎が1番人気以外なら単勝＝回収率167.6%(1904点)。1番人気だけ単勝を避ける")
-    lines.append("  ※ EVフィルター廃止（実績EV>=0.3→勝率0%）。現在はAI合意+人気帯で判断。")
+    # バックテスト要約（B印・2025 honest 3,144レース・実払戻）
+    lines.append("  [BT] B印 2025 honest(3144R・実払戻)")
+    lines.append("  ◎複勝率64.2% / ◎妙:単勝167%・馬単妙→総流し148%・◎-妙ワイド115%")
+    lines.append("  【鉄則】◎妙が出たレースを厚く買う。重賞14頭以上は見送り(AI優位なし)")
     lines.append("")
 
     # ── 券種推奨（3モデルによる役割判定） ────────────────────────────
@@ -706,16 +697,7 @@ def build_report(pdf, race_id, jyo_name, race_no,
 
     h_odds = honmei.get("単勝オッズ", np.nan)
     h_pop  = honmei.get("人気", np.nan)
-    _tan_comment = ""
-    if pd.notna(h_pop):
-        if int(h_pop) == 1:
-            _tan_comment = " ← 1番人気/回収率93.1%[見送り推奨]"
-        elif int(h_pop) >= 7:
-            _tan_comment = " ← 穴/回収率291.8%[積極買い]"
-        elif int(h_pop) >= 4:
-            _tan_comment = " ← 中穴/回収率174.1%[妙味・厚め]"
-        elif int(h_pop) >= 2:
-            _tan_comment = " ← 2-3番人気/回収率123.8%[買い]"
+    _tan_comment = " ← ◎単勝はBT105%の薄利。単勝の主役は◎妙(BT167%)"
     lines.append(
         (f"  単勝   : ◎{honmei['馬名']}  "
          f"（{h_odds:.1f}倍 / EV{_ev(honmei['単勝期待値'])}）{_tan_comment}")
@@ -773,39 +755,51 @@ def build_report(pdf, race_id, jyo_name, race_no,
     lines.append("  ※ ワイド・馬連・馬単の的中率は確率モデルによる近似値です。")
     lines.append("  ※ 複勝オッズは実オッズと異なる場合があります（keiba_auto.pyは実オッズ使用）。")
 
-    # ── 💰 妙味重視の買い目（回収率狙い）─────────────────────────────
-    #   ユーザー方針＝妙味重視。的中率より長期回収率を優先した買い目を明示する。
-    #   ① ◎の人気帯別 単勝妙味（2025 honest BT: 1番人気93.1%[見送り] / 2-3番人気123.8%[買い]
-    #      / 4-6番人気174.1% / 7番人気以下291.8%。鉄則=1番人気以外なら単勝で回収率167.6%）
-    #   ② MF価値馬(◎妙)絡みの馬連・ワイド（市場の穴。BT: ◎妙 複勝44.9%・単回収159.3%）
-    #   ③ 穴(×)絡みの3連複（◎○軸→×で高配当）
+    # ── 💰 妙味重視の買い目（フォーメーション・2025実払戻BTで確定 2026-07-15）──
+    #   法則: 妙(MF1位)を1着側に固定して縦に広げる買いが強い。横(相手総流しのワイド/3連複)は希釈で死ぬ。
+    #   妙ありレース(53%): ポートフォリオ加重ROI約133% / 妙なし: ◎軸3連単等で約110%
+    #   OP以上&14頭以上: 全買い目マイナス→見送り。OP以上&13頭以下: 妙中心に買える(妙複勝BT169%)。
     lines.append("")
-    lines.append("  ── 💰 妙味重視の買い目（回収率狙い）──")
-    if pd.notna(h_pop):
-        _p = int(h_pop)
-        if _p == 1:
-            lines.append(f"  単勝   : ◎{honmei['馬名']}は1番人気→回収率93.1%[見送り]。複勝/連系に回す")
-        elif _p <= 3:
-            lines.append(f"  単勝   : ◎{honmei['馬名']}（{_p}番人気）← 2-3番人気◎は回収率123.8%[買い]")
-        elif _p <= 6:
-            lines.append(f"  単勝   : ◎{honmei['馬名']}（{_p}番人気）← 4-6番人気◎は回収率174.1%[妙味・厚め]")
-        else:
-            lines.append(f"  単勝   : ◎{honmei['馬名']}（{_p}番人気）← 7番人気以下◎は回収率291.8%[積極]")
+    lines.append("  ── 💰 妙味重視の買い目（2025実払戻BT・回収率つき）──")
     _myo = pdf[pdf["妙味軸"] == "◎妙"] if "妙味軸" in pdf.columns else pdf.iloc[0:0]
-    if len(_myo):
+    _batu = pdf[pdf["印"] == "×"] if "印" in pdf.columns else pdf.iloc[0:0]
+    _sanka = pdf[pdf["印"] == "△"] if "印" in pdf.columns else pdf.iloc[0:0]
+    _cls_v2 = pd.to_numeric(pdf["クラス_num"].iloc[0], errors="coerce") if "クラス_num" in pdf.columns else np.nan
+    _is_op2 = pd.notna(_cls_v2) and int(_cls_v2) >= 5
+    _n2 = len(pdf)
+    if _is_op2 and _n2 >= 14:
+        lines.append("  ⚠ 重賞・OP級かつ14頭以上 → 全買い目でBTマイナス（AI優位なし）。【見送り推奨】")
+    elif len(_myo):
         _m = _myo.iloc[0]
         _mp = _m.get("人気", np.nan)
-        _mp_s = f"{int(_mp)}番人気" if pd.notna(_mp) else ""
-        lines.append(f"  馬連/ワイド : ◎{honmei['馬名']} ─ ◎妙{_m['馬名']}（{_mp_s} MF価値馬）← 市場の穴を突く")
-    elif taiko is not None:
-        lines.append(f"  馬連   : ◎{honmei['馬名']} ─ ○{taiko['馬名']}（◎妙なし＝素直に◎○）")
-    _batu = pdf[pdf["印"] == "×"] if "印" in pdf.columns else pdf.iloc[0:0]
-    if len(_batu) and taiko is not None:
-        _b = _batu.iloc[0]
-        _bp = _b.get("人気", np.nan)
-        _bp_s = f"{int(_bp)}番人気" if pd.notna(_bp) else ""
-        lines.append(f"  3連複  : ◎{honmei['馬名']}・○{taiko['馬名']} 軸 → ×{_b['馬名']}（{_bp_s}）で高配当狙い")
-    lines.append("  ※ 妙味重視＝的中率より長期回収率を優先した買い目です。")
+        _mp_s = f"{int(_mp)}番人気" if pd.notna(_mp) else "-"
+        _mno = int(_m["馬番"])
+        _hno = int(honmei["馬番"])
+        _rel = [f"{mk}{int(r['馬番'])}" for mk, r in
+                [("◎", honmei)] + ([("○", taiko)] if taiko is not None else [])
+                + ([("▲", ana)] if ana is not None else [])
+                + ([("△", _sanka.iloc[0])] if len(_sanka) else [])]
+        lines.append(f"  ◎妙 {_m['馬名']}（馬番{_mno} {_mp_s}）← MF価値馬。このレースの利益エンジン")
+        lines.append(f"   単勝   : {_mno}                    [BT167%] 主力")
+        lines.append(f"   複勝   : {_mno}                    [BT108%]")
+        lines.append(f"   馬単   : {_mno}→総流し             [BT148%] 妙が勝てば必ず的中")
+        lines.append(f"   馬連   : {_mno}-総流し             [BT113%]")
+        lines.append(f"   3連単  : {_mno}→{'/'.join(_rel)}→+×    [BT154%] 高変動・薄く")
+        lines.append(f"   3連複  : {_hno}・{_mno}軸→○▲△×        [BT113%]")
+        if taiko is not None and ana is not None:
+            lines.append(f"   3連複BOX: ◎○▲妙 4頭           [BT126%]")
+        lines.append(f"   ワイド : {_mno}-◎○▲△             [BT104%] 手堅く")
+        if pd.notna(_cls_v2) and int(_cls_v2) <= 2:
+            lines.append("   ★下級戦 → BTはさらに良化（妙単勝183%・3連複◎妙軸124%）。厚めOK")
+        if _is_op2:
+            lines.append("   ※ 少頭数OP → 妙の単複中心に控えめ（妙複勝BT169%だがサンプル小）")
+    else:
+        lines.append("  ◎妙なし（MF1位=◎に一致）→ 薄利ゾーン。買うなら◎軸のみ:")
+        if taiko is not None and ana is not None:
+            lines.append(f"   3連単  : ◎{int(honmei['馬番'])}→○▲△×→○▲△×(12点) [BT114%]")
+            lines.append(f"   3連複  : ◎{int(honmei['馬番'])}軸→○▲△×(C2 6点)     [BT102%]")
+        lines.append("   ※ 妙味は薄い。資金は◎妙ありレースに温存推奨")
+    lines.append("  ※ 回収率は2025 honest backtest(3144R・実払戻)。3連単系はドローダウン大、資金配分注意。")
     lines.append("")
 
     # ── 推奨馬の組み合わせ的中率（フォーメーション・実績補正済み）──────────
@@ -1074,33 +1068,26 @@ def predict_race_pdf(race_id: str, *, history_df: pd.DataFrame, models_pack: dic
     pdf["推奨ランク"] = ""
     pdf["印"]        = ""
 
-    # ── 役割分離型の印割り当て ─────────────────────────────────────────
-    #   ◎ 本命      = 総合スコア1位（勝ち軸・MF+通常ブレンド）
-    #   ○ 対抗      = 複勝確率(place3)最上位（◎除く）＝最も堅い相手
-    #   ▲ 3着内堅い = 複勝確率(place3)次点（◎○除く）
-    #   △ 3着内     = 複勝確率(place3)3番手（◎○▲除く）
+    # ── 役割分離型の印割り当て（Bポリシー・2026-07-15確定）───────────────
+    #   ◎ 本命      = 複勝確率(place3)1位 ＝ 馬券内軸
+    #   ○ 対抗      = 複勝確率2位、▲=3位、△=4位
     #   × 穴        = 人気薄で複勝妙味のある馬（◎○▲△除く）＝一発・高配当のヒモ
+    #   検証(2025 honest 3144R): ◎を総合スコア(blend)1位→place3-1位に変更で
+    #   ◎複勝率54.5→64.2%(+10pt)・◎単勝的中29.2→33.6%。OP以上でも47.5→55.4%。
+    #   さらに◎妙(MF1位)との分離が進み妙味軸の発生が547→1679R・妙単勝ROI156.5→167.1%。
+    #   勝ち軸(旧blend◎)の妙味は「妙味軸=◎妙」が引き継ぐ役割分担。
     assigned = set()
 
-    # ◎（本命・勝ち軸）: 総合スコア最上位
-    honmei_idx = pdf["総合スコア"].idxmax()
-    pdf.at[honmei_idx, "推奨ランク"] = "◎"
-    pdf.at[honmei_idx, "印"] = "◎"
-    assigned.add(honmei_idx)
-
-    # ○▲△（対抗・3着内堅い・3着内）: 複勝確率(place3)の高い順に◎以外から3頭。
-    #   検証(2025 3144R): ○を連対確率(place2)最上位→複勝確率(place3)最上位に変更で
-    #   ○複勝率52.5→55.6%、かつ ○>▲ の正しい順序に是正（従来は▲>○の逆転が発生していた）。
-    #   place3(複勝)モデルが最も馬券内予測に優れるため、○=最も堅い相手＝対抗とする。
-    #   複勝確率が無ければ総合スコア順にフォールバック。
-    if "複勝確率" in pdf.columns and pdf.loc[~pdf.index.isin(assigned), "複勝確率"].notna().any():
-        fuku_rest = pdf[~pdf.index.isin(assigned)].sort_values("複勝確率", ascending=False)
+    # ◎○▲△: 複勝確率(place3)の高い順に上位4頭。無ければ総合スコア順フォールバック。
+    if "複勝確率" in pdf.columns and pdf["複勝確率"].notna().any():
+        fuku_sorted = pdf.sort_values("複勝確率", ascending=False)
     else:
-        fuku_rest = pdf[~pdf.index.isin(assigned)].sort_values("総合スコア", ascending=False)
-    for mk, idx in zip(("○", "▲", "△"), fuku_rest.index[:3]):
+        fuku_sorted = pdf.sort_values("総合スコア", ascending=False)
+    for mk, idx in zip(("◎", "○", "▲", "△"), fuku_sorted.index[:4]):
         pdf.at[idx, "推奨ランク"] = mk
         pdf.at[idx, "印"] = mk
         assigned.add(idx)
+    honmei_idx = fuku_sorted.index[0]
 
     # ×（穴）: 人気薄で複勝妙味のある馬。◎○▲△以外から。
     #   複勝妙味 = 複勝確率 × 推定複勝オッズ（人気薄ほど配当が大きく妙味）。
@@ -1120,60 +1107,63 @@ def predict_race_pdf(race_id: str, *, history_df: pd.DataFrame, models_pack: dic
         pdf.at[batu_idx, "推奨ランク"] = "×"
         pdf.at[batu_idx, "印"] = "×"
 
-    # ── 妙味軸（回収率用◎）: MF勝率が最上位の馬。◎(総合スコア最上位=的中用軸)と
-    #   別馬のときだけ付与する。◎は人気馬に寄りやすく単勝回収が赤字になりがち一方、
-    #   MF単独最上位は市場と別の価値馬(平均5.5番人気)を指し、複勝率も高い。
-    #   BT(2025 honest/3144R): 発生1211R・勝率14.5%・単回収159.3%(現行MF v2で再計測)。
-    #   ◎と一致する場合は軸に一本化（=妙味印なし）。単純に別軸候補を1つ提示するだけで、
-    #   既存の◎○▲△×・券種推奨・総合スコアには一切影響しない additive 設計。
+    # ── 妙味軸（回収率エンジン◎妙）: MF勝率が最上位の馬。◎(place3-1位=馬券内軸)と
+    #   別馬のときだけ付与する。◎は堅い馬に寄る一方、MF最上位は市場と別の価値馬を指す。
+    #   BT(2025 honest/3144R・B印): 発生1679R(53%)・単勝ROI167.1%・複勝107.8%・
+    #   馬単妙→総流し148.0%・◎-妙ワイド114.7%。妙味買いの主役はこの◎妙。
+    #   ◎と一致する場合は軸に一本化（=妙味印なし）。
     pdf["妙味軸"] = ""
     if has_mf:
         try:
-            _honmei_idx = pdf["総合スコア"].idxmax()
             _mf_top_idx = pdf["MF勝ち確率"].idxmax()
-            if _mf_top_idx != _honmei_idx:
+            if _mf_top_idx != honmei_idx:
                 pdf.at[_mf_top_idx, "妙味軸"] = "◎妙"
         except Exception as e:
             print(f"  妙味軸スキップ: {e}")
 
     # ── 買い指数（購入推奨度・レース単位）──────────────────────────────────
-    # 2025 honest backtest(3144R)で◎単勝回収率にキャリブレーション済み。指数帯別実測:
-    #   85+ →回収 約174% / 70-84 →約126% / 55-69 →約105% / 40-54 →88% / <40 →78%
-    # 構成: ◎の複勝確率(安全 0-40) + 人気帯の妙味(0-35) + 信頼度(モデル合意+◎○スコア差 0-25)
-    #       − 少頭数(8頭以下)ペナルティ。複勝率は指数問わず約60%(◎複勝軸は常に堅い)。
+    # 2025 honest backtest(3144R・B印・実払戻)で妙軸ポートフォリオROIに再較正(2026-07-15)。
+    # レースの妙味は「◎妙の有無 × クラス × 頭数」でほぼ決まる:
+    #   OP以上&14頭以上 → 全買い目マイナス(AI優位消失) → 見送り(指数25)
+    #   ◎妙なし        → ◎軸3連単/3連複のみ薄利(ROI約107-114%) → 様子見(指数55)
+    #   ◎妙あり        → 妙軸ポートフォリオROI約125-133% → 買い(指数75)
+    #     └ 下級(新馬未勝利/1勝)なら約140%+ → 積極(指数90) / OP(13頭以下)なら指数70
     pdf["買い指数"] = np.nan
     pdf["購入推奨"] = ""
     pdf["想定単回収"] = ""
     try:
-        _hm = pdf[pdf["印"] == "◎"]
-        if not _hm.empty:
-            _h = _hm.iloc[0]
-            _fuku = float(_h.get("複勝確率", 0) or 0)
-            _pop_v = pd.to_numeric(_h.get("人気"), errors="coerce")
-            _pop = int(_pop_v) if pd.notna(_pop_v) else 8
-            _sc = pdf["総合スコア"].nlargest(2).values
-            _gap = (_sc[0] - _sc[1]) / max(_sc[0], 1e-9) if len(_sc) >= 2 else 0.0
-            _agree = 0
-            if has_mf and pdf["MF勝ち確率"].notna().any():
-                _agree = int(pdf["MF勝ち確率"].idxmax() == _hm.index[0])
-            _n = len(pdf)
-            _kai = min(_fuku, 0.7) / 0.7 * 40
-            _kai += {1: 5, 2: 30, 3: 30, 4: 35, 5: 35, 6: 35}.get(_pop, 25 if _pop >= 7 else 5)
-            _kai += 10 * _agree + min(_gap * 3, 1.0) * 15
-            if _n <= 8:
-                _kai *= 0.85
-            _kai = int(round(min(_kai, 100)))
+        _n = len(pdf)
+        _cls_v = pd.to_numeric(pdf["クラス_num"].iloc[0], errors="coerce") if "クラス_num" in pdf.columns else np.nan
+        _cls = int(_cls_v) if pd.notna(_cls_v) else 3
+        _is_op = _cls >= 5
+        _has_myo = (pdf["妙味軸"] == "◎妙").any()
+        _myo_pop = np.nan
+        if _has_myo:
+            _myo_pop = pd.to_numeric(pdf.loc[pdf["妙味軸"] == "◎妙", "人気"].iloc[0], errors="coerce")
+        if _is_op and _n >= 14:
+            _kai, _lab, _roi = 25, "見送り", "<100%(重賞多頭数はAI優位なし)"
+        elif not _has_myo:
+            _kai, _lab, _roi = 55, "様子見", "約107-114%(◎軸3連単/3連複のみ)"
+        else:
+            _kai = 75
+            if _cls <= 2:
+                _kai += 15          # 下級はポートフォリオROI約140%+
+            if _is_op:
+                _kai -= 5           # 少頭数OPは買えるが控えめ
+            if pd.notna(_myo_pop) and 4 <= _myo_pop <= 6:
+                _kai += 5           # 妙が4-6番人気は最も妙味が出る帯
+            elif _is_op and pd.notna(_myo_pop) and _myo_pop >= 7:
+                _kai -= 10          # OPの人気薄妙は市場が正しい(ROI52%)
+            _kai = int(min(_kai, 100))
             if _kai >= 85:
-                _lab, _roi = "積極", "約174%"
+                _lab, _roi = "積極", "約140%+(妙軸フル)"
             elif _kai >= 70:
-                _lab, _roi = "買い", "約126%"
-            elif _kai >= 55:
-                _lab, _roi = "様子見", "約105%"
+                _lab, _roi = "買い", "約125-133%(妙軸フル)"
             else:
-                _lab, _roi = "単勝見送り", "<100%(◎複勝は約60%で堅い)"
-            pdf["買い指数"] = _kai
-            pdf["購入推奨"] = _lab
-            pdf["想定単回収"] = _roi
+                _lab, _roi = "様子見", "約110%"
+        pdf["買い指数"] = _kai
+        pdf["購入推奨"] = _lab
+        pdf["想定単回収"] = _roi
     except Exception as e:
         print(f"  買い指数スキップ: {e}")
 
@@ -1240,7 +1230,120 @@ def predict_race_pdf(race_id: str, *, history_df: pd.DataFrame, models_pack: dic
     except Exception as e:
         print(f"  予想データ保存エラー: {e}")
 
+    # ── today_bets.csv 保存（推奨買い目を馬番展開して記録）─────────────────
+    #   analyze_accuracy.py が実払戻(payout_scraper)と照合し、買い目単位のROIを日次検証する。
+    try:
+        _bets = _build_bet_rows(pdf, race_id)
+        bets_path = os.path.join(BASE_DIR, "today_bets.csv")
+        if _bets:
+            bets_df = pd.DataFrame(_bets)
+            bets_df["jyo"] = jyo_name
+            bets_df["race_no"] = race_no
+            bets_df["予想日時"] = datetime.now().strftime("%Y/%m/%d %H:%M")
+            if os.path.exists(bets_path):
+                _eb = pd.read_csv(bets_path)
+                _eb = _eb[_eb["race_id"].astype(str) != str(race_id)]
+                bets_df = pd.concat([_eb, bets_df], ignore_index=True)
+            bets_df.to_csv(bets_path, index=False, encoding="utf-8-sig")
+            print(f"  買い目データ保存完了 → {bets_path}（{len(_bets)}点）")
+        else:
+            print("  買い目なし（見送りレース）→ today_bets.csv 追記なし")
+    except Exception as e:
+        print(f"  買い目保存エラー: {e}")
+
     return pdf
+
+
+def _build_bet_rows(pdf, race_id):
+    """確定ポートフォリオ(2025実払戻BT・2026-07-15)の買い目を馬番展開して行リストで返す。
+    妙あり: 妙単複/馬単妙→総流し/馬連妙-総流し/3連単妙軸/3連複◎妙軸/BOX/ワイド
+    妙なし: ◎軸3連単・3連複のみ（薄利）
+    OP以上&14頭以上: 見送り（空リスト）
+    馬単・3連単の組み合わせは着順順序つき、他はソート済み表記。"""
+    from itertools import combinations as _comb
+
+    def _no(row):
+        v = pd.to_numeric(row["馬番"], errors="coerce")
+        return int(v) if pd.notna(v) else None
+
+    marks = {}
+    for mk in ("◎", "○", "▲", "△", "×"):
+        r = pdf[pdf["印"] == mk]
+        if len(r):
+            no = _no(r.iloc[0])
+            if no is not None:
+                marks[mk] = no
+    if "妙味軸" in pdf.columns:
+        r = pdf[pdf["妙味軸"] == "◎妙"]
+        if len(r):
+            no = _no(r.iloc[0])
+            if no is not None:
+                marks["妙"] = no
+    allnum = sorted({int(x) for x in pd.to_numeric(pdf["馬番"], errors="coerce").dropna()})
+    _cls = pd.to_numeric(pdf["クラス_num"].iloc[0], errors="coerce") if "クラス_num" in pdf.columns else np.nan
+    is_op = pd.notna(_cls) and int(_cls) >= 5
+
+    rows = []
+
+    def add(kind, name, combo, roi):
+        rows.append({"race_id": str(race_id), "券種": kind, "買い方": name,
+                     "組み合わせ": combo, "BT回収率": roi})
+
+    def s2(a, b):
+        return f"{min(a, b):02d}-{max(a, b):02d}"
+
+    def s3(a, b, c):
+        x = sorted((a, b, c))
+        return f"{x[0]:02d}-{x[1]:02d}-{x[2]:02d}"
+
+    def o2(a, b):
+        return f"{a:02d}-{b:02d}"
+
+    def o3(a, b, c):
+        return f"{a:02d}-{b:02d}-{c:02d}"
+
+    if is_op and len(allnum) >= 14:
+        return rows                      # 重賞多頭数 → 見送り
+
+    hon, myo = marks.get("◎"), marks.get("妙")
+    rel = [marks[m] for m in ("◎", "○", "▲", "△") if m in marks]
+
+    if myo is not None and hon is not None and myo != hon:
+        add("単勝", "妙単勝", f"{myo:02d}", 167)
+        add("複勝", "妙複勝", f"{myo:02d}", 108)
+        for t in allnum:
+            if t != myo:
+                add("馬単", "馬単 妙→総流し", o2(myo, t), 148)
+                add("馬連", "馬連 妙-総流し", s2(myo, t), 113)
+        sec = [x for x in rel if x != myo]
+        thi = list(sec)
+        if "×" in marks and marks["×"] not in thi + [myo]:
+            thi.append(marks["×"])
+        for a in sec:
+            for b in thi:
+                if b != a:
+                    add("3連単", "3連単 妙→◎○▲△→+×", o3(myo, a, b), 154)
+        tg = [marks[m] for m in ("○", "▲", "△", "×") if m in marks and marks[m] not in (hon, myo)]
+        for a, b in ((hon, myo), (myo, hon)):
+            for t in tg:
+                add("3連単", "3連単 ◎妙⇔→○▲△×", o3(a, b, t), 134)
+        for t in tg:
+            add("3連複", "3連複 ◎妙軸-○▲△×", s3(hon, myo, t), 113)
+        box = [marks[m] for m in ("◎", "○", "▲") if m in marks]
+        if len(box) == 3 and myo not in box:
+            for t3 in _comb(box + [myo], 3):
+                add("3連複", "3連複BOX ◎○▲妙", s3(*t3), 126)
+        for t in sec:
+            add("ワイド", "ワイド 妙-◎○▲△", s2(myo, t), 104)
+    elif hon is not None:
+        tg = [marks[m] for m in ("○", "▲", "△", "×") if m in marks and marks[m] != hon]
+        for a in tg:
+            for b in tg:
+                if b != a:
+                    add("3連単", "3連単 ◎→○▲△×→○▲△×", o3(hon, a, b), 114)
+        for a, b in _comb(tg, 2):
+            add("3連複", "3連複 ◎軸-○▲△×C2", s3(hon, a, b), 102)
+    return rows
 
 
 # ── メイン ────────────────────────────────────────────────────────────────
