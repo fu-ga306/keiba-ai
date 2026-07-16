@@ -34,6 +34,10 @@ except ImportError:
 GMAIL_ADDRESS = os.environ.get("GMAIL_ADDRESS", "")
 GMAIL_APP_PASS = os.environ.get("GMAIL_APP_PASS", "")
 TO_ADDRESS    = os.environ.get("TO_ADDRESS", GMAIL_ADDRESS)
+
+# メール配信フラグ（2026-07-17: ダッシュボード運用に一本化しメール停止）
+# 7分前ジョブは予想更新（オッズ直前反映→today_predictions/today_bets更新→push）として継続する。
+SEND_EMAIL = False
 BASE_DIR      = os.environ.get("KEIBA_BASE_DIR", os.path.dirname(os.path.abspath(__file__)))
 
 HEADERS = {
@@ -1000,11 +1004,42 @@ def run_single_race(race_id, history_df, models_pack):
     body    = make_email_body(race_id, pdf)
     subject = f"【競馬AI】{jyo_name} {race_no}R 予測"
     print(body)
-    send_email(subject, body)
+    if SEND_EMAIL:
+        send_email(subject, body)
+    else:
+        print("  （メール配信OFF: ダッシュボード運用）")
     try:
         record_from_prediction(race_id, pdf)
     except Exception as e:
         print(f"  記録保存エラー: {e}")
+
+    # 直前更新をダッシュボードに反映（predict_race_pdfが更新した
+    # today_predictions.csv / today_bets.csv をプッシュ→キャッシュクリア）
+    _push_latest(f"{jyo_name} {race_no}R 直前更新 {datetime.now().strftime('%H:%M')}")
+
+
+def _push_latest(message: str):
+    """予想・買い目CSVをGitHubへプッシュしダッシュボードを更新する（7分前ジョブ用）。"""
+    import subprocess
+    try:
+        for f in ("today_predictions.csv", "today_bets.csv", "prediction_record_v2.csv"):
+            p = os.path.join(BASE_DIR, f)
+            if os.path.exists(p):
+                subprocess.run(["git", "add", f], cwd=BASE_DIR, capture_output=True)
+        st = subprocess.run(["git", "status", "--porcelain"], cwd=BASE_DIR,
+                            capture_output=True, text=True)
+        if not st.stdout.strip():
+            return
+        subprocess.run(["git", "commit", "-m", message], cwd=BASE_DIR, capture_output=True)
+        subprocess.run(["git", "push"], cwd=BASE_DIR, capture_output=True)
+        print(f"  [Git] 直前更新プッシュ: {message}")
+    except Exception as e:
+        print(f"  [Git] プッシュエラー: {e}")
+    try:
+        import urllib.request
+        urllib.request.urlopen("http://localhost:5000/api/refresh", timeout=3)
+    except Exception:
+        pass
 
 
 # ── Step7: スケジューラー ─────────────────────────────────────────────────
