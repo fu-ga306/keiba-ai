@@ -8,7 +8,7 @@ train_mf_v2.py  ── 市場フリーモデル(MF) 改善版（デプロイ用�
 学習≤2024 / 検証2025。特徴量は全てレース前情報（当日の着順/上がり/タイムは目的変数のみで不使用）。
 出力: model_mf.pkl（デプロイ・現行は model_mf_backup.pkl に退避） + model_mf_result_v2.csv（検証）。
 """
-import warnings, os, shutil, pickle, numpy as np, pandas as pd
+import warnings, os, sys, shutil, pickle, numpy as np, pandas as pd
 warnings.filterwarnings("ignore")
 import lightgbm as lgb
 from sklearn.calibration import CalibratedClassifierCV
@@ -106,9 +106,18 @@ def _train_one(train_df, test_df, use_cols, target):
     return models, score
 
 def main():
+    # ── 学習モード（2026-07-16 二本立て化）─────────────────────────────
+    #   本番（デフォルト）    : 全データ学習 → model_mf.pkl（model_mf_result.csvは触らない）
+    #   backtest（引数指定時）: 〜2024学習/2025検証 → model_mf_bt.pkl + model_mf_result.csv
+    bt_mode = "backtest" in sys.argv
     df = pd.read_csv("race_features.csv"); df = df.dropna(subset=["着順_num"]); df = df[df["着順_num"] >= 1]
     df = add_race_rank_features(df); df["年"] = df["race_id"].astype(str).str[:4].astype(int)
-    tr = df[df["年"] <= 2024].copy(); te = df[df["年"] == 2025].copy()
+    if bt_mode:
+        tr = df[df["年"] <= 2024].copy(); te = df[df["年"] == 2025].copy()
+        print(f"[backtestモード] train<=2024 / test 2025", flush=True)
+    else:
+        tr = df.copy(); te = df[df["年"] == df["年"].max()].copy()
+        print(f"[本番モード] 全期間〜{df['年'].max()}で学習（テスト表示はin-sample参考値）", flush=True)
     use = [c for c in FEATURE_COLS_MF if c in tr.columns]
     print(f"train {len(tr)} / test {len(te)} / feat {len(use)}  LGBseeds={SEEDS_LGB} tw={TIME_WEIGHT_MAX}", flush=True)
     result = {}; out = te[["race_id", "馬名", "着順_num"]].copy()
@@ -120,18 +129,25 @@ def main():
         out[{"win": "MF勝率", "place2": "MF連対率", "place3": "MF複勝率"}[t]] = score
     for c, r in [("MF勝率", "MF勝率順位"), ("MF連対率", "MF連対順位"), ("MF複勝率", "MF複勝順位")]:
         out[r] = out.groupby("race_id")[c].rank(ascending=False)
-    out.to_csv("model_mf_result.csv", index=False, encoding="utf-8-sig")
-    print("saved -> model_mf_result.csv", flush=True)
+    if bt_mode:
+        # honest backtest資産はbacktestモードでのみ更新（本番モードのin-sample値で汚さない）
+        out.to_csv("model_mf_result.csv", index=False, encoding="utf-8-sig")
+        print("saved -> model_mf_result.csv", flush=True)
 
-    # ── デプロイ: 現行 model_mf.pkl をバックアップして上書き ──
-    if os.path.exists("model_mf.pkl"):
-        shutil.copy("model_mf.pkl", "model_mf_backup.pkl")
-        print("backup -> model_mf_backup.pkl", flush=True)
     save = {"win": result["win"], "place2": result["place2"], "place3": result["place3"],
             "models": result["win"]["models"], "use_cols": use, "format": "multi_v1"}
-    with open("model_mf.pkl", "wb") as f:
-        pickle.dump(save, f)
-    print("deployed -> model_mf.pkl (改善版MF)", flush=True)
+    if bt_mode:
+        with open("model_mf_bt.pkl", "wb") as f:
+            pickle.dump(save, f)
+        print("saved -> model_mf_bt.pkl (backtest用・本番には使われない)", flush=True)
+    else:
+        # ── デプロイ: 現行 model_mf.pkl をバックアップして上書き ──
+        if os.path.exists("model_mf.pkl"):
+            shutil.copy("model_mf.pkl", "model_mf_backup.pkl")
+            print("backup -> model_mf_backup.pkl", flush=True)
+        with open("model_mf.pkl", "wb") as f:
+            pickle.dump(save, f)
+        print("deployed -> model_mf.pkl (全データ学習・本番)", flush=True)
 
 if __name__ == "__main__":
     main()

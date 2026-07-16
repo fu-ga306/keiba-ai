@@ -99,20 +99,23 @@ def main():
         timeout=3600  # 60分
     )
 
-    # ── Step 2: 通常モデル再学習 ──────────────────────────────────────────
-    log("[Step2] モデル再学習（通常モデル）")
+    # ── Step 2: 通常モデル再学習（本番モード=全データ学習 → model.pkl）───────
+    #   2026-07-16: timeout 30分→4時間（7/13に30分超過で毎週失敗していたのを修正）。
+    #   backtest資産(model_result*.csv)は本番モードでは更新されない（model.py backtestで別途）。
+    log("[Step2] モデル再学習（通常モデル・全データ）")
     run_step(
         "model.py",
         [PYTHON, os.path.join(BASE_DIR, "model.py")],
-        timeout=1800  # 30分
+        timeout=14400  # 4時間
     )
 
-    # ── Step 3: MFモデル再学習 ────────────────────────────────────────────
-    log("[Step3] MFモデル再学習")
+    # ── Step 3: MFモデル再学習（改善版v2・本番モード=全データ → model_mf.pkl）──
+    #   2026-07-16: 旧market_free_model.py→train_mf_v2.py（バギング+LambdaRank版）に切替。
+    log("[Step3] MFモデル再学習（train_mf_v2）")
     run_step(
-        "market_free_model.py",
-        [PYTHON, os.path.join(BASE_DIR, "market_free_model.py")],
-        timeout=1800  # 30分
+        "train_mf_v2.py",
+        [PYTHON, os.path.join(BASE_DIR, "train_mf_v2.py")],
+        timeout=7200  # 2時間
     )
 
     # ── Step 4: result_tracker 更新 ───────────────────────────────────────

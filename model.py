@@ -1,3 +1,4 @@
+import sys
 import pickle
 import warnings
 import lightgbm as lgb
@@ -5,6 +6,13 @@ import numpy as np
 import pandas as pd
 
 warnings.filterwarnings("ignore")
+
+# ── 学習モード（2026-07-16 二本立て化）──────────────────────────────────
+#   本番（デフォルト）      : 全データで学習 → model.pkl（直近レースまで取り込みdrift低減）
+#   backtest（引数指定時）  : 〜2024学習/2025検証 → model_bt.pkl + model_result*.csv
+#   ※ honest backtest資産(model_result*.csv)は backtestモードでのみ更新される。
+#     本番モードは絶対に上書きしない（2025がin-sampleになり数字が嘘になるため）。
+BT_MODE = "backtest" in sys.argv
 
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.model_selection import train_test_split
@@ -318,11 +326,18 @@ def train_model(csv_path="race_features.csv", target="win", df=None):
                 df[col] = np.nan
 
     df["年"] = df["race_id"].astype(str).str[:4].astype(int)
-    train_df = df[df["年"] <= 2024].copy()
-    test_df  = df[df["年"] == 2025].copy()
-
-    print(f"学習データ: {len(train_df)}行（〜2024）")
-    print(f"検証データ: {len(test_df)}行（2025）")
+    if BT_MODE:
+        # バックテストモード: 〜2024学習 / 2025検証（honest評価・従来挙動）
+        train_df = df[df["年"] <= 2024].copy()
+        test_df  = df[df["年"] == 2025].copy()
+        print(f"学習データ: {len(train_df)}行（〜2024）[backtestモード]")
+        print(f"検証データ: {len(test_df)}行（2025）")
+    else:
+        # 本番モード: 全データで学習（直近年まで）。test_dfは最新年のin-sample参考値のみ。
+        train_df = df.copy()
+        test_df  = df[df["年"] == df["年"].max()].copy()
+        print(f"学習データ: {len(train_df)}行（全期間〜{df['年'].max()}）[本番モード]")
+        print(f"参考表示: {len(test_df)}行（{df['年'].max()}・in-sampleのため精度指標は参考値）")
 
     use_cols = [c for c in FEATURE_COLS if c in train_df.columns and c not in SHAP_DROP_COLS]
     if SHAP_DROP_COLS:
@@ -509,13 +524,14 @@ def train_model(csv_path="race_features.csv", target="win", df=None):
         # これにより 勝率 ≤ 連対率 ≤ 複勝率 の包含関係が自然に保たれる。
         test_df["勝ち確率"] = test_df["予測スコア"]
         test_df["単勝期待値"] = test_df["単勝オッズ"] * test_df["勝ち確率"] - 1
-        out = test_df[["race_id","馬名","着順_num","予測スコア","予測順位","単勝オッズ","人気","勝ち確率","単勝期待値"]].copy()
-        out = out.sort_values(["race_id", "予測順位"])
-        out.to_csv("model_result.csv", index=False, encoding="utf-8-sig")
+        if BT_MODE:
+            out = test_df[["race_id","馬名","着順_num","予測スコア","予測順位","単勝オッズ","人気","勝ち確率","単勝期待値"]].copy()
+            out = out.sort_values(["race_id", "予測順位"])
+            out.to_csv("model_result.csv", index=False, encoding="utf-8-sig")
 
-    elif target in ("place2", "place3"):
-        # ○▲△×バックテスト用: 連対/複勝モデルのテスト予測を出力する。
-        # 予測スコア=この目的(2着内/3着内)の確率、予測順位=レース内でのその確率順位。
+    elif target in ("place2", "place3") and BT_MODE:
+        # ○▲△×バックテスト用: 連対/複勝モデルのテスト予測を出力する（backtestモードのみ）。
+        # 本番モードはin-sampleなので出力しない＝honest資産を上書きしない。
         _cols = [c for c in ["race_id","馬名","着順_num","予測スコア","予測順位","単勝オッズ","人気"]
                  if c in test_df.columns]
         out = test_df[_cols].copy().sort_values(["race_id", "予測順位"])
@@ -558,9 +574,10 @@ def train_all_targets(csv_path="race_features.csv"):
     if "lambda_booster" in result["win"]:
         save_dict["lambda_booster"] = result["win"]["lambda_booster"]
 
-    with open("model.pkl", "wb") as f:
+    _pkl = "model_bt.pkl" if BT_MODE else "model.pkl"
+    with open(_pkl, "wb") as f:
         pickle.dump(save_dict, f)
-    print(f"\n[完了] 3モデル保存完了 → model.pkl")
+    print(f"\n[完了] 3モデル保存完了 → {_pkl}" + ("（backtest用・本番には使われない）" if BT_MODE else ""))
     print(f"   win: {len(result['win']['models'])}モデル / "
           f"place2: {len(result['place2']['models'])}モデル / "
           f"place3: {len(result['place3']['models'])}モデル")
