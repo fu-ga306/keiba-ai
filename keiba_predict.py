@@ -1246,9 +1246,17 @@ def predict_race_pdf(race_id: str, *, history_df: pd.DataFrame, models_pack: dic
     return pdf
 
 
+# ── 購入しきい値（2026-07-17）─────────────────────────────────────────────
+#   買い指数がこの値未満のレースは「買い目を出さない」（判定表示はするが購入対象外）。
+#   目安: 55=少額も買う / 70=買い・勝負のみ(少額除外) / 85=勝負のみ
+#   today_bets.csv・メール・ダッシュボードの買い目表示すべてに連動する。
+BUY_INDEX_MIN = 70
+
+
 def _race_bet_plan(pdf):
     """レース条件（クラス×妙人気帯×MF自信度×頭数）から買い目プランを決める共有ロジック。
     2025実払戻BT(2026-07-16確定)。買い指数・レポート・today_bets・ダッシュボードが全てこれに連動。
+    BUY_INDEX_MIN 未満の判定は menu を空にして購入対象から外す。
 
     判定マトリクス（妙=◎妙の人気帯 × クラス）:
       妙7-9人気 → 全クラスで最強帯(単BT175-315%) → 勝負
@@ -1310,6 +1318,11 @@ def _race_bet_plan(pdf):
                         ("馬連", "馬連 妙-総流し", 136)]
         if wide_ok:
             plan["menu"].append(("ワイド", "ワイド 妙-◎○", 134))
+
+    # 購入しきい値: 指数がBUY_INDEX_MIN未満なら買い目を出さない（判定・理由は残す）
+    if plan["menu"] and plan["指数"] < BUY_INDEX_MIN:
+        plan["理由"] += f" → 指数{plan['指数']}<購入閾値{BUY_INDEX_MIN}のため購入対象外"
+        plan["menu"] = []
     return plan
 
 
