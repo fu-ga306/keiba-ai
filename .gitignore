@@ -48,3 +48,14 @@ design_result_display.md
 # large model files (keep out of GitHub 100MB limit)
 model*.pkl.bak*
 *.pkl.bak*
+data/jv/
+chokyo_hc.csv
+chokyo_wc.csv
+chokyo_features.csv
+jv_payouts.csv
+payout_data_old_broken_backup.csv
+retrain_prod_log.txt
+retrain_mf_prod_log.txt
+jv_*_log.txt
+matrix_multiyear*.txt
+feature_reduce_result.txt
