@@ -794,6 +794,8 @@ def build_report(pdf, race_id, jyo_name, race_no,
                 combo = f"{_mno}・{_hno2}軸→人気上位6"
             elif name == "3連単 妙→上位3→上位5":
                 combo = f"{_mno}→上位3→上位5"
+            elif name == "3連単 妙◎軸マルチ上位5":
+                combo = f"{_mno}・{_hno2}軸ﾏﾙﾁ→上位5"
             elif name == "馬単 妙→◎○▲":
                 combo = f"{_mno}→" + ".".join(str(_mk_no[m]) for m in ("◎", "○", "▲") if m in _mk_no and _mk_no[m] != _mno)
             elif name == "◎単勝":
@@ -1364,7 +1366,8 @@ def _race_bet_plan(pdf):
                         ("ワイド", "ワイド 妙-◎", 175),
                         ("馬単", "馬単 妙→12位内80倍内", 345),
                         ("馬連", "馬連 妙-人気上位5", 186),
-                        ("3連複", "3連複 妙◎軸-人気上位6", 133)]
+                        ("3連複", "3連複 妙◎軸-人気上位6", 133),
+                        ("3連単", "3連単 妙◎軸マルチ上位5", 251)]
 
     # 購入しきい値: 指数がBUY_INDEX_MIN未満なら買い目を出さない（判定・理由は残す）
     if plan["menu"] and plan["指数"] < BUY_INDEX_MIN:
@@ -1476,6 +1479,17 @@ def _build_bet_rows(pdf, race_id):
                 for b in pop_order[:5]:
                     if a != b:
                         add(kind, name, f"{myo:02d}-{a:02d}-{b:02d}", roi)
+        elif name == "3連単 妙◎軸マルチ上位5":
+            # 妙と◎の2頭軸マルチ（両頭が3着内の全着順×相手=人気上位5から1頭）
+            from itertools import permutations as _perm
+            seen = set()
+            for t in pop_order[:5]:
+                if t in (myo, hon):
+                    continue
+                for p3o in _perm((myo, hon, t)):
+                    if p3o not in seen:
+                        seen.add(p3o)
+                        add(kind, name, f"{p3o[0]:02d}-{p3o[1]:02d}-{p3o[2]:02d}", roi)
     return rows
 
 

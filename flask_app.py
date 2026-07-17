@@ -205,6 +205,8 @@ def calc_rec_level(group: pd.DataFrame, are_tan: int, are_ren: int, bet_recs: li
             return "🔥勝負", "rec-hot", kai
         elif lab == "買い":
             return "✅買い", "rec-good", kai
+        elif lab == "堅実":
+            return "🟢堅実", "rec-good", kai
         elif lab == "少額":
             return "⚠少額", "rec-mid", kai
         elif lab == "見送り":
