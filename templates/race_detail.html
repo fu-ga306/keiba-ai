@@ -115,7 +115,7 @@
 <section class="section-block">
   <h2 class="section-title">🏷️ シグナル分類</h2>
   <div class="signal-summary">
-    {% for sig_key, sig_label, sig_cls in [('◎','軸','axis'),('○','複勝圏','fuku'),('▲','相手候補','aite'),('△','注意','chui'),('×','様子見','yosomi')] %}
+    {% for sig_key, sig_label, sig_cls in [('◎','軸','axis'),('○','複勝圏','fuku'),('▲','相手候補','aite'),('△','3着候補','chui'),('×','穴・ヒモ','yosomi')] %}
     {% set sig_horses = horses | selectattr('推奨ランク', 'equalto', sig_key) | list %}
     {% if sig_horses %}
     <div class="sig-group">
@@ -150,6 +150,7 @@
         <span class="ability-name">{{ ph.name }}</span>
         {% if ph.is_myo %}<span class="myo-chip">💎妙</span>{% endif %}
       </div>
+      {% if ph.is_myo %}<div class="myo-hint">※ MFが高評価の妙味馬。市場・通常モデルは低評価なので「安定」は低め＝それが妙味の源泉</div>{% endif %}
       <div class="ability-bars">
         {% for a in ph.abilities %}
         <div class="ability-row">

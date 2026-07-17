@@ -185,6 +185,8 @@ body {
 .fill-lo  { background: #cbd5e1; }
 .ability-val { width: 30px; text-align: right; font-size: 12px; font-weight: 700;
                font-family: ui-monospace, monospace; color: #334155; }
+.myo-hint { font-size: 10px; color: #92400e; background: #fef9c3; border-radius: 6px;
+            padding: 4px 6px; margin-bottom: 6px; line-height: 1.4; }
 
 /* ─── ハイライトセクション ─── */
 .highlight-section {

@@ -42,8 +42,8 @@ SIGNAL_MAP = {
     "◎": ("軸", "axis"),
     "○": ("複勝圏", "fuku"),
     "▲": ("相手候補", "aite"),
-    "△": ("注意", "chui"),
-    "×": ("様子見", "yosomi"),
+    "△": ("3着候補", "chui"),
+    "×": ("穴・ヒモ", "yosomi"),
 }
 TRACK_EMO = {"芝": "🌿", "ダ": "🟤", "ダート": "🟤"}
 VALID_RANKS = set(RANK_ORDER.keys())  # {'◎', '○', '▲', '△', '×'}
@@ -60,7 +60,7 @@ def enrich_group(group: pd.DataFrame) -> list[dict]:
         raw_rank = d.get("推奨ランク", "")
         rank = str(raw_rank) if pd.notna(raw_rank) and str(raw_rank) in VALID_RANKS else ""
         d["推奨ランク"] = rank  # NaN → 空文字に正規化
-        sig_label, sig_cls = SIGNAL_MAP.get(rank, ("様子見", "yosomi"))
+        sig_label, sig_cls = SIGNAL_MAP.get(rank, ("穴・ヒモ", "yosomi"))
         d["signal_label"] = sig_label
         d["signal_cls"] = sig_cls
         d["win_pct"] = f"{float(d.get('勝ち確率', 0)) * 100:.1f}"
