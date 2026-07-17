@@ -226,27 +226,40 @@ def main():
 
             bets["払戻"] = bets.apply(lambda r: pay_map.get(_bet_key(r), 0), axis=1)
             bets["的中"] = bets["払戻"] > 0
-            total_n, total_ret = len(bets), bets["払戻"].sum()
+            if "金額" not in bets.columns:
+                bets["金額"] = 100
+            bets["金額"] = pd.to_numeric(bets["金額"], errors="coerce").fillna(100)
+            bets["返金"] = bets["払戻"] * bets["金額"] / 100.0   # 払戻は100円あたり
+            total_n = len(bets)
+            total_cost = bets["金額"].sum()
+            total_ret = bets["返金"].sum()
             print(f"  総点数{total_n}  的中{int(bets['的中'].sum())}  "
-                  f"全体回収率{total_ret/(total_n*100)*100:.1f}%（100円均等買い想定）")
-            print(f"  {'買い方':20} {'点数':>5} {'的中率':>7} {'回収率':>8}  {'BT':>6}")
+                  f"購入{int(total_cost):,}円  払戻{int(total_ret):,}円  "
+                  f"収支{int(total_ret-total_cost):+,}円  回収率{total_ret/total_cost*100:.1f}%")
+            print(f"  {'買い方':20} {'点数':>5} {'的中率':>7} {'回収率':>8} {'収支':>10}  {'BT':>6}")
             for name, g2 in bets.groupby("買い方"):
-                roi = g2["払戻"].sum() / (len(g2) * 100) * 100
+                cost2 = g2["金額"].sum()
+                roi = g2["返金"].sum() / cost2 * 100
                 bt = g2["BT回収率"].iloc[0] if "BT回収率" in g2.columns else "-"
                 print(f"  {str(name):20} {len(g2):5d}  {g2['的中'].mean()*100:5.1f}%  "
-                      f"{roi:6.1f}%  {bt:>4}%")
+                      f"{roi:6.1f}% {int(g2['返金'].sum()-cost2):+9,}円  {bt:>4}%")
 
             # bets_result_log.csv に日次追記（同日上書き）
             blog = os.path.join(BASE_DIR, "bets_result_log.csv")
             today_s = datetime.now().strftime("%Y-%m-%d")
             log_rows = []
             for name, g2 in bets.groupby("買い方"):
+                cost2 = g2["金額"].sum()
                 log_rows.append({"日付": today_s, "買い方": name, "点数": len(g2),
                                  "的中数": int(g2["的中"].sum()),
-                                 "回収率": round(g2["払戻"].sum() / (len(g2) * 100) * 100, 1)})
+                                 "購入額": int(cost2),
+                                 "収支": int(g2["返金"].sum() - cost2),
+                                 "回収率": round(g2["返金"].sum() / cost2 * 100, 1)})
             log_rows.append({"日付": today_s, "買い方": "＝合計＝", "点数": total_n,
                              "的中数": int(bets["的中"].sum()),
-                             "回収率": round(total_ret / (total_n * 100) * 100, 1)})
+                             "購入額": int(total_cost),
+                             "収支": int(total_ret - total_cost),
+                             "回収率": round(total_ret / total_cost * 100, 1)})
             blog_df = pd.DataFrame(log_rows)
             if os.path.exists(blog):
                 _ex = pd.read_csv(blog)

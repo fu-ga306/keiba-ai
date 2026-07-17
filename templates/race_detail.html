@@ -61,7 +61,7 @@
   {% if plan_reason %}<p class="plan-reason">判定理由: {{ plan_reason }}{% if plan_size and plan_size != '-' %} ／ 資金配分: <b>{{ plan_size }}</b>{% endif %}</p>{% endif %}
   {% if my_bets %}
   <table class="bets-table">
-    <thead><tr><th>券種</th><th>買い方</th><th>組み合わせ</th><th>点数</th><th>BT回収率</th></tr></thead>
+    <thead><tr><th>券種</th><th>買い方</th><th>組み合わせ</th><th>点数</th><th>金額</th><th>BT回収率</th></tr></thead>
     <tbody>
       {% for b in my_bets %}
       <tr>
@@ -69,12 +69,19 @@
         <td>{{ b.name }}</td>
         <td class="bets-combo">{{ b.combo }}</td>
         <td>{{ b.points }}点</td>
+        <td>{{ "{:,}".format(b.amount) }}円</td>
         <td>BT{{ b.bt }}%</td>
       </tr>
       {% endfor %}
+      <tr>
+        <td colspan="3"><b>合計</b></td>
+        <td><b>{{ my_bets | sum(attribute='points') }}点</b></td>
+        <td><b>{{ "{:,}".format(my_bets | sum(attribute='amount')) }}円</b></td>
+        <td></td>
+      </tr>
     </tbody>
   </table>
-  <p class="bets-note">※ BT=2025年3,144レースの実払戻バックテスト回収率。翌日に実結果と自動照合されます。</p>
+  <p class="bets-note">※ BT=2025年3,144レースの実払戻バックテスト回収率。金額は資金設定(keiba_predict.py)に連動。翌日に実結果と自動照合されます。</p>
   {% else %}
   <p class="bets-note">このレースは購入非推奨です。資金は🔥勝負レース（妙4-9人気）に温存してください。</p>
   {% endif %}

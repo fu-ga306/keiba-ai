@@ -779,7 +779,20 @@ def build_report(pdf, race_id, jyo_name, race_no,
             lines.append(f"  ◎妙 {_m['馬名']}（馬番{_mno} {_mp_s}）を軸に買う。資金配分: {_plan['サイズ']}")
         else:
             lines.append(f"  ◎（馬番{_hno2}・両モデル合意）を軸に買う。資金配分: {_plan['サイズ']}")
+        # 実際の買い目行（資金設定・券種スキップ・予算トリム反映後）から点数と金額を取得
+        try:
+            _rid_disp = str(pdf["race_id"].iloc[0]) if "race_id" in pdf.columns else "0"
+            _rows_bet = _build_bet_rows(pdf, _rid_disp)
+        except Exception:
+            _rows_bet = []
+        _grp = {}
+        for rr in _rows_bet:
+            g0 = _grp.setdefault(rr["買い方"], [0, 0])
+            g0[0] += 1
+            g0[1] += rr.get("金額", 100)
         for kind, name, roi in _plan["menu"]:
+            if _rows_bet and name not in _grp:
+                continue           # KIND_SKIP/予算トリムで除外された買い方は表示しない
             if name == "馬単 妙→人気12位内":
                 combo = f"{_mno}→人気12位内"
             elif name == "馬単 妙→12位内80倍内":
@@ -808,7 +821,13 @@ def build_report(pdf, race_id, jyo_name, race_no,
                 combo = f"{_hno2}→○▲→○▲△"
             else:
                 combo = f"{_mno if _mno is not None else _hno2}"
-            lines.append(f"   {kind:4}: {combo:18} [BT{roi}%]")
+            _pts_s = ""
+            if name in _grp:
+                _pts_s = f"  {_grp[name][0]}点/{_grp[name][1]:,}円"
+            lines.append(f"   {kind:4}: {combo:18} [BT{roi}%]{_pts_s}")
+        if _rows_bet:
+            _tot_amt = sum(r.get("金額", 100) for r in _rows_bet)
+            lines.append(f"   ── 合計 {len(_rows_bet)}点 / {_tot_amt:,}円 ──")
         lines.append("   ※ 相手（人気上位/◯位内）は直前オッズの人気で自動決定＝レースごとに最適化")
     elif _plan["判定"] == "見送り":
         lines.append("  このレースは購入非推奨。資金は🔥勝負/✅買い/🟢堅実レースに温存。")
@@ -1271,9 +1290,25 @@ def predict_race_pdf(race_id: str, *, history_df: pd.DataFrame, models_pack: dic
 
 # ── 購入しきい値（2026-07-17）─────────────────────────────────────────────
 #   買い指数がこの値未満のレースは「買い目を出さない」（判定表示はするが購入対象外）。
-#   目安: 55=少額も買う / 70=買い・勝負のみ(少額除外) / 85=勝負のみ
+#   目安: 55=少額も買う / 70=買い・勝負・堅実 / 85=勝負のみ
 #   today_bets.csv・メール・ダッシュボードの買い目表示すべてに連動する。
 BUY_INDEX_MIN = 70
+
+# ── 資金設定（2026-07-17・自動投票対応の下地）────────────────────────────
+#   today_bets.csv に1点ごとの「金額」列が出力される（将来の自動投票はこれを注文リストとして読む）。
+#   照合(analyze_accuracy)も金額加重の実収支で集計される。
+BET_UNIT = 100                    # 基本1点あたりの金額(円)。IPAT最小100円単位
+BAND_WEIGHT = {                   # 判定帯ごとの倍率（例: 勝負だけ厚くするなら 勝負:2.0）
+    "勝負": 1.0, "買い": 1.0, "堅実": 1.0, "少額": 1.0,
+}
+SIZE_WEIGHT = {                   # MF自信度サイズの倍率
+    "厚め": 2.0, "標準": 1.0, "薄め": 0.5,
+}
+KIND_UNIT = {}                    # 券種別の金額上書き(円) 例: {"3連単": 100, "単勝": 300}
+KIND_SKIP = []                    # 買わない券種 例: ["3連単"] で点数を大幅削減
+RACE_BUDGET_MAX = None            # 1レースの上限金額(円)。超える場合はBT回収率の低い買い方から丸ごと削る
+#   ※ ざっくり日予算 = RACE_BUDGET_MAX × 約19レース(買い対象/日)。
+#   例: RACE_BUDGET_MAX=2000 → 1日約3.8万円上限 / KIND_SKIP=["3連単"] → 1日約270点に減
 
 
 def _race_bet_plan(pdf):
@@ -1416,10 +1451,18 @@ def _build_bet_rows(pdf, race_id):
 
     rows = []
 
+    # 1点あたり金額 = BET_UNIT × 判定帯倍率 × サイズ倍率（100円単位に丸め・最低100円）
+    _unit_raw = BET_UNIT * BAND_WEIGHT.get(plan["判定"], 1.0) * SIZE_WEIGHT.get(plan["サイズ"], 1.0)
+    _unit = max(100, int(round(_unit_raw / 100.0)) * 100)
+
     def add(kind, name, combo, roi):
+        if kind in KIND_SKIP:
+            return
+        amt = KIND_UNIT.get(kind, _unit)
+        amt = max(100, int(round(amt / 100.0)) * 100)
         rows.append({"race_id": str(race_id), "券種": kind, "買い方": name,
                      "組み合わせ": combo, "BT回収率": roi,
-                     "判定": plan["判定"], "サイズ": plan["サイズ"]})
+                     "判定": plan["判定"], "サイズ": plan["サイズ"], "金額": amt})
 
     def s2(a, b):
         return f"{min(a, b):02d}-{max(a, b):02d}"
@@ -1490,6 +1533,18 @@ def _build_bet_rows(pdf, race_id):
                     if p3o not in seen:
                         seen.add(p3o)
                         add(kind, name, f"{p3o[0]:02d}-{p3o[1]:02d}-{p3o[2]:02d}", roi)
+
+    # ── 1レース予算上限: 超過時はBT回収率の低い「買い方」から丸ごと削る ──
+    if RACE_BUDGET_MAX and rows:
+        total = sum(r["金額"] for r in rows)
+        if total > RACE_BUDGET_MAX:
+            order_bt = sorted({(r["買い方"], r["BT回収率"]) for r in rows}, key=lambda x: x[1])
+            for name_drop, _bt in order_bt:
+                if total <= RACE_BUDGET_MAX:
+                    break
+                drop_amt = sum(r["金額"] for r in rows if r["買い方"] == name_drop)
+                rows = [r for r in rows if r["買い方"] != name_drop]
+                total -= drop_amt
     return rows
 
 

@@ -259,8 +259,9 @@ def build_my_bets(race_id: str, bets_df: pd.DataFrame) -> list[dict]:
         else:
             combo_s = f"{combos[0]} 他{len(combos)-1}点"
         bt = g["BT回収率"].iloc[0] if "BT回収率" in g.columns else ""
+        amt = int(pd.to_numeric(g["金額"], errors="coerce").fillna(100).sum()) if "金額" in g.columns else len(g) * 100
         out.append({"kind": kind, "name": str(name), "combo": combo_s,
-                    "points": len(g), "bt": bt, "ord": order.get(kind, 9)})
+                    "points": len(g), "bt": bt, "amount": amt, "ord": order.get(kind, 9)})
     return sorted(out, key=lambda x: x["ord"])
 
 
