@@ -35,9 +35,10 @@ GMAIL_ADDRESS = os.environ.get("GMAIL_ADDRESS", "")
 GMAIL_APP_PASS = os.environ.get("GMAIL_APP_PASS", "")
 TO_ADDRESS    = os.environ.get("TO_ADDRESS", GMAIL_ADDRESS)
 
-# メール配信フラグ（2026-07-17: ダッシュボード運用に一本化しメール停止）
+# メール配信フラグ（2026-07-18: 買い目のあるレース＝勝負/買い/堅実 のときだけ配信）
+#   True  = 全レース配信 / False = 全レース非配信 / "buy_only" = 買うレースのみ配信
 # 7分前ジョブは予想更新（オッズ直前反映→today_predictions/today_bets更新→push）として継続する。
-SEND_EMAIL = False
+SEND_EMAIL = "buy_only"
 BASE_DIR      = os.environ.get("KEIBA_BASE_DIR", os.path.dirname(os.path.abspath(__file__)))
 
 HEADERS = {
@@ -1002,12 +1003,23 @@ def run_single_race(race_id, history_df, models_pack):
     jyo_name = JYO_NAMES.get(jyo_cd, str(jyo_cd))
 
     body    = make_email_body(race_id, pdf)
-    subject = f"【競馬AI】{jyo_name} {race_no}R 予測"
     print(body)
-    if SEND_EMAIL:
+    # 買い目の有無・判定を取得（buy_only配信の判定に使う）
+    _has_bets, _verdict = False, ""
+    try:
+        from keiba_predict import _build_bet_rows, _race_bet_plan
+        _has_bets = len(_build_bet_rows(pdf, str(race_id))) > 0
+        _verdict = _race_bet_plan(pdf).get("判定", "")
+    except Exception:
+        pass
+    _do_send = (SEND_EMAIL is True) or (SEND_EMAIL == "buy_only" and _has_bets)
+    if _do_send:
+        _vmap = {"勝負": "🔥勝負", "買い": "✅買い", "堅実": "🟢堅実"}
+        subject = f"【競馬AI {_vmap.get(_verdict, '')}】{jyo_name} {race_no}R 買い目"
         send_email(subject, body)
     else:
-        print("  （メール配信OFF: ダッシュボード運用）")
+        _why = "非開催/見送りレース" if SEND_EMAIL == "buy_only" else "メール配信OFF"
+        print(f"  （メール非送信: {_why}・ダッシュボードで確認）")
     try:
         record_from_prediction(race_id, pdf)
     except Exception as e:
