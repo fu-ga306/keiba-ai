@@ -39,6 +39,12 @@ TO_ADDRESS    = os.environ.get("TO_ADDRESS", GMAIL_ADDRESS)
 #   True  = 全レース配信 / False = 全レース非配信 / "buy_only" = 買うレースのみ配信
 # 7分前ジョブは予想更新（オッズ直前反映→today_predictions/today_bets更新→push）として継続する。
 SEND_EMAIL = "buy_only"
+
+# オッズ取得の範囲（2026-07-18・IPブロック対策 案A）
+#   False = 単勝(b1)のみ取得しChrome起動を5→1に激減（買い判定は単勝オッズ+人気で完結するため十分）。
+#   True  = 単勝/複勝/ワイド/馬連/馬単の5種すべて取得（EV表示用・負荷5倍）。
+# 将来 案B(requests化) で本質解決したらこのフラグは不要になる。
+FETCH_ALL_ODDS = False
 BASE_DIR      = os.environ.get("KEIBA_BASE_DIR", os.path.dirname(os.path.abspath(__file__)))
 
 HEADERS = {
@@ -303,7 +309,11 @@ def get_race_data(race_id):
     # ── オッズ・人気取得（Selenium）──
     # ── オッズ取得（単勝・複勝・ワイド・馬連）────────────────────────────
     def fetch_odds_page(race_id, odds_type, sleep_sec=3):
-        """netkeibaのオッズページをSeleniumで取得"""
+        """netkeibaのオッズページをSeleniumで取得。
+        FETCH_ALL_ODDS=Falseのときは単勝(b1)以外はChromeを起動せず空を返す
+        （下流は空マップで正常動作。ブロック対策でChrome起動を5→1に削減）。"""
+        if not FETCH_ALL_ODDS and odds_type != "b1":
+            return BeautifulSoup("", "html.parser")
         driver = _make_chrome_driver()
         try:
             url = (
