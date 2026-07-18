@@ -757,11 +757,45 @@ def make_email_body(race_id, pdf):
             _ki  = int(_kai_s.iloc[0])
             _rec = str(pdf["購入推奨"].iloc[0]) if "購入推奨" in pdf.columns else ""
             _roi = str(pdf["想定単回収"].iloc[0]) if "想定単回収" in pdf.columns else ""
-            _mk  = {"積極": "[◎]", "買い": "[○]", "様子見": "[△]", "単勝見送り": "[×]"}.get(_rec, "")
-            lines.append(f"【購入推奨度】{_mk} {_rec}   買い指数 {_ki}/100   想定単勝回収 {_roi}")
+            _mk  = {"勝負": "🔥", "買い": "✅", "堅実": "🟢", "少額": "⚠", "見送り": "❌"}.get(_rec, "")
+            lines.append(f"【購入推奨度】{_mk} {_rec}   買い指数 {_ki}/100   想定回収 {_roi}")
             lines.append("")
     except Exception:
         pass
+
+    # ── 推奨買い目（_race_bet_plan・today_betsと同一の確定メニュー）────────────
+    try:
+        from keiba_predict import _build_bet_rows, _race_bet_plan
+        _plan = _race_bet_plan(pdf)
+        _rows = _build_bet_rows(pdf, str(race_id))
+        if _rows:
+            _myo = pdf[pdf["妙味軸"] == "◎妙"] if "妙味軸" in pdf.columns else pdf.iloc[0:0]
+            if len(_myo):
+                _m = _myo.iloc[0]
+                _mp = f"{int(_m['人気'])}番人気" if pd.notna(_m.get("人気")) else "-"
+                lines.append(f"★推奨買い目（軸: ◎妙 {_m['馬番']}番 {_m['馬名']} {_mp}）")
+            else:
+                _hn = pdf[pdf["印"] == "◎"]
+                _hs = f"{int(_hn.iloc[0]['馬番'])}番 {_hn.iloc[0]['馬名']}" if len(_hn) else ""
+                lines.append(f"★推奨買い目（軸: ◎ {_hs}・両モデル合意）")
+            _grp = {}
+            for _r in _rows:
+                _g = _grp.setdefault(_r["買い方"], [0, 0, _r["券種"], _r.get("BT回収率", "")])
+                _g[0] += 1
+                _g[1] += _r.get("金額", 100)
+            for _name, (_pt, _amt, _kind, _bt) in _grp.items():
+                _combos = [x["組み合わせ"] for x in _rows if x["買い方"] == _name]
+                _cs = _combos[0] if _pt == 1 else f"{_combos[0]} 他{_pt-1}点"
+                lines.append(f"  {_kind:4}: {_cs}  {_pt}点/{_amt:,}円 [BT{_bt}%]")
+            _tot = sum(x.get("金額", 100) for x in _rows)
+            lines.append(f"  ── 合計 {len(_rows)}点 / {_tot:,}円 ──")
+            lines.append("  ※相手（人気◯位内）は直前オッズの人気で自動決定")
+            lines.append("")
+        elif _plan.get("判定") == "見送り":
+            lines.append(f"★このレースは見送り推奨（{_plan.get('理由','')}）")
+            lines.append("")
+    except Exception as _e:
+        print(f"  メール買い目セクションskip: {_e}")
 
     for mark, label in [("◎", "◎本命"), ("○", "○対抗"), ("▲", "▲穴馬")]:
         row_match = pdf[pdf["印"] == mark]
