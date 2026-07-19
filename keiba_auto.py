@@ -59,6 +59,29 @@ JYO_NAMES = {
     6: "中山", 7: "中京", 8: "京都", 9: "阪神", 10: "小倉",
 }
 
+
+def ensure_single_instance(script_name: str):
+    """多重起動ガード（2026-07-20）。
+    同じスクリプトを実行中の別プロセスがいれば、この場で終了する。
+    2026-07-19にスケジューラ手動起動×タスクスケジューラ6:55起動が重なり、
+    keiba_autoが2本並走してメール二重・予想連発が発生した再発防止。"""
+    import sys
+    try:
+        import psutil
+    except ImportError:
+        return  # psutil無しなら判定不能のためスキップ
+    me = os.getpid()
+    for p in psutil.process_iter(["pid", "cmdline"]):
+        try:
+            if p.info["pid"] == me:
+                continue
+            cl = p.info["cmdline"] or []
+            if any(str(a).endswith(script_name) for a in cl):
+                print(f"[多重起動ガード] {script_name} は既に PID{p.info['pid']} で実行中 → 起動を中止します")
+                sys.exit(0)
+        except Exception:
+            continue
+
 # ── 戦略の期待値しきい値（案B: 生確率ベース） ──────────────────
 # model.py の期待値スイープで判明した最適値（2026/06/15確定）。
 # 生確率は正規化版より小さく出るが、スイープの結果 +0.3 が
@@ -1101,6 +1124,7 @@ def _push_latest(message: str):
 # ── Step7: スケジューラー ─────────────────────────────────────────────────
 def main():
     print(f"=== 競馬AI自動予測 起動 [{datetime.now().strftime('%Y/%m/%d %H:%M')}] ===\n")
+    ensure_single_instance("keiba_auto.py")
 
     print("モデル読み込み中...")
     with open(os.path.join(BASE_DIR, "model.pkl"), "rb") as f:

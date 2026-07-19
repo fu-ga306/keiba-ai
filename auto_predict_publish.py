@@ -256,6 +256,11 @@ def stop_keiba_auto():
 def main():
     print(f"=== 自動予想・公開システム 起動 [{datetime.now().strftime('%Y/%m/%d %H:%M')}] ===\n")
 
+    # 多重起動ガード（2026-07-20）: タスクスケジューラ6:55の自動起動と手動起動が
+    # 重なると全ジョブが二重になる（7/19発生）。既存プロセスがいれば即終了。
+    from keiba_auto import ensure_single_instance
+    ensure_single_instance("auto_predict_publish.py")
+
     # 午前7時の一括予想をスケジュール
     schedule.every().day.at("07:00").do(run_morning_prediction)
     print("  [済] 朝7時の一括予想をスケジュール登録")
