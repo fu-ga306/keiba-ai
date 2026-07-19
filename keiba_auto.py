@@ -1140,13 +1140,25 @@ def main():
 
     mf_path = os.path.join(BASE_DIR, "model_mf.pkl")
     if os.path.exists(mf_path):
-        try:
-            with open(mf_path, "rb") as f:
-                mf_saved = pickle.load(f)
+        # MFは妙味検出の心臓部。読込失敗すると妙が一切出ず判定が全て堅実/見送りに
+        # 劣化する（2026-07-19に発生）。3回リトライし、それでも失敗なら大警告を出す。
+        mf_saved = None
+        for _try in range(3):
+            try:
+                with open(mf_path, "rb") as f:
+                    mf_saved = pickle.load(f)
+                break
+            except Exception as _e:
+                print(f"  MF読込失敗({_try+1}/3): {_e} → 5秒後リトライ")
+                time.sleep(5)
+        if mf_saved is not None:
             models_pack["mf"] = mf_saved
             print("  市場フリーモデル読み込み完了")
-        except Exception as e:
-            print(f"  市場フリーモデルスキップ: {e}")
+        else:
+            print("  " + "!" * 60)
+            print("  !! 警告: MFモデル読込に3回失敗。妙味検出が無効のまま稼働します")
+            print("  !! → 判定が堅実/見送りだけに劣化します。model_mf.pklを確認してください")
+            print("  " + "!" * 60)
             models_pack["mf"] = None
     else:
         models_pack["mf"] = None

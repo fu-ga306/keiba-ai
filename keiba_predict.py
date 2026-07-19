@@ -1214,6 +1214,7 @@ def predict_race_pdf(race_id: str, *, history_df: pd.DataFrame, models_pack: dic
         int(pdf["クラス_num"].iloc[0]) if pd.notna(pdf["クラス_num"].iloc[0]) else 0, "不明")
 
     # ── today_predictions.csv 保存
+    _skip_save = False   # オッズ取得失敗時に保存を止めるフラグ（bets保存も連動）
     try:
         save_cols = [
             "race_id", "馬名", "馬番", "枠番",
@@ -1255,33 +1256,61 @@ def predict_race_pdf(race_id: str, *, history_df: pd.DataFrame, models_pack: dic
         save_df["予想日時"] = datetime.now().strftime("%Y/%m/%d %H:%M")
 
         out_path = os.path.join(BASE_DIR, "today_predictions.csv")
+        _skip_save = False
         if os.path.exists(out_path):
             existing = pd.read_csv(out_path)
-            existing = existing[existing["race_id"].astype(str) != str(race_id)]
+            existing["race_id"] = existing["race_id"].astype(str).str.replace(r"\.0$", "", regex=True)
+            _same = existing[existing["race_id"] == str(race_id)]
+            # 安全網(2026-07-20): 今回オッズが全馬NaN（取得失敗）で、既存にオッズ付き予想が
+            # ある場合は上書きしない。オッズ無し判定は必ず「見送り」誤判定になるため。
+            if save_df["単勝オッズ"].isna().all() and len(_same) and _same["単勝オッズ"].notna().any():
+                print("  ⚠ オッズ取得失敗（全馬NaN）→ 既存のオッズ付き予想を保持し保存スキップ")
+                _skip_save = True
+            existing = existing[existing["race_id"] != str(race_id)]
             save_df  = pd.concat([existing, save_df], ignore_index=True)
-        save_df.to_csv(out_path, index=False, encoding="utf-8-sig")
-        print(f"  予想データ保存完了 → {out_path}")
+        if not _skip_save:
+            # 安全網: 同一レース×馬の重複行を除去（並行書き込み事故等でも最新のみ残す）
+            save_df = save_df.drop_duplicates(subset=["race_id", "馬名"], keep="last")
+            save_df.to_csv(out_path, index=False, encoding="utf-8-sig")
+            print(f"  予想データ保存完了 → {out_path}")
     except Exception as e:
         print(f"  予想データ保存エラー: {e}")
 
     # ── today_bets.csv 保存（推奨買い目を馬番展開して記録）─────────────────
     #   analyze_accuracy.py が実払戻(payout_scraper)と照合し、買い目単位のROIを日次検証する。
     try:
-        _bets = _build_bet_rows(pdf, race_id)
         bets_path = os.path.join(BASE_DIR, "today_bets.csv")
-        if _bets:
-            bets_df = pd.DataFrame(_bets)
-            bets_df["jyo"] = jyo_name
-            bets_df["race_no"] = race_no
-            bets_df["予想日時"] = datetime.now().strftime("%Y/%m/%d %H:%M")
-            if os.path.exists(bets_path):
-                _eb = pd.read_csv(bets_path)
-                _eb = _eb[_eb["race_id"].astype(str) != str(race_id)]
-                bets_df = pd.concat([_eb, bets_df], ignore_index=True)
-            bets_df.to_csv(bets_path, index=False, encoding="utf-8-sig")
-            print(f"  買い目データ保存完了 → {bets_path}（{len(_bets)}点）")
+        if _skip_save:
+            # オッズ取得失敗時は買い目も触らない（既存のオッズ付き買い目を保持）
+            print("  ⚠ オッズ取得失敗 → today_bets.csv も更新スキップ")
         else:
-            print("  買い目なし（見送りレース）→ today_bets.csv 追記なし")
+            _bets = _build_bet_rows(pdf, race_id)
+            if _bets:
+                bets_df = pd.DataFrame(_bets)
+                bets_df["jyo"] = jyo_name
+                bets_df["race_no"] = race_no
+                bets_df["予想日時"] = datetime.now().strftime("%Y/%m/%d %H:%M")
+                if os.path.exists(bets_path):
+                    _eb = pd.read_csv(bets_path)
+                    _eb = _eb[_eb["race_id"].astype(str) != str(race_id)]
+                    bets_df = pd.concat([_eb, bets_df], ignore_index=True)
+                # 安全網: 同一レース×同一買い目の重複を除去（最新のみ残す）
+                bets_df = bets_df.drop_duplicates(subset=["race_id", "券種", "組み合わせ"], keep="last")
+                bets_df.to_csv(bets_path, index=False, encoding="utf-8-sig")
+                print(f"  買い目データ保存完了 → {bets_path}（{len(_bets)}点）")
+            else:
+                # 正当な見送り（オッズあり）→ このレースの既存買い目を削除して整合させる
+                if os.path.exists(bets_path):
+                    _eb = pd.read_csv(bets_path)
+                    _before = len(_eb)
+                    _eb = _eb[_eb["race_id"].astype(str) != str(race_id)]
+                    if len(_eb) != _before:
+                        _eb.to_csv(bets_path, index=False, encoding="utf-8-sig")
+                        print("  見送りに変更 → 既存買い目を削除")
+                    else:
+                        print("  買い目なし（見送りレース）→ today_bets.csv 追記なし")
+                else:
+                    print("  買い目なし（見送りレース）→ today_bets.csv 追記なし")
     except Exception as e:
         print(f"  買い目保存エラー: {e}")
 

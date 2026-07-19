@@ -100,10 +100,12 @@ def run_morning_prediction():
     except Exception as e:
         print(f"  開催日チェックでエラー（続行）: {e}")
 
-    # today_predictions.csv をリセット
-    out_path = os.path.join(BASE_DIR, "today_predictions.csv")
-    if os.path.exists(out_path):
-        os.remove(out_path)
+    # today_predictions.csv / today_bets.csv をリセット
+    # （betsを消し忘れると前日レースの買い目が残存し、照合・ダッシュボードに混入する）
+    for _f in ("today_predictions.csv", "today_bets.csv"):
+        _p = os.path.join(BASE_DIR, _f)
+        if os.path.exists(_p):
+            os.remove(_p)
 
     # keiba_predict.py の today モードを実行
     try:
