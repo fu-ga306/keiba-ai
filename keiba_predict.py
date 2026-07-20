@@ -905,6 +905,11 @@ def predict_race_pdf(race_id: str, *, history_df: pd.DataFrame, models_pack: dic
     mf_models     = mf_info["models"]       if mf_info else None
     mf_cols       = mf_info["use_cols"]     if mf_info else None
     mf_weights    = mf_info.get("weights")  if mf_info else None
+    # MF複勝(place3)モデル: place系買い目の妙軸に使う（勝率軸より馬券内率・ROIが高い）
+    mf_p3_info    = mf_info.get("place3") if mf_info else None
+    mf_p3_models  = mf_p3_info["models"]   if mf_p3_info else None
+    mf_p3_cols    = mf_p3_info["use_cols"] if mf_p3_info else None
+    mf_p3_weights = mf_p3_info.get("weights") if mf_p3_info else None
     is_multi = place2_models is not None and place3_models is not None
 
     def _wavg(models, X, weights):
@@ -1004,6 +1009,19 @@ def predict_race_pdf(race_id: str, *, history_df: pd.DataFrame, models_pack: dic
             print("  市場フリー予測成功")
         except Exception as e:
             print(f"  市場フリー予測エラー（スキップ）: {e}")
+
+    # ── MF複勝(place3)予測: place系買い目の「複勝妙」軸に使用
+    #   2025BT: 複勝軸は勝率軸より馬券内率+8pt/複勝ROI114→124%・ワイド113→122%・3連複105→118%
+    pdf["MF複勝率"]   = np.nan
+    pdf["MF複勝順位"] = np.nan
+    if mf_p3_models is not None and mf_p3_cols is not None:
+        try:
+            X_p3 = pdf.reindex(columns=mf_p3_cols)
+            p3   = _wavg(mf_p3_models, X_p3, mf_p3_weights)
+            pdf["MF複勝率"]   = np.clip(np.nan_to_num(p3, nan=0.0), 0, None)
+            pdf["MF複勝順位"] = pd.Series(p3).rank(ascending=False).values
+        except Exception as e:
+            print(f"  MF複勝予測エラー（スキップ）: {e}")
 
     # ── 戦略判定（predict/auto 共通）
     # EV条件は実データでEV>=0.3の勝率が0%のため除外。AI予測順位とオッズ範囲を基準にする。
@@ -1232,7 +1250,7 @@ def predict_race_pdf(race_id: str, *, history_df: pd.DataFrame, models_pack: dic
             "馬体重", "体重増減",
             "勝ち確率", "連対確率", "複勝確率", "3着内確率",
             "単勝期待値", "推奨賭け率",
-            "乖離スコア", "MF予測順位", "MF勝ち確率",
+            "乖離スコア", "MF予測順位", "MF勝ち確率", "MF複勝率", "MF複勝順位",
             "該当戦略", "推奨ランク", "総合スコア", "券種推奨", "妙味軸",
             "買い指数", "購入推奨", "想定単回収", "買いサイズ",
             "予測順位", "連対順位", "複勝順位",
@@ -1472,10 +1490,19 @@ def _build_bet_rows(pdf, race_id):
         no = _no(r.iloc[0])
         if no is not None:
             marks["妙"] = no
+    # 複勝妙軸(MF複勝順位1位): place系(複勝/ワイド/3連複)の軸に使う。
+    # 判定帯は勝率妙のまま。勝率軸より馬券内率・ROIが高い(2025BT実証)。
+    if "MF複勝順位" in pdf.columns and pdf["MF複勝順位"].notna().any():
+        _rp = pdf[pd.to_numeric(pdf["MF複勝順位"], errors="coerce") == 1]
+        if len(_rp):
+            no = _no(_rp.iloc[0])
+            if no is not None:
+                marks["複妙"] = no
     if "◎" not in marks:
         return []
     hon = marks["◎"]
     myo = marks.get("妙")     # 堅実帯は妙なし（◎軸）
+    myo_p = marks.get("複妙", myo)   # place系の軸（無ければ勝率妙にフォールバック）
 
     # 人気順の馬番リスト（妙を除く）・馬番→人気/オッズのマップ（相手の動的決定に使用）
     _pn = pdf.dropna(subset=["馬番"]).copy()
@@ -1527,11 +1554,13 @@ def _build_bet_rows(pdf, race_id):
         # ── 妙軸帯 ──
         elif myo is None:
             continue
-        elif name in ("妙単勝", "妙複勝"):
+        elif name == "妙単勝":
             add(kind, name, f"{myo:02d}", roi)
-        elif name == "ワイド 妙-◎":
-            if hon != myo:
-                add(kind, name, s2(myo, hon), roi)
+        elif name == "妙複勝":            # place系: 複勝妙軸
+            add(kind, name, f"{myo_p:02d}", roi)
+        elif name == "ワイド 妙-◎":       # place系: 複勝妙軸
+            if hon != myo_p:
+                add(kind, name, s2(myo_p, hon), roi)
         elif name == "馬単 妙→◎○▲":
             for t in [marks[m] for m in ("◎", "○", "▲") if m in marks and marks[m] != myo]:
                 add(kind, name, f"{myo:02d}-{t:02d}", roi)
@@ -1550,11 +1579,12 @@ def _build_bet_rows(pdf, race_id):
         elif name == "馬連 妙-人気上位5":
             for t in pop_order[:5]:
                 add(kind, name, s2(myo, t), roi)
-        elif name == "3連複 妙◎軸-人気上位6":
-            for t in pop_order[:6]:
-                if t not in (myo, hon):
-                    x = sorted((myo, hon, t))
-                    add(kind, name, f"{x[0]:02d}-{x[1]:02d}-{x[2]:02d}", roi)
+        elif name == "3連複 妙◎軸-人気上位6":   # place系: 複勝妙軸
+            if myo_p != hon:
+                for t in pop_order[:6]:
+                    if t not in (myo_p, hon):
+                        x = sorted((myo_p, hon, t))
+                        add(kind, name, f"{x[0]:02d}-{x[1]:02d}-{x[2]:02d}", roi)
         elif name == "3連単 妙→上位3→上位5":
             for a in pop_order[:3]:
                 for b in pop_order[:5]:
