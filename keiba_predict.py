@@ -47,6 +47,16 @@ JYO_NAMES = {
 }
 
 
+def read_pred_csv(path, **kw):
+    """race_idを必ず文字列で読み込む。全数字のrace_idはpandasがint/float化し、
+    NaN混入時は float→'202602011201.0' と化けて結果照合(netkeiba/JV)が全滅する
+    （2026-07-19の照合失敗の真因）。dtype=str＋末尾'.0'除去で恒久防止する。"""
+    df = pd.read_csv(path, dtype={"race_id": str}, **kw)
+    if "race_id" in df.columns:
+        df["race_id"] = df["race_id"].astype(str).str.replace(r"\.0$", "", regex=True)
+    return df
+
+
 # ── ハーヴィルモデルで複勝・3着内確率を計算 ─────────────────────────────
 def calc_place_probs_harvill(win_probs: np.ndarray):
     n = len(win_probs)
@@ -1258,8 +1268,7 @@ def predict_race_pdf(race_id: str, *, history_df: pd.DataFrame, models_pack: dic
         out_path = os.path.join(BASE_DIR, "today_predictions.csv")
         _skip_save = False
         if os.path.exists(out_path):
-            existing = pd.read_csv(out_path)
-            existing["race_id"] = existing["race_id"].astype(str).str.replace(r"\.0$", "", regex=True)
+            existing = read_pred_csv(out_path)
             _same = existing[existing["race_id"] == str(race_id)]
             # 安全網(2026-07-20): 今回オッズが全馬NaN（取得失敗）で、既存にオッズ付き予想が
             # ある場合は上書きしない。オッズ無し判定は必ず「見送り」誤判定になるため。
@@ -1291,8 +1300,8 @@ def predict_race_pdf(race_id: str, *, history_df: pd.DataFrame, models_pack: dic
                 bets_df["race_no"] = race_no
                 bets_df["予想日時"] = datetime.now().strftime("%Y/%m/%d %H:%M")
                 if os.path.exists(bets_path):
-                    _eb = pd.read_csv(bets_path)
-                    _eb = _eb[_eb["race_id"].astype(str) != str(race_id)]
+                    _eb = read_pred_csv(bets_path)
+                    _eb = _eb[_eb["race_id"] != str(race_id)]
                     bets_df = pd.concat([_eb, bets_df], ignore_index=True)
                 # 安全網: 同一レース×同一買い目の重複を除去（最新のみ残す）
                 bets_df = bets_df.drop_duplicates(subset=["race_id", "券種", "組み合わせ"], keep="last")
@@ -1301,9 +1310,9 @@ def predict_race_pdf(race_id: str, *, history_df: pd.DataFrame, models_pack: dic
             else:
                 # 正当な見送り（オッズあり）→ このレースの既存買い目を削除して整合させる
                 if os.path.exists(bets_path):
-                    _eb = pd.read_csv(bets_path)
+                    _eb = read_pred_csv(bets_path)
                     _before = len(_eb)
-                    _eb = _eb[_eb["race_id"].astype(str) != str(race_id)]
+                    _eb = _eb[_eb["race_id"] != str(race_id)]
                     if len(_eb) != _before:
                         _eb.to_csv(bets_path, index=False, encoding="utf-8-sig")
                         print("  見送りに変更 → 既存買い目を削除")
@@ -1591,7 +1600,8 @@ def predict_race(race_id: str):
     try:
         _tp = os.path.join(BASE_DIR, "today_predictions.csv")
         if os.path.exists(_tp):
-            _rid = pd.read_csv(_tp, usecols=["race_id"])["race_id"].astype(str)
+            _rid = read_pred_csv(_tp, usecols=["race_id"])["race_id"]
+            _rid = _rid[_rid.str.fullmatch(r"\d{12}")]   # 'nan'等の不正値を除外
             _same = _rid[_rid.str[4:6] == race_id[4:6]]
             if len(_same) > 0:
                 _maxday = _same.str[8:10].max()

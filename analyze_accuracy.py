@@ -28,8 +28,9 @@ def main():
         print(f"予想ファイルがありません: {PRED_FILE}")
         return
 
-    pred = pd.read_csv(PRED_FILE)
-    pred["race_id"] = pred["race_id"].astype(str)
+    pred = pd.read_csv(PRED_FILE, dtype={"race_id": str})
+    # race_idの'.0'化(float混入)はnetkeibaに無効IDを投げ400を招く。必ず除去。
+    pred["race_id"] = pred["race_id"].astype(str).str.replace(r"\.0$", "", regex=True)
     race_ids = sorted(pred["race_id"].unique())
     print(f"対象レース数: {len(race_ids)}")
 

@@ -26,6 +26,12 @@ def main():
     spec = sys.argv[1]
     fromdate = sys.argv[2]
     fromtime = fromdate + "000000" if len(fromdate) == 8 else fromdate
+    # 第4引数でoptionを指定可能（例: "1" 通常データ差分 / "2" 今週）。
+    # 未指定なら従来通りセットアップ(4→3)を試す。RACEの直近結果取得は option=1 推奨。
+    if len(sys.argv) >= 4:
+        options = [int(x) for x in sys.argv[3].split(",")]
+    else:
+        options = [4, 3]
     os.makedirs(OUT_DIR, exist_ok=True)
 
     jv = win32com.client.gencache.EnsureDispatch("JVDTLab.JVLink")
@@ -36,7 +42,7 @@ def main():
 
     # セットアップ取得（ダイアログなし=4 → ダメなら 3 にフォールバック）
     opened = False
-    for option in (4, 3):
+    for option in options:
         ret = jv.JVOpen(spec, fromtime, option, 0, 0)
         rc, readcount, dlcount = ret[0], ret[1], ret[2]
         if rc == 0:

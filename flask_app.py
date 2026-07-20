@@ -30,7 +30,10 @@ def fetch_csv(url: str) -> pd.DataFrame:
     try:
         r = requests.get(url, timeout=15)
         r.encoding = "utf-8"
-        df = pd.read_csv(StringIO(r.text), low_memory=False)
+        df = pd.read_csv(StringIO(r.text), low_memory=False, dtype={"race_id": str})
+        # race_idのfloat化('202602011201.0')はURL照合を外し詳細ページを404にする。除去。
+        if "race_id" in df.columns:
+            df["race_id"] = df["race_id"].astype(str).str.replace(r"\.0$", "", regex=True)
         _cache[url] = {"df": df, "ts": now}
         return df.copy()
     except Exception:
