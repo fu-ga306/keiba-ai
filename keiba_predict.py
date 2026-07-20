@@ -782,10 +782,18 @@ def build_report(pdf, race_id, jyo_name, race_no,
                 _mk_no[_mk2] = int(_r2.iloc[0]["馬番"])
         _hno2 = _mk_no.get("◎", "-")
         _mno = None
+        # 複妙(place系の軸)馬番。無ければ勝率妙にフォールバック
+        _mno_p = None
+        if "MF複勝順位" in pdf.columns and pd.to_numeric(pdf["MF複勝順位"], errors="coerce").notna().any():
+            _rp2 = pdf[pd.to_numeric(pdf["MF複勝順位"], errors="coerce") == 1]
+            if len(_rp2) and pd.notna(_rp2.iloc[0]["馬番"]):
+                _mno_p = int(_rp2.iloc[0]["馬番"])
         if len(_myo):
             _m = _myo.iloc[0]
             _mp_s = f"{int(_m['人気'])}番人気" if pd.notna(_m.get("人気")) else "-"
             _mno = int(_m["馬番"])
+            if _mno_p is None:
+                _mno_p = _mno
             lines.append(f"  ◎妙 {_m['馬名']}（馬番{_mno} {_mp_s}）を軸に買う。資金配分: {_plan['サイズ']}")
         else:
             lines.append(f"  ◎（馬番{_hno2}・両モデル合意）を軸に買う。資金配分: {_plan['サイズ']}")
@@ -803,20 +811,18 @@ def build_report(pdf, race_id, jyo_name, race_no,
         for kind, name, roi in _plan["menu"]:
             if _rows_bet and name not in _grp:
                 continue           # KIND_SKIP/予算トリムで除外された買い方は表示しない
-            if name == "馬単 妙→人気12位内":
-                combo = f"{_mno}→人気12位内"
-            elif name == "馬単 妙→12位内80倍内":
-                combo = f"{_mno}→12位内80倍内"
-            elif name == "馬連 妙-人気9位内":
-                combo = f"{_mno}-人気9位内"
-            elif name == "馬連 妙-人気上位5":
-                combo = f"{_mno}-人気上位5"
+            if name == "妙複勝":
+                combo = f"{_mno_p}"
+            elif name == "馬単 妙→複勝上位6":
+                combo = f"{_mno}→複勝上位6"
+            elif name == "馬連 妙-複勝上位5":
+                combo = f"{_mno}-複勝上位5"
             elif name == "ワイド 妙-◎":
-                combo = f"{_mno}-{_hno2}"
-            elif name == "3連複 妙◎軸-人気上位6":
-                combo = f"{_mno}・{_hno2}軸→人気上位6"
-            elif name == "3連単 妙→上位3→上位5":
-                combo = f"{_mno}→上位3→上位5"
+                combo = f"{_mno_p}-{_hno2}"
+            elif name == "3連複 妙◎軸-複勝上位5":
+                combo = f"{_mno_p}・{_hno2}軸→複勝上位5"
+            elif name == "3連単 妙→複勝3→複勝5":
+                combo = f"{_mno}→複勝3→複勝5"
             elif name == "3連単 妙◎軸マルチ上位5":
                 combo = f"{_mno}・{_hno2}軸ﾏﾙﾁ→上位5"
             elif name == "馬単 妙→◎○▲":
@@ -1445,19 +1451,19 @@ def _race_bet_plan(pdf):
                      "理由": f"{'下級' if cls <= 2 else '中級'}×妙{pop}人気×{float(modds):.0f}倍(買い帯)" if pd.notna(modds)
                               else f"{'下級' if cls <= 2 else '中級'}×妙{pop}人気(買い帯)"})
         plan["menu"] = [("単勝", "妙単勝", 183),
-                        ("馬単", "馬単 妙→人気12位内", 231),
-                        ("馬連", "馬連 妙-人気9位内", 132),
-                        ("3連複", "3連複 妙◎軸-人気上位6", 114),
-                        ("3連単", "3連単 妙→上位3→上位5", 139)]
+                        ("馬単", "馬単 妙→複勝上位6", 261),
+                        ("馬連", "馬連 妙-複勝上位5", 170),
+                        ("3連複", "3連複 妙◎軸-複勝上位5", 131),
+                        ("3連単", "3連単 妙→複勝3→複勝5", 259)]
     else:             # 勝負帯: 妙7-9人気（BT: 単勝291/馬単345）
         plan.update({"判定": "勝負", "指数": 90 + (5 if size == "厚め" else 0), "サイズ": size,
                      "理由": f"妙{pop}人気(勝負帯・全クラス最強)"})
         plan["menu"] = [("単勝", "妙単勝", 291),
                         ("複勝", "妙複勝", 145),
                         ("ワイド", "ワイド 妙-◎", 175),
-                        ("馬単", "馬単 妙→12位内80倍内", 345),
-                        ("馬連", "馬連 妙-人気上位5", 186),
-                        ("3連複", "3連複 妙◎軸-人気上位6", 133),
+                        ("馬単", "馬単 妙→複勝上位6", 339),
+                        ("馬連", "馬連 妙-複勝上位5", 170),
+                        ("3連複", "3連複 妙◎軸-複勝上位5", 131),
                         ("3連単", "3連単 妙◎軸マルチ上位5", 251)]
 
     # 購入しきい値: 指数がBUY_INDEX_MIN未満なら買い目を出さない（判定・理由は残す）
@@ -1513,6 +1519,17 @@ def _build_bet_rows(pdf, race_id):
     pop_of = {int(r2["馬番"]): int(r2["_pop"]) for _, r2 in _pn.iterrows()}
     odds_of = {int(r2["馬番"]): (float(r2["_odds"]) if pd.notna(r2["_odds"]) else 999)
                for _, r2 in _pn.iterrows()}
+    # MF複勝順位で並べた馬番リスト（相手選定用）。2025BTで「人気」より良い相手を選べる:
+    #   馬連139.5→170% / 馬単221→261% / 3連単152→259% / 3連複113→131%（乱数2分割で頑健）。
+    if "MF複勝順位" in _pn.columns and _pn["MF複勝順位"].notna().any():
+        _mp = _pn.dropna(subset=["MF複勝順位"]).sort_values("MF複勝順位")
+        mfp_order = [int(x) for x in _mp["馬番"]]
+    else:
+        mfp_order = pop_order   # MF複勝が無ければ人気順にフォールバック
+
+    def _mf_partners(exclude, n):
+        """MF複勝順位の上位から、exclude(軸等)を除いてn頭返す。"""
+        return [t for t in mfp_order if t not in exclude][:n]
 
     rows = []
 
@@ -1564,30 +1581,21 @@ def _build_bet_rows(pdf, race_id):
         elif name == "馬単 妙→◎○▲":
             for t in [marks[m] for m in ("◎", "○", "▲") if m in marks and marks[m] != myo]:
                 add(kind, name, f"{myo:02d}-{t:02d}", roi)
-        elif name == "馬単 妙→人気12位内":
-            for t in pop_order:
-                if pop_of.get(t, 99) <= 12:
-                    add(kind, name, f"{myo:02d}-{t:02d}", roi)
-        elif name == "馬単 妙→12位内80倍内":
-            for t in pop_order:
-                if pop_of.get(t, 99) <= 12 and odds_of.get(t, 999) <= 80:
-                    add(kind, name, f"{myo:02d}-{t:02d}", roi)
-        elif name == "馬連 妙-人気9位内":
-            for t in pop_order:
-                if pop_of.get(t, 99) <= 9:
-                    add(kind, name, s2(myo, t), roi)
-        elif name == "馬連 妙-人気上位5":
-            for t in pop_order[:5]:
+        elif name == "馬単 妙→複勝上位6":       # 相手=MF複勝上位（人気より良い相手選定）
+            for t in _mf_partners({myo}, 6):
+                add(kind, name, f"{myo:02d}-{t:02d}", roi)
+        elif name == "馬連 妙-複勝上位5":        # 相手=MF複勝上位
+            for t in _mf_partners({myo}, 5):
                 add(kind, name, s2(myo, t), roi)
-        elif name == "3連複 妙◎軸-人気上位6":   # place系: 複勝妙軸
+        elif name == "3連複 妙◎軸-複勝上位5":    # place系: 複勝妙軸 + MF複勝相手
             if myo_p != hon:
-                for t in pop_order[:6]:
-                    if t not in (myo_p, hon):
-                        x = sorted((myo_p, hon, t))
-                        add(kind, name, f"{x[0]:02d}-{x[1]:02d}-{x[2]:02d}", roi)
-        elif name == "3連単 妙→上位3→上位5":
-            for a in pop_order[:3]:
-                for b in pop_order[:5]:
+                for t in _mf_partners({myo_p, hon}, 5):
+                    x = sorted((myo_p, hon, t))
+                    add(kind, name, f"{x[0]:02d}-{x[1]:02d}-{x[2]:02d}", roi)
+        elif name == "3連単 妙→複勝3→複勝5":     # 2着=MF複勝上位3 / 3着=MF複勝上位5
+            cand = _mf_partners({myo}, 5)
+            for a in cand[:3]:
+                for b in cand[:5]:
                     if a != b:
                         add(kind, name, f"{myo:02d}-{a:02d}-{b:02d}", roi)
         elif name == "3連単 妙◎軸マルチ上位5":
