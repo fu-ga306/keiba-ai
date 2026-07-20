@@ -80,10 +80,11 @@ def main():
     pred = pd.read_csv(sys.argv[1], dtype=str)
     bets = pd.read_csv(sys.argv[2], dtype=str)
     res = load_results(os.path.join(BASE, "data", "jv", "RACE_HR.txt"))
-    # race_idが二重稼働で壊れている(day目ズレ/.0付き)ため、結果は(競馬場,R)でも引けるようにする
-    res_jr = {}
-    for rid, r in res.items():
-        res_jr[(rid[4:6], int(rid[10:12]))] = r
+    # race_idの.0(float化)を除去。netkeibaとJVは開催日目が一致するので、
+    # predのrace_id(例:函館day12)はJV 7/19結果と厳密一致し、JVに混入する
+    # 前日(day11)分は参照されず自動排除される。
+    for d in (pred, bets):
+        d["race_id"] = d["race_id"].astype(str).str.replace(r"\.0$", "", regex=True)
 
     # 対象日でフィルタ（前日分の残存を除去）
     pred = pred[pred["予想日時"].astype(str).str.startswith(date_pfx)]
@@ -92,21 +93,19 @@ def main():
     pred = latest_per_race(pred)
     pred = pred[pd.to_numeric(pred["馬番"], errors="coerce").notna()].copy()
     pred["馬番"] = pred["馬番"].astype(float).astype(int).astype(str).str.zfill(2)
-    pred["jr"] = list(zip(pred["jyo"].map(JYO_CODE),
-                          pd.to_numeric(pred["race_no"], errors="coerce").astype("Int64")))
     bets = latest_per_race(bets).drop_duplicates(["race_id", "券種", "買い方", "組み合わせ"])
     bets["金額"] = pd.to_numeric(bets["金額"], errors="coerce").fillna(0)
 
-    jrs = [jr for jr in pred["jr"].unique() if jr in res_jr]
-    print(f"対象日: {date_pfx}  予想レース{pred['jr'].nunique()} / JV結果照合{len(jrs)}")
+    races = [r for r in pred["race_id"].unique() if r in res]
+    print(f"対象日: {date_pfx}  予想レース{pred['race_id'].nunique()} / JV結果照合{len(races)}")
 
     # ── 印別 勝率/連対率/馬券内率 ──
     MARKS = ["◎", "○", "▲", "△", "×"]
     stat = {m: {"n": 0, "win": 0, "rentai": 0, "fukusho": 0} for m in MARKS}
     sane = 0
-    for jr in jrs:
-        r = res_jr[jr]
-        pr = pred[pred["jr"] == jr]
+    for rid in races:
+        r = res[rid]
+        pr = pred[pred["race_id"] == rid]
         if r["win"] in set(pr["馬番"]):
             sane += 1
         for m in MARKS:
@@ -123,7 +122,7 @@ def main():
                 st["rentai"] += 1
             if uma in r["place"]:
                 st["fukusho"] += 1
-    print(f"（照合の健全性: 1着馬が予想出走表に含まれたレース {sane}/{len(jrs)}）")
+    print(f"（照合の健全性: 1着馬が予想出走表に含まれたレース {sane}/{len(races)}）")
     print("\n=== 印別精度（JV正解） ===")
     print(f"{'印':<3}{'頭数':>4}{'勝率':>8}{'連対率':>8}{'複勝率(馬券内)':>14}")
     for m in MARKS:
