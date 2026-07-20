@@ -59,3 +59,4 @@ retrain_mf_prod_log.txt
 jv_*_log.txt
 matrix_multiyear*.txt
 feature_reduce_result.txt
+model_mf_backup.pkl
