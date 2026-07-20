@@ -813,14 +813,14 @@ def build_report(pdf, race_id, jyo_name, race_no,
                 continue           # KIND_SKIP/予算トリムで除外された買い方は表示しない
             if name == "妙複勝":
                 combo = f"{_mno_p}"
-            elif name == "馬単 妙→複勝上位6":
-                combo = f"{_mno}→複勝上位6"
-            elif name == "馬連 妙-複勝上位5":
-                combo = f"{_mno}-複勝上位5"
+            elif name.startswith("馬単 妙→複勝上位"):
+                combo = f"{_mno}→{name.split('複勝上位')[-1]}頭(複勝上位)"
+            elif name.startswith("馬連 妙-複勝上位"):
+                combo = f"{_mno}-複勝上位{name.split('複勝上位')[-1]}"
             elif name == "ワイド 妙-◎":
                 combo = f"{_mno_p}-{_hno2}"
-            elif name == "3連複 妙◎軸-複勝上位5":
-                combo = f"{_mno_p}・{_hno2}軸→複勝上位5"
+            elif name.startswith("3連複 妙◎軸-複勝上位"):
+                combo = f"{_mno_p}・{_hno2}軸→複勝上位{name.split('複勝上位')[-1]}"
             elif name == "3連単 妙→複勝3→複勝5":
                 combo = f"{_mno}→複勝3→複勝5"
             elif name == "3連単 妙◎軸マルチ上位5":
@@ -1451,9 +1451,9 @@ def _race_bet_plan(pdf):
                      "理由": f"{'下級' if cls <= 2 else '中級'}×妙{pop}人気×{float(modds):.0f}倍(買い帯)" if pd.notna(modds)
                               else f"{'下級' if cls <= 2 else '中級'}×妙{pop}人気(買い帯)"})
         plan["menu"] = [("単勝", "妙単勝", 183),
-                        ("馬単", "馬単 妙→複勝上位6", 261),
-                        ("馬連", "馬連 妙-複勝上位5", 170),
-                        ("3連複", "3連複 妙◎軸-複勝上位5", 131),
+                        ("馬単", "馬単 妙→複勝上位5", 241),
+                        ("馬連", "馬連 妙-複勝上位5", 171),
+                        ("3連複", "3連複 妙◎軸-複勝上位5", 132),
                         ("3連単", "3連単 妙→複勝3→複勝5", 259)]
     else:             # 勝負帯: 妙7-9人気（BT: 単勝291/馬単345）
         plan.update({"判定": "勝負", "指数": 90 + (5 if size == "厚め" else 0), "サイズ": size,
@@ -1461,8 +1461,8 @@ def _race_bet_plan(pdf):
         plan["menu"] = [("単勝", "妙単勝", 291),
                         ("複勝", "妙複勝", 145),
                         ("ワイド", "ワイド 妙-◎", 175),
-                        ("馬単", "馬単 妙→複勝上位6", 339),
-                        ("馬連", "馬連 妙-複勝上位5", 170),
+                        ("馬単", "馬単 妙→複勝上位6", 337),
+                        ("馬連", "馬連 妙-複勝上位6", 194),
                         ("3連複", "3連複 妙◎軸-複勝上位5", 131),
                         ("3連単", "3連単 妙◎軸マルチ上位5", 251)]
 
@@ -1531,6 +1531,16 @@ def _build_bet_rows(pdf, race_id):
         """MF複勝順位の上位から、exclude(軸等)を除いてn頭返す。"""
         return [t for t in mfp_order if t not in exclude][:n]
 
+    def _tail_n(label, default=5):
+        """ラベル末尾の数字を相手点数として取り出す（例 '…複勝上位6'→6）。"""
+        tail = ""
+        for ch in reversed(label):
+            if ch.isdigit():
+                tail = ch + tail
+            else:
+                break
+        return int(tail) if tail else default
+
     rows = []
 
     # 1点あたり金額 = BET_UNIT × 判定帯倍率 × サイズ倍率（100円単位に丸め・最低100円）
@@ -1581,15 +1591,15 @@ def _build_bet_rows(pdf, race_id):
         elif name == "馬単 妙→◎○▲":
             for t in [marks[m] for m in ("◎", "○", "▲") if m in marks and marks[m] != myo]:
                 add(kind, name, f"{myo:02d}-{t:02d}", roi)
-        elif name == "馬単 妙→複勝上位6":       # 相手=MF複勝上位（人気より良い相手選定）
-            for t in _mf_partners({myo}, 6):
+        elif name.startswith("馬単 妙→複勝上位"):  # 相手=MF複勝上位N（帯別に点数可変）
+            for t in _mf_partners({myo}, _tail_n(name)):
                 add(kind, name, f"{myo:02d}-{t:02d}", roi)
-        elif name == "馬連 妙-複勝上位5":        # 相手=MF複勝上位
-            for t in _mf_partners({myo}, 5):
+        elif name.startswith("馬連 妙-複勝上位"):   # 相手=MF複勝上位N
+            for t in _mf_partners({myo}, _tail_n(name)):
                 add(kind, name, s2(myo, t), roi)
-        elif name == "3連複 妙◎軸-複勝上位5":    # place系: 複勝妙軸 + MF複勝相手
+        elif name.startswith("3連複 妙◎軸-複勝上位"):  # place系: 複勝妙軸 + MF複勝相手N
             if myo_p != hon:
-                for t in _mf_partners({myo_p, hon}, 5):
+                for t in _mf_partners({myo_p, hon}, _tail_n(name)):
                     x = sorted((myo_p, hon, t))
                     add(kind, name, f"{x[0]:02d}-{x[1]:02d}-{x[2]:02d}", roi)
         elif name == "3連単 妙→複勝3→複勝5":     # 2着=MF複勝上位3 / 3着=MF複勝上位5
