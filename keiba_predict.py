@@ -1361,19 +1361,26 @@ BUY_INDEX_MIN = 70
 # ── 資金設定（2026-07-17・自動投票対応の下地）────────────────────────────
 #   today_bets.csv に1点ごとの「金額」列が出力される（将来の自動投票はこれを注文リストとして読む）。
 #   照合(analyze_accuracy)も金額加重の実収支で集計される。
-BET_UNIT = 100                    # 基本1点あたりの金額(円)。IPAT最小100円単位
-BAND_WEIGHT = {                   # 判定帯ごとの倍率（例: 勝負だけ厚くするなら 勝負:2.0）
-    # 2026-07-21 再較正: 新メニュー(複妙軸+MF相手)の帯別ROI 買い216.7%/勝負201.4%/堅実≈140%。
-    # 高変動の勝負帯を増やすのではなく低エッジの堅実/少額を絞る＝ブレンドROI↑・変動は増やさない安全側。
-    "勝負": 1.0, "買い": 1.0, "堅実": 0.7, "少額": 0.5,
+BET_UNIT = 100                    # 基本1点あたりの金額(円)・KIND_STAKE未定義券種のフォールバック
+# ── 予算配分方式（2026-07-21）────────────────────────────────────────────
+#   各レースで「予算内に収まるよう買い目を選び・券種ごとに掛け金を配分」する。
+#   仕組み: 1点の金額 = KIND_STAKE[券種] × SIZE_WEIGHT[サイズ] → 100円丸め・最低100円。
+#           合計が RACE_BUDGET[判定帯] を超えたらBT回収率の低い買い方から丸ごと削る。
+#   例: 勝負帯で単勝500×1 + 馬単100×5 → 予算内なら両方、超えれば弱い連系から自動除外。
+RACE_BUDGET = {                   # 帯別の1レース予算(円)。帯の強さ＝予算配分で表現(旧BAND_WEIGHT代替)
+    "勝負": 2000, "買い": 1500, "堅実": 1000, "少額": 500,
 }
-SIZE_WEIGHT = {                   # MF自信度サイズの倍率
-    "厚め": 2.0, "標準": 1.0, "薄め": 0.5,
+KIND_STAKE = {                    # 券種ごとの1点あたり基本額(円)。単勝を厚く・多点の連系を薄く
+    "単勝": 500, "複勝": 300, "ワイド": 200,
+    "馬連": 100, "馬単": 100, "3連複": 100, "3連単": 100,
 }
-KIND_UNIT = {}                    # 券種別の金額上書き(円) 例: {"3連単": 100, "単勝": 300}
+SIZE_WEIGHT = {                   # MF自信度サイズの倍率（レース内の妙の確信度で厚薄）
+    "厚め": 1.6, "標準": 1.0, "薄め": 0.6,
+}
+BAND_WEIGHT = {}                  # 旧方式の残置(未使用)。帯別配分は RACE_BUDGET に移行済み
+KIND_UNIT = {}                    # 券種別の金額“固定”上書き(円)。指定券種はSIZE倍率も無視して固定額
 KIND_SKIP = []                    # 買わない券種 例: ["3連単"] で点数を大幅削減
-RACE_BUDGET_MAX = None            # 1レースの上限金額(円)。超える場合はBT回収率の低い買い方から丸ごと削る
-#   ※ ざっくり日予算 = RACE_BUDGET_MAX × 約19レース(買い対象/日)。
+RACE_BUDGET_MAX = None            # (旧)全帯共通の上限。設定時は RACE_BUDGET より優先
 #   例: RACE_BUDGET_MAX=2000 → 1日約3.8万円上限 / KIND_SKIP=["3連単"] → 1日約270点に減
 
 
@@ -1547,14 +1554,17 @@ def _build_bet_rows(pdf, race_id):
 
     rows = []
 
-    # 1点あたり金額 = BET_UNIT × 判定帯倍率 × サイズ倍率（100円単位に丸め・最低100円）
-    _unit_raw = BET_UNIT * BAND_WEIGHT.get(plan["判定"], 1.0) * SIZE_WEIGHT.get(plan["サイズ"], 1.0)
-    _unit = max(100, int(round(_unit_raw / 100.0)) * 100)
+    # 1点の金額 = KIND_STAKE[券種] × SIZE_WEIGHT[サイズ]（100円丸め・最低100円）。
+    # KIND_UNITに指定があればそれを固定額として最優先（サイズ倍率も無視）。
+    _size_mult = SIZE_WEIGHT.get(plan["サイズ"], 1.0)
 
     def add(kind, name, combo, roi):
         if kind in KIND_SKIP:
             return
-        amt = KIND_UNIT.get(kind, _unit)
+        if kind in KIND_UNIT:
+            amt = KIND_UNIT[kind]
+        else:
+            amt = KIND_STAKE.get(kind, BET_UNIT) * _size_mult
         amt = max(100, int(round(amt / 100.0)) * 100)
         rows.append({"race_id": str(race_id), "券種": kind, "買い方": name,
                      "組み合わせ": combo, "BT回収率": roi,
@@ -1627,17 +1637,19 @@ def _build_bet_rows(pdf, race_id):
                         seen.add(p3o)
                         add(kind, name, f"{p3o[0]:02d}-{p3o[1]:02d}-{p3o[2]:02d}", roi)
 
-    # ── 1レース予算上限: 超過時はBT回収率の低い「買い方」から丸ごと削る ──
-    if RACE_BUDGET_MAX and rows:
-        total = sum(r["金額"] for r in rows)
-        if total > RACE_BUDGET_MAX:
-            order_bt = sorted({(r["買い方"], r["BT回収率"]) for r in rows}, key=lambda x: x[1])
-            for name_drop, _bt in order_bt:
-                if total <= RACE_BUDGET_MAX:
-                    break
-                drop_amt = sum(r["金額"] for r in rows if r["買い方"] == name_drop)
-                rows = [r for r in rows if r["買い方"] != name_drop]
-                total -= drop_amt
+    # ── 1レース予算に収める（優先度順の充当）──
+    #   予算 = RACE_BUDGET_MAX(全帯共通・設定時優先) or RACE_BUDGET[判定帯]。
+    #   rows はメニュー順（単勝→複勝→ワイド→…→3連単）＝優先度順に生成され、
+    #   各連系内も相手はMF複勝上位=良い順。予算が尽きるまで順に充当し、入らない点は落とす。
+    #   これで「単勝を軸に据えて残りを配分」でき、多点の連系が予算を食い潰さない。
+    _budget = RACE_BUDGET_MAX if RACE_BUDGET_MAX else RACE_BUDGET.get(plan["判定"])
+    if _budget and rows:
+        kept, total = [], 0
+        for r in rows:
+            if total + r["金額"] <= _budget:
+                kept.append(r)
+                total += r["金額"]
+        rows = kept
     return rows
 
 
