@@ -819,6 +819,8 @@ def build_report(pdf, race_id, jyo_name, race_no,
                 combo = f"{_mno}-複勝上位{name.split('複勝上位')[-1]}"
             elif name == "ワイド 妙-◎":
                 combo = f"{_mno_p}-{_hno2}"
+            elif name.startswith("ワイド 複妙-複勝上位"):
+                combo = f"{_mno_p}-複勝上位{name.split('複勝上位')[-1]}"
             elif name.startswith("3連複 妙◎軸-複勝上位"):
                 combo = f"{_mno_p}・{_hno2}軸→複勝上位{name.split('複勝上位')[-1]}"
             elif name == "3連単 妙→複勝3→複勝5":
@@ -1462,7 +1464,7 @@ def _race_bet_plan(pdf):
                      "理由": f"妙{pop}人気(勝負帯・全クラス最強)"})
         plan["menu"] = [("単勝", "妙単勝", 291),
                         ("複勝", "妙複勝", 145),
-                        ("ワイド", "ワイド 妙-◎", 175),
+                        ("ワイド", "ワイド 複妙-複勝上位3", 147),
                         ("馬単", "馬単 妙→複勝上位6", 337),
                         ("馬連", "馬連 妙-複勝上位6", 194),
                         ("3連複", "3連複 妙◎軸-複勝上位5", 131),
@@ -1587,9 +1589,12 @@ def _build_bet_rows(pdf, race_id):
             add(kind, name, f"{myo:02d}", roi)
         elif name == "妙複勝":            # place系: 複勝妙軸
             add(kind, name, f"{myo_p:02d}", roi)
-        elif name == "ワイド 妙-◎":       # place系: 複勝妙軸
+        elif name == "ワイド 妙-◎":       # place系: 複勝妙軸（旧・1点）
             if hon != myo_p:
                 add(kind, name, s2(myo_p, hon), roi)
+        elif name.startswith("ワイド 複妙-複勝上位"):  # 複妙軸 + MF複勝上位N（勝負帯拡張）
+            for t in _mf_partners({myo_p}, _tail_n(name)):
+                add(kind, name, s2(myo_p, t), roi)
         elif name == "馬単 妙→◎○▲":
             for t in [marks[m] for m in ("◎", "○", "▲") if m in marks and marks[m] != myo]:
                 add(kind, name, f"{myo:02d}-{t:02d}", roi)
