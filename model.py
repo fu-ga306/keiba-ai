@@ -1,3 +1,4 @@
+import os
 import sys
 import pickle
 import warnings
@@ -327,11 +328,12 @@ def train_model(csv_path="race_features.csv", target="win", df=None):
 
     df["年"] = df["race_id"].astype(str).str[:4].astype(int)
     if BT_MODE:
-        # バックテストモード: 〜2024学習 / 2025検証（honest評価・従来挙動）
-        train_df = df[df["年"] <= 2024].copy()
-        test_df  = df[df["年"] == 2025].copy()
-        print(f"学習データ: {len(train_df)}行（〜2024）[backtestモード]")
-        print(f"検証データ: {len(test_df)}行（2025）")
+        # バックテストモード: 〜(TEST_YEAR-1)学習 / TEST_YEAR検証（honest評価）
+        _ty = int(os.environ.get("KEIBA_TEST_YEAR", "2025"))   # 多年度検証用: テスト年を可変に
+        train_df = df[df["年"] <= _ty - 1].copy()
+        test_df  = df[df["年"] == _ty].copy()
+        print(f"学習データ: {len(train_df)}行（〜{_ty-1}）[backtestモード]")
+        print(f"検証データ: {len(test_df)}行（{_ty}）")
     else:
         # 本番モード: 全データで学習（直近年まで）。test_dfは最新年のin-sample参考値のみ。
         train_df = df.copy()

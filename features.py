@@ -1203,10 +1203,10 @@ def add_interaction_features(df):
     return df
 
 
-def build_features(csv_path="race_data_clean.csv", out_path="race_features.csv"):
+def build_features(csv_path="race_data_clean.csv", out_path="race_features.csv", year_max=2024):
     print("データ読み込み中...")
-    print("コースバイアステーブルを集計中（2024以前）...")
-    build_course_bias(csv_path, "course_bias.csv", year_max=2024)
+    print(f"コースバイアステーブルを集計中（{year_max}以前）...")
+    build_course_bias(csv_path, "course_bias.csv", year_max=year_max)
     df = load_and_prepare(csv_path)
     print("特徴量を生成中（過去成績・騎手・血統・コース・交互作用、時間がかかります）...")
     df = _run_feature_pipeline(df, use_train_snapshot=True)  # 学習: 血統は≤2024版でリーク防止

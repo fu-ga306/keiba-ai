@@ -8,10 +8,12 @@ JV実払戻(jv_payouts.csv)で金額加重の実収支を出す忠実バック�
   妙味軸=MF勝率1位(≠◎のとき) / 複妙=MF複勝1位 / ×は現行メニュー未使用のため省略
 """
 import warnings; warnings.filterwarnings("ignore")
+import os
 import pandas as pd, numpy as np, collections
 import keiba_predict as kp
 
 UNORDERED = {"馬連", "ワイド", "3連複", "枠連"}
+TEST_YEAR = os.environ.get("KEIBA_TEST_YEAR", "2025")   # 多年度検証用
 
 
 def norm(kind, combo):
@@ -30,7 +32,7 @@ def load():
         ["race_id", "馬名", "馬番", "人気", "単勝オッズ", "クラス_num", "着順_num"]]
     df = rf.merge(p3, on=["race_id", "馬名"], how="inner").merge(mf, on=["race_id", "馬名"], how="inner")
     jv = pd.read_csv("jv_payouts.csv", dtype=str)
-    jv = jv[jv["race_id"].str.startswith("2025")]
+    jv = jv[jv["race_id"].str.startswith(TEST_YEAR)]
     pay = {(r.race_id, r.券種, r.組み合わせ): int(r.払戻金) for r in jv.itertuples()}
     return df, pay
 

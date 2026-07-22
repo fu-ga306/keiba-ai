@@ -113,8 +113,9 @@ def main():
     df = pd.read_csv("race_features.csv"); df = df.dropna(subset=["着順_num"]); df = df[df["着順_num"] >= 1]
     df = add_race_rank_features(df); df["年"] = df["race_id"].astype(str).str[:4].astype(int)
     if bt_mode:
-        tr = df[df["年"] <= 2024].copy(); te = df[df["年"] == 2025].copy()
-        print(f"[backtestモード] train<=2024 / test 2025", flush=True)
+        _ty = int(os.environ.get("KEIBA_TEST_YEAR", "2025"))   # 多年度検証用: テスト年を可変に
+        tr = df[df["年"] <= _ty - 1].copy(); te = df[df["年"] == _ty].copy()
+        print(f"[backtestモード] train<={_ty-1} / test {_ty}", flush=True)
     else:
         tr = df.copy(); te = df[df["年"] == df["年"].max()].copy()
         print(f"[本番モード] 全期間〜{df['年'].max()}で学習（テスト表示はin-sample参考値）", flush=True)
