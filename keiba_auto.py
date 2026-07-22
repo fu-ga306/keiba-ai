@@ -230,6 +230,41 @@ def get_today_races():
         driver.quit()
 
 
+def classify_race_class(race_name, cond_text, grade_icon=None):
+    """レース名(グレード)＋条件テキストから (クラス名, クラス_num 1-8) を判定。
+    序列: 1 新馬/未勝利 / 2 1勝 / 3 2勝 / 4 3勝 / 5 オープン特別・L / 6 G3 / 7 G2 / 8 G1。
+    netkeibaはグレードをローマ数字(GⅢ)やアイコン(Icon_GradeTypeN)で出すため複数表記に対応し、
+    グレードは「オープン」より優先。全角数字も正規化する。"""
+    z2h = str.maketrans("０１２３４５６７８９", "0123456789")
+    name = (race_name or "").translate(z2h)
+    cond = (cond_text or "").translate(z2h)
+    # グレード: レース名の表記（ローマ数字・括弧）or アイコンクラスの番号
+    grade = None
+    if "GⅠ" in name or "(GI)" in name or "（GI）" in name:
+        grade = "G1"
+    elif "GⅡ" in name or "(GII)" in name or "（GII）" in name:
+        grade = "G2"
+    elif "GⅢ" in name or "(GIII)" in name or "（GIII）" in name:
+        grade = "G3"
+    elif grade_icon in ("1", "2", "3"):
+        grade = {"1": "G1", "2": "G2", "3": "G3"}[grade_icon]
+    if grade:
+        return grade, {"G1": 8, "G2": 7, "G3": 6}[grade]
+    if "未勝利" in cond:
+        return "未勝利", 1
+    if "新馬" in cond:
+        return "新馬", 1
+    if "1勝クラス" in cond or "500万" in cond:
+        return "1勝クラス", 2
+    if "2勝クラス" in cond or "1000万" in cond:
+        return "2勝クラス", 3
+    if "3勝クラス" in cond or "1600万" in cond:
+        return "3勝クラス", 4
+    if "オープン" in cond or "リステッド" in cond or "(L)" in name or "（L）" in name:
+        return "オープン", 5
+    return None, None
+
+
 # ── Step2: 出馬表・オッズ取得 ──────────────────────────────────────────────
 def get_race_data(race_id):
     url = f"https://race.netkeiba.com/race/shutuba.html?race_id={race_id}"
@@ -270,19 +305,19 @@ def get_race_data(race_id):
         race_div2 = soup.find("div", class_="RaceData02")
         if race_div2:
             text2 = race_div2.get_text()
-            race_info["レースクラス"] = None
-            for cls in ["新馬", "未勝利", "1勝クラス", "2勝クラス",
-                        "3勝クラス", "オープン", "G1", "G2", "G3"]:
-                if cls in text2:
-                    race_info["レースクラス"] = cls
-                    break
-            # クラス_num: モデル学習時(scraper_fixed.py)と同じ 1-8 スケール
-            _cls_map_live = {
-                "新馬": 1, "未勝利": 1,
-                "1勝クラス": 2, "2勝クラス": 3, "3勝クラス": 4,
-                "オープン": 5, "G3": 6, "G2": 7, "G1": 8,
-            }
-            race_info["クラス_num"] = _cls_map_live.get(race_info["レースクラス"])
+            # レース名(グレード)を取得: G1/G2/G3はローマ数字やアイコンで出るため必須。
+            name_div = soup.find("div", class_="RaceName")
+            race_name = name_div.get_text(strip=True) if name_div else ""
+            grade_icon = None
+            if name_div:
+                icon = name_div.find("span", class_=re.compile(r"Icon_GradeType\d"))
+                if icon:
+                    m = re.search(r"Icon_GradeType(\d)", " ".join(icon.get("class", [])))
+                    grade_icon = m.group(1) if m else None
+            # クラス名＋クラス_num(1-8) を優先順位付きで判定（グレード>条件>オープン）
+            cls_name, cls_num = classify_race_class(race_name, text2, grade_icon)
+            race_info["レースクラス"] = cls_name
+            race_info["クラス_num"] = cls_num
 
         table = soup.find("table", class_="Shutuba_Table")
         print(f"  Shutuba_Table: {table is not None}")
