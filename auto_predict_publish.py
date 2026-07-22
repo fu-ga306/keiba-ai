@@ -51,7 +51,8 @@ def git_push(message: str):
         os.chdir(BASE_DIR)
 
         # 変更があるファイルだけ追加
-        files = ["today_predictions.csv", "prediction_record_v2.csv", "today_bets.csv"]
+        files = ["today_predictions.csv", "prediction_record_v2.csv", "today_bets.csv",
+                 "odds_history.csv"]   # オッズ変動特徴の蓄積データ（追記式・バックアップ用）
         for f in files:
             path = os.path.join(BASE_DIR, f)
             if os.path.exists(path):

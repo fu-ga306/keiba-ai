@@ -1101,7 +1101,8 @@ def _push_latest(message: str):
     """予想・買い目CSVをGitHubへプッシュしダッシュボードを更新する（7分前ジョブ用）。"""
     import subprocess
     try:
-        for f in ("today_predictions.csv", "today_bets.csv", "prediction_record_v2.csv"):
+        for f in ("today_predictions.csv", "today_bets.csv", "prediction_record_v2.csv",
+                  "odds_history.csv"):   # オッズ変動蓄積データもバックアップ
             p = os.path.join(BASE_DIR, f)
             if os.path.exists(p):
                 subprocess.run(["git", "add", f], cwd=BASE_DIR, capture_output=True)

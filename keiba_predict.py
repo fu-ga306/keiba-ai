@@ -57,6 +57,24 @@ def read_pred_csv(path, **kw):
     return df
 
 
+def record_odds_snapshot(pdf, race_id):
+    """予想実行の都度、現時点のオッズ/人気を odds_history.csv に追記（重複除去せず時系列蓄積）。
+    朝・発走40分前・直前の各実行で自然に貯まり、後日「オッズ変動（金の流れ）」特徴の材料になる。
+    新規スクレイピングはせず既に取得済みのpdfのオッズを使う（IP負荷ゼロ）。記録失敗で予想は止めない。"""
+    try:
+        cols = [c for c in ("馬番", "馬名", "単勝オッズ", "人気", "複勝オッズ_min") if c in pdf.columns]
+        if "単勝オッズ" not in cols or pdf["単勝オッズ"].isna().all():
+            return  # オッズ未取得なら記録しない（NaN行で汚さない）
+        snap = pdf[cols].copy()
+        snap.insert(0, "race_id", str(race_id))
+        snap["記録時刻"] = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
+        path = os.path.join(BASE_DIR, "odds_history.csv")
+        snap.to_csv(path, mode="a", header=not os.path.exists(path),
+                    index=False, encoding="utf-8-sig")
+    except Exception as e:
+        print(f"  オッズ記録スキップ: {e}")
+
+
 # ── ハーヴィルモデルで複勝・3着内確率を計算 ─────────────────────────────
 def calc_place_probs_harvill(win_probs: np.ndarray):
     n = len(win_probs)
@@ -1348,6 +1366,9 @@ def predict_race_pdf(race_id: str, *, history_df: pd.DataFrame, models_pack: dic
                     print("  買い目なし（見送りレース）→ today_bets.csv 追記なし")
     except Exception as e:
         print(f"  買い目保存エラー: {e}")
+
+    # オッズ変動特徴の材料を時系列で蓄積（朝/40分前/直前の各実行ぶんが貯まる）
+    record_odds_snapshot(pdf, race_id)
 
     return pdf
 
