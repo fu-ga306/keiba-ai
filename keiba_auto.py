@@ -307,11 +307,18 @@ def get_race_data(race_id):
                     race_info["馬場状態"] = condition
                     break
             # 保険: RaceData01の局所テキストで拾えない場合(函館ダート等でNaN化していた)、
-            # ページ全体の「馬場:○」ラベルを正規表現で拾う。1レース1ページなので誤検出しにくい。
+            # ページ全体からラベル付きで拾う。netkeibaは芝/ダートの状態を別表示するため、
+            # ダート戦はダート側、芝戦は芝側の状態を優先する。1レース1ページなので誤検出しにくい。
             if race_info["馬場状態"] is None:
-                m_baba = re.search(r"馬場[:：]\s*(不良|稍重|重|良)", soup.get_text())
-                if m_baba:
-                    race_info["馬場状態"] = m_baba.group(1)
+                page = soup.get_text()
+                is_dirt = race_info.get("is_turf") == 0.0
+                labels = ([r"ダート?[:：]", r"馬場[:：]"] if is_dirt
+                          else [r"芝[:：]", r"馬場[:：]"])
+                for lab in labels:
+                    m = re.search(lab + r"\s*(不良|稍重|重|良)", page)
+                    if m:
+                        race_info["馬場状態"] = m.group(1)
+                        break
             race_info["馬場状態_num"] = {"良": 1, "稍重": 2, "重": 3, "不良": 4}.get(race_info["馬場状態"])
         else:
             print("  RaceData01: 見つからず")
