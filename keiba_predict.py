@@ -15,6 +15,14 @@ import glob
 import pickle
 import smtplib
 import warnings
+
+# コンソール出力をUTF-8化（レポートの罫線'═'等がcp932環境でUnicodeEncodeError→
+# 予想プロセスが異常終了しgit push漏れになるのを防ぐ。errors="replace"で絶対に落とさない）。
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 import numpy as np
 import pandas as pd
 from datetime import datetime

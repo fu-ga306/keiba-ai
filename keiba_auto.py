@@ -8,9 +8,17 @@ import re
 import schedule
 import time
 import os
+import sys
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime
+
+# コンソール出力をUTF-8化（cp932環境での罫線/絵文字によるUnicodeEncodeError→異常終了を防ぐ）
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 from result_tracker import record_from_prediction
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
