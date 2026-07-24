@@ -1148,6 +1148,13 @@ def run_single_race(race_id, history_df, models_pack):
     except Exception as e:
         print(f"  記録保存エラー: {e}")
 
+    # 自動投票（直前オッズで確定した today_bets を投票）。既定OFF＋ドライランで安全。
+    try:
+        import auto_vote
+        auto_vote.place_race_bets(str(race_id))
+    except Exception as e:
+        print(f"  自動投票スキップ（予想は継続）: {e}")
+
     # 直前更新をダッシュボードに反映（predict_race_pdfが更新した
     # today_predictions.csv / today_bets.csv をプッシュ→キャッシュクリア）
     _push_latest(f"{jyo_name} {race_no}R 直前更新 {datetime.now().strftime('%H:%M')}")

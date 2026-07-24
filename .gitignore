@@ -60,3 +60,5 @@ jv_*_log.txt
 matrix_multiyear*.txt
 feature_reduce_result.txt
 model_mf_backup.pkl
+vote_log.csv
+AUTO_VOTE_ARMED
