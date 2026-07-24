@@ -3,6 +3,7 @@ start_dashboard.py
 Flask + ngrok を起動してダッシュボードURLをメールで通知する
 """
 import os
+import sys
 import subprocess
 import smtplib
 import time
@@ -39,10 +40,22 @@ def send_email(url: str):
     print(f"メール送信完了 → {TO_ADDRESS}")
 
 
+def _already_running():
+    """Flask(5000番)が既に起動済みかを判定（自動起動での二重起動防止）。"""
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(1)
+        return s.connect_ex(("127.0.0.1", FLASK_PORT)) == 0
+
+
 def main():
     print("=" * 50)
     print("  競馬AI予想 ダッシュボード起動")
     print("=" * 50)
+
+    if _already_running():
+        print(f"\nダッシュボードは既に起動中（ポート{FLASK_PORT}使用中）→ 二重起動せず終了")
+        return
 
     # Flask 起動
     print("\n[1] Flask 起動中...")
@@ -78,7 +91,10 @@ def main():
     print("  このウィンドウは閉じてもOKです")
     print("  （Flask/ngrokのウィンドウは開いたまま）")
     print("=" * 50)
-    input("\nEnterで終了...")
+    # 自動起動（タスクスケジューラ等・非対話）ではinputで待たない。
+    # Flask/ngrokは別プロセスで起動済みなので、このプロセスはそのまま終了してよい。
+    if sys.stdin and sys.stdin.isatty():
+        input("\nEnterで終了...")
 
 
 if __name__ == "__main__":
