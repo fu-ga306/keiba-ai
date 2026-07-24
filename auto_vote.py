@@ -22,8 +22,10 @@ from datetime import datetime
 BASE_DIR = os.environ.get("KEIBA_BASE_DIR", os.path.dirname(os.path.abspath(__file__)))
 
 # ━━ トグル（ここだけ変えれば切替できる）━━━━━━━━━━━━━━━━━━━━━━━━━━━
-AUTO_VOTE_ENABLED = False        # マスタースイッチ。Trueで投票処理が動く（既定OFF）
-VOTE_MODE = "dryrun"             # "dryrun"=記録のみ / "ipat"=実投票（要ARMED＋認証）
+AUTO_VOTE_ENABLED = True         # マスタースイッチ。Trueで投票処理が動く
+VOTE_MODE = "dryrun"             # "dryrun"=記録のみ(実弾ゼロ) / "ipat"=実投票（要ARMED＋認証）
+#   ↑2026-07-24: 今週から予想検証のためドライランON。実投票にはVOTE_MODE="ipat"＋
+#     AUTO_VOTE_ARMEDファイル＋IPAT認証＋_submit_ipatのSETUP_DONE=True が全て必要。
 # ━━ 安全弁 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 DAILY_BUDGET_MAX = 30000         # 1日の投票総額上限(円)。超過分は以降スキップ
 PER_RACE_MAX     = 5000          # 1レースの投票上限(円)。today_bets側の予算と二重チェック
