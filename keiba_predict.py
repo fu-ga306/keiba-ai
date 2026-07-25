@@ -83,6 +83,36 @@ def record_odds_snapshot(pdf, race_id):
         print(f"  オッズ記録スキップ: {e}")
 
 
+def fmt_bet_combos(kind, combos):
+    """買い目の組み合わせ群を「軸→相手」で表示。相手(複勝上位)の馬番が全部見えるようにする。
+    例: 馬単 09-04,09-01,… → "9→4・1・7・10・3・2"。ダッシュボードと同じ整形。"""
+    lists = [str(c).split("-") for c in combos if str(c)]
+    if not lists:
+        return ""
+    common = set(lists[0])
+    for p in lists[1:]:
+        common &= set(p)
+
+    def _i(x):
+        try:
+            return str(int(x))
+        except (ValueError, TypeError):
+            return str(x)
+
+    if 1 <= len(common) <= 2 and len(lists) >= 2:
+        axis = "・".join(_i(x) for x in lists[0] if x in common)
+        partners = []
+        for p in lists:
+            for x in p:
+                if x not in common and x not in partners:
+                    partners.append(x)
+        arrow = "→" if kind in ("馬単", "3連単") else "-"
+        return f"{axis}{arrow}" + "・".join(_i(x) for x in partners)
+    if len(lists) <= 6:
+        return " / ".join("-".join(_i(x) for x in p) for p in lists)
+    return f"{'-'.join(_i(x) for x in lists[0])} 他{len(lists) - 1}点"
+
+
 # ── ハーヴィルモデルで複勝・3着内確率を計算 ─────────────────────────────
 def calc_place_probs_harvill(win_probs: np.ndarray):
     n = len(win_probs)
@@ -829,46 +859,21 @@ def build_report(pdf, race_id, jyo_name, race_no,
             _rows_bet = _build_bet_rows(pdf, _rid_disp)
         except Exception:
             _rows_bet = []
-        _grp = {}
+        _grp, _combos = {}, {}
         for rr in _rows_bet:
             g0 = _grp.setdefault(rr["買い方"], [0, 0])
             g0[0] += 1
             g0[1] += rr.get("金額", 100)
+            _combos.setdefault(rr["買い方"], []).append(str(rr["組み合わせ"]))
         for kind, name, roi in _plan["menu"]:
             if _rows_bet and name not in _grp:
                 continue           # KIND_SKIP/予算トリムで除外された買い方は表示しない
-            if name == "妙複勝":
-                combo = f"{_mno_p}"
-            elif name.startswith("馬単 妙→複勝上位"):
-                combo = f"{_mno}→{name.split('複勝上位')[-1]}頭(複勝上位)"
-            elif name.startswith("馬連 妙-複勝上位"):
-                combo = f"{_mno}-複勝上位{name.split('複勝上位')[-1]}"
-            elif name == "ワイド 妙-◎":
-                combo = f"{_mno_p}-{_hno2}"
-            elif name.startswith("ワイド 複妙-複勝上位"):
-                combo = f"{_mno_p}-複勝上位{name.split('複勝上位')[-1]}"
-            elif name.startswith("3連複 妙◎軸-複勝上位"):
-                combo = f"{_mno_p}・{_hno2}軸→複勝上位{name.split('複勝上位')[-1]}"
-            elif name == "3連単 妙→複勝3→複勝5":
-                combo = f"{_mno}→複勝3→複勝5"
-            elif name == "3連単 妙◎軸マルチ上位5":
-                combo = f"{_mno}・{_hno2}軸ﾏﾙﾁ→上位5"
-            elif name == "馬単 妙→◎○▲":
-                combo = f"{_mno}→" + ".".join(str(_mk_no[m]) for m in ("◎", "○", "▲") if m in _mk_no and _mk_no[m] != _mno)
-            elif name == "◎単勝":
-                combo = f"{_hno2}"
-            elif name == "馬単 ◎→○▲△":
-                combo = f"{_hno2}→" + ".".join(str(_mk_no[m]) for m in ("○", "▲", "△") if m in _mk_no)
-            elif name == "3連複 ◎○▲":
-                combo = "-".join(str(_mk_no[m]) for m in ("◎", "○", "▲") if m in _mk_no)
-            elif name == "3連単 ◎→○▲→○▲△":
-                combo = f"{_hno2}→○▲→○▲△"
-            else:
-                combo = f"{_mno if _mno is not None else _hno2}"
+            # 実際の買い目(today_bets)の組み合わせから「軸→相手(馬番)」を展開表示
+            combo = fmt_bet_combos(kind, _combos.get(name, []))
             _pts_s = ""
             if name in _grp:
                 _pts_s = f"  {_grp[name][0]}点/{_grp[name][1]:,}円"
-            lines.append(f"   {kind:4}: {combo:18} [BT{roi}%]{_pts_s}")
+            lines.append(f"   {kind:4}: {combo:22} [BT{roi}%]{_pts_s}")
         if _rows_bet:
             _tot_amt = sum(r.get("金額", 100) for r in _rows_bet)
             lines.append(f"   ── 合計 {len(_rows_bet)}点 / {_tot_amt:,}円 ──")

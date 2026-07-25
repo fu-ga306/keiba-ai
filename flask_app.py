@@ -242,6 +242,36 @@ def calc_rec_level(group: pd.DataFrame, are_tan: int, are_ren: int, bet_recs: li
         return "様子見", "rec-watch", score
 
 
+def _fmt_axis_partners(kind: str, combos: list[str]) -> str:
+    """組み合わせ群を「軸→相手」の形で表示。相手(複勝上位)の馬番が全部見えるようにする。
+    例: 馬単 09-04,09-01,... → "9→4・1・7・10・3・2" / 3連複 01-03-04,... → "1・3-4・6・…"。"""
+    lists = [str(c).split("-") for c in combos]
+    if not lists:
+        return ""
+    common = set(lists[0])
+    for p in lists[1:]:
+        common &= set(p)
+
+    def _i(x):
+        try:
+            return str(int(x))
+        except (ValueError, TypeError):
+            return str(x)
+
+    if 1 <= len(common) <= 2 and len(combos) >= 2:
+        axis = "・".join(_i(x) for x in lists[0] if x in common)   # 軸(元の並び順)
+        partners = []
+        for p in lists:
+            for x in p:
+                if x not in common and x not in partners:
+                    partners.append(x)
+        arrow = "→" if kind in ("馬単", "3連単") else "-"
+        return f"{axis}{arrow}" + "・".join(_i(x) for x in partners)
+    if len(combos) <= 6:
+        return " / ".join(combos)
+    return f"{combos[0]} 他{len(combos) - 1}点"
+
+
 def build_my_bets(race_id: str, bets_df: pd.DataFrame) -> list[dict]:
     """today_bets.csv から当該レースの推奨買い目を表示用に集約する。
     買い方ごとに1行（点数・BT回収率・組み合わせ要約）。"""
@@ -257,10 +287,8 @@ def build_my_bets(race_id: str, bets_df: pd.DataFrame) -> list[dict]:
         if "総流し" in str(name):
             axis = combos[0].split("-")[0]
             combo_s = f"{int(axis)} → 総流し"
-        elif len(combos) <= 4:
-            combo_s = " / ".join(combos)
         else:
-            combo_s = f"{combos[0]} 他{len(combos)-1}点"
+            combo_s = _fmt_axis_partners(kind, combos)   # 軸→相手(馬番)を全部表示
         bt = g["BT回収率"].iloc[0] if "BT回収率" in g.columns else ""
         amt = int(pd.to_numeric(g["金額"], errors="coerce").fillna(100).sum()) if "金額" in g.columns else len(g) * 100
         out.append({"kind": kind, "name": str(name), "combo": combo_s,
