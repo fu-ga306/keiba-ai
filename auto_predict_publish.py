@@ -38,6 +38,42 @@ JYO_NAMES = {
 
 PYTHON = r"C:/Users/別府飛河/AppData/Local/Microsoft/WindowsApps/python3.11.exe"
 
+DISK_MIN_GB = 2.0   # この空き未満なら予想を中止してメール警告（満杯でサイレント停止を防ぐ）
+
+
+# ── ディスク不足アラート ──────────────────────────────────────────────────
+def _send_alert(subject, body):
+    """.env のGmail認証で警告メールを送る（軽量・依存少）。"""
+    try:
+        import smtplib
+        from email.mime.text import MIMEText
+        from dotenv import load_dotenv
+        load_dotenv(os.path.join(BASE_DIR, ".env"))
+        msg = MIMEText(body, "plain", "utf-8")
+        msg["Subject"] = subject
+        msg["From"] = os.environ["GMAIL_ADDRESS"]
+        msg["To"] = os.environ["TO_ADDRESS"]
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as s:
+            s.login(os.environ["GMAIL_ADDRESS"], os.environ["GMAIL_APP_PASS"])
+            s.send_message(msg)
+        print("  警告メール送信完了")
+    except Exception as e:
+        print(f"  警告メール送信失敗: {e}")
+
+
+def check_disk_ok():
+    """C:の空きが DISK_MIN_GB 以上か。不足ならFalse＋メール警告。"""
+    import shutil
+    free_gb = shutil.disk_usage(BASE_DIR).free / (1024 ** 3)
+    if free_gb < DISK_MIN_GB:
+        msg = (f"競馬AI: ディスク空きが {free_gb:.2f}GB しかありません（閾値{DISK_MIN_GB}GB）。\n"
+               f"予想を中止しました。C:ドライブを空けてください（例: 管理者cmdで powercfg /h off、"
+               f"ディスククリーンアップ、不要ファイル削除）。空けたら予想が再開します。")
+        print(f"  ⚠ ディスク不足 {free_gb:.2f}GB → 予想中止・メール警告")
+        _send_alert(f"⚠競馬AI ディスク不足 残{free_gb:.1f}GB 予想中止", msg)
+        return False
+    return True
+
 
 # ── ダッシュボード即時更新通知 ────────────────────────────────────────────
 def notify_dashboard():
@@ -97,6 +133,9 @@ def run_morning_prediction():
     print(f"[{now}] 朝の一括予想開始")
     print(f"{'='*50}")
 
+    if not check_disk_ok():   # ディスク不足なら中止（満杯でのサイレント停止/クラッシュを防止）
+        return
+
     # 開催日ガード: 非開催日は予想・プッシュをスキップ（get_today_racesが
     # 最小レース数チェック込みで空を返す→誤メール/誤予想を防止）。
     try:
@@ -145,6 +184,9 @@ def run_race_prediction(race_id: str, race_time: str):
 
     now = datetime.now().strftime("%H:%M")
     print(f"\n[{now}] {jyo_name} {race_no}R 予想開始（発走: {race_time}）")
+
+    if not check_disk_ok():   # ディスク不足なら中止
+        return
 
     try:
         result = subprocess.run(
