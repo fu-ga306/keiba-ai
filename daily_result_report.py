@@ -43,8 +43,10 @@ def build_report(date_str=None):
         return None, None
 
     from payout_scraper import get_payout
+    import collections
     races = sorted(v["race_id"].dropna().unique())
     hit_rows, tot_inv, tot_ret, tot_pts, tot_hits = [], 0, 0, 0, 0
+    kind_stats = collections.defaultdict(lambda: [0, 0, 0, 0])  # 券種->[投資,払戻,点数,的中]
     for rid in races:
         try:
             pay = {_norm(p["券種"], p["組み合わせ"]): int(p["払戻金"]) for p in get_payout(rid)}
@@ -54,9 +56,13 @@ def build_report(date_str=None):
         sub = v[v["race_id"] == rid]
         hits = []
         for _, b in sub.iterrows():
+            amt = int(b["金額"])
             pv = pay.get(_norm(b["券種"], b["組み合わせ"]), 0)
+            ret_b = int(pv / 100 * amt) if pv > 0 else 0
+            ks = kind_stats[b["券種"]]
+            ks[0] += amt; ks[1] += ret_b; ks[2] += 1; ks[3] += (pv > 0)
             if pv > 0:
-                hits.append((b["券種"], b["組み合わせ"], int(b["金額"]), int(pv / 100 * b["金額"])))
+                hits.append((b["券種"], b["組み合わせ"], amt, ret_b))
         inv = int(sub["金額"].sum())
         ret = sum(h[3] for h in hits)
         tot_inv += inv; tot_ret += ret; tot_pts += len(sub); tot_hits += len(hits)
@@ -67,6 +73,13 @@ def build_report(date_str=None):
     lines = [f"【競馬AI 結果報告】{date_str}", ""]
     lines.append(f"■ 全体: 投資{tot_inv:,}円 → 払戻{tot_ret:,}円  収支{tot_ret - tot_inv:+,}円  回収率{roi:.1f}%")
     lines.append(f"　購入{tot_pts}点 / 的中{tot_hits}点 (点数的中率{tot_hits / tot_pts * 100:.1f}%) / 的中レース{len(hit_rows)}")
+    lines.append("")
+    lines.append("── 券種別 収支 ──")
+    for k in ["単勝", "複勝", "ワイド", "馬連", "馬単", "3連複", "3連単"]:
+        if k in kind_stats:
+            kinv, kret, kpts, khits = kind_stats[k]
+            kroi = kret / kinv * 100 if kinv else 0
+            lines.append(f"  {k:<4} 投資{kinv:,}→払戻{kret:,}  収支{kret - kinv:+,}  回収{kroi:.0f}%  ({khits}/{kpts}的中)")
     lines.append("")
     lines.append("── 的中レース（収支順）──")
     if not hit_rows:
