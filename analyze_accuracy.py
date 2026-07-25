@@ -311,3 +311,9 @@ def main():
 
 if __name__ == "__main__":
     main()
+    # 照合後、当日の結果報告(的中レース一覧＋回収率)をメール配信
+    try:
+        import daily_result_report
+        daily_result_report.main()
+    except Exception as e:
+        print(f"結果報告スキップ: {e}")
