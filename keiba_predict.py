@@ -1695,7 +1695,7 @@ def _build_bet_rows(pdf, race_id):
 
 
 # ── メイン ────────────────────────────────────────────────────────────────
-def predict_race(race_id: str):
+def predict_race(race_id: str, send_mail: bool = True):
     race_id = str(race_id).strip()
     if len(race_id) != 12 or not race_id.isdigit():
         print("エラー: race_id は12桁の数字で指定してください（例: 202606050811）")
@@ -1768,14 +1768,17 @@ def predict_race(race_id: str):
 
     report = build_report(pdf, race_id, jyo_name, race_no, dist, turf, baba, cls, len(pdf))
     print("\n" + report)
-    subject = f"【競馬AI詳細予想】{jyo_name} {race_no}R"
-    print("\nメール送信中...")
-    send_email(subject, report)
+    if send_mail:
+        subject = f"【競馬AI詳細予想】{jyo_name} {race_no}R"
+        print("\nメール送信中...")
+        send_email(subject, report)
+    else:
+        print("\n（詳細予想メールは送信しません）")
 
 
-def _run_predict_safe(race_id):
+def _run_predict_safe(race_id, send_mail=True):
     try:
-        predict_race(race_id)
+        predict_race(race_id, send_mail=send_mail)
     except Exception as e:
         print(f"  {race_id} エラー: {e}")
 
@@ -1792,7 +1795,7 @@ if __name__ == "__main__":
             sys.exit(1)
         print(f"{len(race_info)}レースを予想します")
         for rid in sorted(race_info.keys()):
-            _run_predict_safe(rid)
+            _run_predict_safe(rid, send_mail=False)   # 朝一括はメール送信しない（36通の連投を防ぐ）
         print("\n全レース予想完了 → today_predictions.csv")
     else:
         # 個別レース予想（auto_predict_publish.py の発走40分前実行から呼び出される）
