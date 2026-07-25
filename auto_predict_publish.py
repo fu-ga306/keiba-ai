@@ -148,7 +148,7 @@ def run_race_prediction(race_id: str, race_time: str):
 
     try:
         result = subprocess.run(
-            [PYTHON, os.path.join(BASE_DIR, "keiba_predict.py"), race_id],
+            [PYTHON, os.path.join(BASE_DIR, "keiba_predict.py"), race_id, "nomail"],
             cwd=BASE_DIR,
             capture_output=False,
             text=True,

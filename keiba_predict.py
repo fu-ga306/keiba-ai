@@ -1799,5 +1799,6 @@ if __name__ == "__main__":
         print("\n全レース予想完了 → today_predictions.csv")
     else:
         # 個別レース予想（auto_predict_publish.py の発走40分前実行から呼び出される）
+        # 引数に "nomail" があればメール送信しない（40分前ジョブが指定・手動実行は送る）。
         race_id = sys.argv[1] if len(sys.argv) > 1 else TARGET_RACE_ID
-        predict_race(race_id)
+        predict_race(race_id, send_mail=("nomail" not in sys.argv))
