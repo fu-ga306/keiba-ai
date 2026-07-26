@@ -19,21 +19,43 @@ TODAY_PRED_URL = f"{GITHUB_RAW}/today_predictions.csv"
 RECORD_URL = f"{GITHUB_RAW}/prediction_record_v2.csv"
 TODAY_BETS_URL = f"{GITHUB_RAW}/today_bets.csv"
 
+# flaskは予想を生成するのと同じPCで動くので、ローカルにファイルがあれば直接読む。
+# → GitHub raw のCDNキャッシュ(max-age=300)＋自前キャッシュによる「判定は買いなのに
+#   買い目が数分出ない」desyncを解消。ローカルが無い環境ではGitHub rawへフォールバック。
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+LOCAL_MAP = {
+    TODAY_PRED_URL: "today_predictions.csv",
+    RECORD_URL: "prediction_record_v2.csv",
+    TODAY_BETS_URL: "today_bets.csv",
+}
+
 _cache = {}
-CACHE_TTL = 300  # 5分キャッシュ
+CACHE_TTL = 300       # リモート取得時のキャッシュ(5分)
+LOCAL_CACHE_TTL = 15  # ローカル読込時のキャッシュ(15秒・ほぼ即時反映)
+
+
+def _finalize(df: pd.DataFrame) -> pd.DataFrame:
+    # race_idのfloat化('202602011201.0')はURL照合を外し詳細ページを404にする。除去。
+    if "race_id" in df.columns:
+        df["race_id"] = df["race_id"].astype(str).str.replace(r"\.0$", "", regex=True)
+    return df
 
 
 def fetch_csv(url: str) -> pd.DataFrame:
     now = time.time()
-    if url in _cache and now - _cache[url]["ts"] < CACHE_TTL:
+    local_path = os.path.join(BASE_DIR, LOCAL_MAP[url]) if url in LOCAL_MAP else None
+    use_local = local_path is not None and os.path.exists(local_path)
+    ttl = LOCAL_CACHE_TTL if use_local else CACHE_TTL
+    if url in _cache and now - _cache[url]["ts"] < ttl:
         return _cache[url]["df"].copy()
     try:
-        r = requests.get(url, timeout=15)
-        r.encoding = "utf-8"
-        df = pd.read_csv(StringIO(r.text), low_memory=False, dtype={"race_id": str})
-        # race_idのfloat化('202602011201.0')はURL照合を外し詳細ページを404にする。除去。
-        if "race_id" in df.columns:
-            df["race_id"] = df["race_id"].astype(str).str.replace(r"\.0$", "", regex=True)
+        if use_local:
+            df = pd.read_csv(local_path, low_memory=False, dtype={"race_id": str})
+        else:
+            r = requests.get(url, timeout=15)
+            r.encoding = "utf-8"
+            df = pd.read_csv(StringIO(r.text), low_memory=False, dtype={"race_id": str})
+        df = _finalize(df)
         _cache[url] = {"df": df, "ts": now}
         return df.copy()
     except Exception:

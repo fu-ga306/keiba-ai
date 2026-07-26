@@ -49,7 +49,9 @@ def build_report(date_str=None):
     kind_stats = collections.defaultdict(lambda: [0, 0, 0, 0])  # 券種->[投資,払戻,点数,的中]
     for rid in races:
         try:
-            pay = {_norm(p["券種"], p["組み合わせ"]): int(p["払戻金"]) for p in get_payout(rid)}
+            # キーは必ず(券種, 正規化組み合わせ)。券種を含めないと単勝06と複勝06、
+            # 馬単06-07とワイド06-07が衝突して誤的中になる。
+            pay = {(p["券種"], _norm(p["券種"], p["組み合わせ"])): int(p["払戻金"]) for p in get_payout(rid)}
         except Exception:
             pay = {}
         time.sleep(0.3)
@@ -57,7 +59,7 @@ def build_report(date_str=None):
         hits = []
         for _, b in sub.iterrows():
             amt = int(b["金額"])
-            pv = pay.get(_norm(b["券種"], b["組み合わせ"]), 0)
+            pv = pay.get((b["券種"], _norm(b["券種"], b["組み合わせ"])), 0)
             ret_b = int(pv / 100 * amt) if pv > 0 else 0
             ks = kind_stats[b["券種"]]
             ks[0] += amt; ks[1] += ret_b; ks[2] += 1; ks[3] += (pv > 0)
