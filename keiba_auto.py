@@ -74,6 +74,9 @@ def ensure_single_instance(script_name: str):
     2026-07-19にスケジューラ手動起動×タスクスケジューラ6:55起動が重なり、
     keiba_autoが2本並走してメール二重・予想連発が発生した再発防止。"""
     import sys
+    if "--force" in sys.argv:
+        print("  [多重起動ガード] --force指定 → ガードをスキップ（既存が昇格ハング時の復旧用）")
+        return
     try:
         import psutil
     except ImportError:
@@ -1190,6 +1193,13 @@ def main():
     print(f"=== 競馬AI自動予測 起動 [{datetime.now().strftime('%Y/%m/%d %H:%M')}] ===\n")
     ensure_single_instance("keiba_auto.py")
 
+    # レース有無を先に確認(2026-07-27〜)。モデル読込(数GB)より前に判定することで、
+    # レースの無い日(月曜など)に無駄な大容量ロードでRAMを圧迫しない。
+    race_info = get_today_races()
+    if not race_info:
+        print("本日のレースが取得できませんでした")
+        return
+
     print("モデル読み込み中...")
     with open(os.path.join(BASE_DIR, "model.pkl"), "rb") as f:
         saved = pickle.load(f)
@@ -1202,15 +1212,15 @@ def main():
     }
     print("  3モデル構成 → 独立予想を使用" if is_multi else "  旧モデル構成 → ハーヴィル変換を使用")
 
-    mf_path = os.path.join(BASE_DIR, "model_mf.pkl")
-    if os.path.exists(mf_path):
+    import mf_model_io
+    if mf_model_io.exists(BASE_DIR):
         # MFは妙味検出の心臓部。読込失敗すると妙が一切出ず判定が全て堅実/見送りに
         # 劣化する（2026-07-19に発生）。3回リトライし、それでも失敗なら大警告を出す。
+        # 2026-07-27〜: model_mf_parts/があれば逐次読込(ピークRAM激減)、無ければ従来pkl。
         mf_saved = None
         for _try in range(3):
             try:
-                with open(mf_path, "rb") as f:
-                    mf_saved = pickle.load(f)
+                mf_saved = mf_model_io.load_mf(BASE_DIR)
                 break
             except Exception as _e:
                 print(f"  MF読込失敗({_try+1}/3): {_e} → 5秒後リトライ")
@@ -1221,7 +1231,7 @@ def main():
         else:
             print("  " + "!" * 60)
             print("  !! 警告: MFモデル読込に3回失敗。妙味検出が無効のまま稼働します")
-            print("  !! → 判定が堅実/見送りだけに劣化します。model_mf.pklを確認してください")
+            print("  !! → 判定が堅実/見送りだけに劣化します。model_mf.pkl/model_mf_partsを確認してください")
             print("  " + "!" * 60)
             models_pack["mf"] = None
     else:
@@ -1232,11 +1242,6 @@ def main():
         os.path.join(BASE_DIR, "race_data_clean.csv"), low_memory=False
     )
     print(f"読み込み完了: {len(history_df)}行\n")
-
-    race_info = get_today_races()
-    if not race_info:
-        print("本日のレースが取得できませんでした")
-        return
 
     print(f"\n{len(race_info)}レースをスケジュール登録中...")
     now = datetime.now()

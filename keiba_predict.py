@@ -1735,11 +1735,11 @@ def predict_race(race_id: str, send_mail: bool = True):
     }
     print("  3モデル構成 → 独立予想を使用" if is_multi else "  旧モデル構成 → ハーヴィル変換を使用")
 
-    mf_path = os.path.join(BASE_DIR, "model_mf.pkl")
-    if os.path.exists(mf_path):
+    # 2026-07-27〜: model_mf_parts/があれば逐次読込(ピークRAM激減)、無ければ従来pkl。
+    import mf_model_io
+    if mf_model_io.exists(BASE_DIR):
         try:
-            with open(mf_path, "rb") as f:
-                mf_saved = pickle.load(f)
+            mf_saved = mf_model_io.load_mf(BASE_DIR)
             models_pack["mf"] = mf_saved
             print("  市場フリーモデル読み込み完了")
         except Exception as e:

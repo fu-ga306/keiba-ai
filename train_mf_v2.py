@@ -149,6 +149,11 @@ def main():
         with open("model_mf.pkl", "wb") as f:
             pickle.dump(save, f)
         print("deployed -> model_mf.pkl (全データ学習・本番)", flush=True)
+        # ── 分割保存(2026-07-27〜): 一括pickle.loadのピークRAMクラッシュ対策。
+        #    読込側(keiba_auto/keiba_predict)は model_mf_parts/ を優先し逐次読込する。
+        from mf_model_io import save_mf_split
+        d = save_mf_split(save, ".")
+        print(f"deployed -> {d}/ (分割保存・逐次読込用)", flush=True)
 
 if __name__ == "__main__":
     main()
