@@ -1,3 +1,4 @@
+import os
 import pandas as pd
 import numpy as np
 import re
@@ -756,6 +757,71 @@ def add_extra_advanced_features(df):
         df["差し馬×ハイペース想定"] = (
             (df["先行馬フラグ"] == 0).astype(float) * df["他馬想定先行馬数"]
         )
+        # ── ⑥ 精密展開特徴（2026-07-27・通過順位ベース）──────────────────
+        # 旧ペース系(先行馬フラグ/想定先行馬数等)は重要度ほぼゼロだった。原因は
+        # 「1角位置の生値を頭数/3で二値化」の粗さ。頭数で正規化した連続値で作り直す。
+        # 全てレース前情報のみ（脚質は過去走のshift、レース集計は出走馬の過去脚質）。
+        _n = pd.to_numeric(df["出走頭数"], errors="coerce")
+        df["_相対位置"] = df["先行指数"] / _n.replace(0, np.nan)   # 当該レースの値(shift用)
+        _g = df.groupby("馬名")["_相対位置"]
+        # 脚質スコア: 近3走の相対1角位置(0=最前, 1=最後方)。前走ほど重視は rolling で近似
+        df["脚質スコア"] = _g.transform(lambda x: x.shift(1).rolling(3, min_periods=1).mean())
+        df["前走相対位置"] = _g.transform(lambda x: x.shift(1))
+        # 先行力(0-1連続): 前に行く気質の強さ。逃げ気質=平均して先頭付近
+        df["_先行力"] = (0.5 - df["脚質スコア"]).clip(lower=0) * 2.0
+        df["_逃げ気質"] = (df["脚質スコア"] <= 0.15).astype(float)
+        # レース内集計(出走馬の過去脚質から想定ペースを連続値で)
+        _rp = df.groupby("race_id").agg(
+            想定逃げ馬数=("_逃げ気質", "sum"), 先行圧=("_先行力", "sum")).reset_index()
+        df = df.merge(_rp, on="race_id", how="left")
+        _other = (df["先行圧"] - df["_先行力"].fillna(0)).clip(lower=0)
+        # 差し馬(スコア大)×他馬の先行圧が高い=ハイペース恩恵。連続×連続で旧二値版を置換
+        df["差し×先行圧"] = df["脚質スコア"].fillna(0.5) * _other
+        # 単騎逃げ=楽逃げ候補 / 逃げ争い=同型競合で共倒れリスク
+        df["単騎逃げ"] = df["_逃げ気質"] * (df["想定逃げ馬数"] == 1).astype(float)
+        df["逃げ争い"] = df["_逃げ気質"] * (df["想定逃げ馬数"] - 1).clip(lower=0)
+        # コース×脚質バイアス: この競馬場×トラック×距離帯で自分の脚質の複勝率。
+        # レース単位で「そのレースより前」だけをcumsumで集計(同一レース内リーク無し)
+        df["_脚質bin"] = pd.cut(df["脚質スコア"], bins=[-0.01, 0.2, 0.4, 0.65, 1.01],
+                                labels=[1, 2, 3, 4]).astype(float)
+        if "競馬場cd" not in df.columns:
+            df["競馬場cd"] = df["race_id"].astype(str).str[4:6].astype(int)
+        _turf = df["馬場"].astype(str).str.contains("芝").astype(int) if "馬場" in df.columns else 0
+        df["_track"] = _turf
+        df["_距離帯"] = (pd.to_numeric(df["距離"], errors="coerce") / 400).round()
+        df["_fuku3"] = (df["着順_num"] <= 3).astype(float)
+        _keys = ["競馬場cd", "_track", "_距離帯", "_脚質bin"]
+        _t = (df.dropna(subset=["_脚質bin", "_距離帯"])
+                .groupby(_keys + ["race_id"])["_fuku3"].agg(["sum", "count"]).reset_index()
+                .sort_values("race_id"))
+        _gk = _t.groupby(_keys)
+        _t["_cs"] = _gk["sum"].cumsum() - _t["sum"]      # 自レースを除いた過去合計
+        _t["_cc"] = _gk["count"].cumsum() - _t["count"]
+        _t["コース脚質バイアス"] = np.where(_t["_cc"] >= 30, _t["_cs"] / _t["_cc"], np.nan)
+        df = df.merge(_t[_keys + ["race_id", "コース脚質バイアス"]],
+                      on=_keys + ["race_id"], how="left")
+        # 学習ビルド(大データ)では最新累積値をCSV保存し、予測時(履歴を対象馬に絞るため
+        # コース全体の集計が組めない)はCSVから補完する(course_bias.csvと同じ流儀)。
+        _bias_csv = os.path.join(os.path.dirname(os.path.abspath(__file__)), "course_style_bias.csv")
+        if len(df) > 100000:
+            _latest = _t.sort_values("race_id").groupby(_keys).tail(1).copy()
+            _tot_c = _latest["_cc"] + _latest["count"]
+            _latest["コース脚質バイアス"] = np.where(
+                _tot_c >= 30, (_latest["_cs"] + _latest["sum"]) / _tot_c, np.nan)
+            _latest.dropna(subset=["コース脚質バイアス"])[_keys + ["コース脚質バイアス"]].to_csv(
+                _bias_csv, index=False, encoding="utf-8-sig")
+        elif os.path.exists(_bias_csv):
+            try:
+                _lk = pd.read_csv(_bias_csv).rename(columns={"コース脚質バイアス": "_bias_lk"})
+                for _k in _keys:
+                    _lk[_k] = _lk[_k].astype(df[_k].dtype)
+                df = df.merge(_lk, on=_keys, how="left")
+                df["コース脚質バイアス"] = df["コース脚質バイアス"].fillna(df["_bias_lk"])
+                df = df.drop(columns=["_bias_lk"], errors="ignore")
+            except Exception as _e:
+                print(f"  [コース脚質バイアス] CSV補完スキップ: {_e}")
+        df = df.drop(columns=["_相対位置", "_先行力", "_逃げ気質", "_脚質bin",
+                              "_track", "_距離帯", "_fuku3"], errors="ignore")
     else:
         df["過去平均先行指数"] = np.nan
         df["先行馬フラグ"]     = np.nan
@@ -763,6 +829,9 @@ def add_extra_advanced_features(df):
         df["想定先行馬率"]     = np.nan
         df["他馬想定先行馬数"] = np.nan
         df["差し馬×ハイペース想定"] = np.nan
+        for _c in ["脚質スコア", "前走相対位置", "想定逃げ馬数", "先行圧",
+                   "差し×先行圧", "単騎逃げ", "逃げ争い", "コース脚質バイアス"]:
+            df[_c] = np.nan
 
     # ── ② 競馬場×距離 過去成績（高速化：groupby一括処理） ────────────
     if "競馬場cd" not in df.columns:
