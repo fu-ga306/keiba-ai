@@ -312,12 +312,14 @@ def _loop_features_per_horse(df):
             # 前走間隔（週）: 実開催日の差。2026-07-28まで race_id[:8] を日付として
             # 解釈していたが、race_idは「年+場+回+日目」で日付ではないため、
             # 実際には「場コードの差」を週数と呼んでいた（例: 札幌1回2日目→2026-01-01）。
-            try:
-                d1 = race_dt[i]
-                d2 = race_dt[past[-1]]
-                res["前走間隔"][i] = (d1 - d2).days / 7 if (pd.notna(d1) and pd.notna(d2)) else np.nan
-            except Exception:
+            # ※ numpy.timedelta64 に .days は無い（datetime.timedeltaと違う）。
+            #   np.timedelta64(1,"D") で割って日数にする。
+            d1 = race_dt[i]
+            d2 = race_dt[past[-1]]
+            if np.isnat(d1) or np.isnat(d2):
                 res["前走間隔"][i] = np.nan
+            else:
+                res["前走間隔"][i] = ((d1 - d2) / np.timedelta64(1, "D")) / 7
             # 同距離(±200m)
             cd = dist[i]
             if np.isfinite(cd):
