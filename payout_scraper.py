@@ -221,6 +221,28 @@ _HEADERS = {
 _session = None
 _fallback_driver = None
 
+# ── レート制限（2026-07-27追加）───────────────────────────────────────────
+# 0.2秒間隔で37レースを連続取得した結果、CloudFrontにIP単位でブロックされ
+# race/db.netkeiba.com が全て400になる事故が発生。最低間隔と連続取得上限を設ける。
+MIN_INTERVAL = 3.0     # 1リクエストあたり最低間隔(秒)
+BURST_LIMIT = 30       # この件数ごとに長い休憩を挟む
+BURST_PAUSE = 60.0     # 休憩の長さ(秒)
+_last_req = 0.0
+_req_count = 0
+
+
+def _throttle():
+    """netkeibaへ出す全リクエストの直前に呼ぶ。間隔を空けブロックを防ぐ。"""
+    global _last_req, _req_count
+    wait = MIN_INTERVAL - (time.time() - _last_req)
+    if wait > 0:
+        time.sleep(wait)
+    _req_count += 1
+    if _req_count % BURST_LIMIT == 0:
+        print(f"  [レート制限] {BURST_LIMIT}件取得 → {BURST_PAUSE:.0f}秒休憩")
+        time.sleep(BURST_PAUSE)
+    _last_req = time.time()
+
 
 def _get_session():
     global _session
@@ -254,7 +276,12 @@ def get_payout(race_id):
     url = f"https://race.netkeiba.com/race/result.html?race_id={race_id}"
     # ① requests優先（軽量・高速・ブロックされにくい）
     try:
+        _throttle()
         r = _get_session().get(url, timeout=15)
+        # CloudFrontのIPブロックは本文なしの4xxで来る。HTMLパースしても無意味なので即中断。
+        if r.status_code >= 400:
+            print(f"  [警告] netkeiba HTTP {r.status_code}（IPブロックの可能性）→ 取得中止")
+            return "BLOCKED"
         r.encoding = r.apparent_encoding
         if not is_blocked(r.text):
             return parse_payout(BeautifulSoup(r.text, "html.parser"), race_id)

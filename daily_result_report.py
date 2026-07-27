@@ -42,8 +42,15 @@ def build_report(date_str=None):
     if v.empty:
         return None, None
 
-    from payout_scraper import get_payout
+    # 払戻はJV-Link優先(netkeibaのIPブロックに影響されない)。当日分をまずJVで取得。
+    import payout_source
     import collections
+    try:
+        ok, msg = payout_source.fetch_jv(date_str.replace("/", ""))
+        print(f"JV取得: {'成功' if ok else '失敗'}")
+    except Exception as e:
+        print(f"JV取得スキップ: {e}")
+    get_payout = payout_source.get_payout
     races = sorted(v["race_id"].dropna().unique())
     hit_rows, tot_inv, tot_ret, tot_pts, tot_hits = [], 0, 0, 0, 0
     kind_stats = collections.defaultdict(lambda: [0, 0, 0, 0])  # 券種->[投資,払戻,点数,的中]
