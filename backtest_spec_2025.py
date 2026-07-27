@@ -34,6 +34,23 @@ def load():
     jv = pd.read_csv("jv_payouts.csv", dtype=str)
     jv = jv[jv["race_id"].str.startswith(TEST_YEAR)]
     pay = {(r.race_id, r.券種, r.組み合わせ): int(r.払戻金) for r in jv.itertuples()}
+
+    # 前走間隔フィルタ（KEIBA_INTERVAL_FILTER=1で有効・2026-07-27検証）
+    #   MFのエッジは通常ローテ(4-25週)でのみ成立し、連闘(≤3週)/長期休養明け(>25週)では
+    #   単勝ROIが86%/85%と100%を割る（市場では同傾向が出ない＝MF固有の弱点。
+    #   人気帯で層別しても2分割しても再現）。軸がその区間なら見送る。
+    if os.environ.get("KEIBA_INTERVAL_FILTER") == "1":
+        rf = pd.read_csv("race_features.csv", dtype={"race_id": str},
+                         usecols=["race_id", "馬名", "前走間隔"])
+        df = df.merge(rf, on=["race_id", "馬名"], how="left")
+        iv = pd.to_numeric(df["前走間隔"], errors="coerce")
+        df["_bad"] = ((iv <= 3) | (iv > 25)).fillna(False)
+        axis = df[(df["MF勝率順位"] == 1) | (df["MF複勝順位"] == 1)]
+        ng = set(axis[axis["_bad"]]["race_id"])
+        before = df["race_id"].nunique()
+        df = df[~df["race_id"].isin(ng)]
+        print(f"[間隔フィルタ] 軸が連闘/半年+のレースを除外: "
+              f"{before} → {df['race_id'].nunique()}レース")
     return df, pay
 
 
