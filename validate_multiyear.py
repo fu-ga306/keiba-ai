@@ -60,6 +60,11 @@ def main():
         step(f"主モデル学習 (<={TY-1}/test{TY})", [PY, "model.py", "backtest"], env)
         # 4. 現行仕様BT（{TY}実払戻）
         step(f"現行仕様BT test{TY}", [PY, "backtest_spec_2025.py"], env)
+        # 5. 前走間隔フィルタ版（2026-07-27発見のOOS検証。同条件で比較する）
+        step(f"間隔フィルタ版BT test{TY}", [PY, "backtest_spec_2025.py"],
+             dict(env, KEIBA_INTERVAL_FILTER="1"))
+        # 6. 軸単体の間隔別ROI（2025で見つけた傾向がTYでも出るかの直接確認）
+        step(f"軸の間隔別ROI test{TY}", [PY, "check_interval_roi.py"], env)
         print(f"\n[{time.strftime('%H:%M')}] 全工程完了 ({(time.time()-t0)/60:.0f}分)", flush=True)
     finally:
         restore()
