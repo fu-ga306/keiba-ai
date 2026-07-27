@@ -2,6 +2,49 @@ import os
 import pandas as pd
 import numpy as np
 import re
+
+# ── 実開催日による時系列整列（2026-07-28修正）────────────────────────────────
+# race_idは「年(4)+場(2)+回(2)+日目(2)+R(2)」であって日付ではない。にもかかわらず
+# 従来は df.sort_values(["馬名","race_id"]) の順を時系列とみなして「過去走」を
+# 決めていた。場コードが開催回より先に並ぶため、例えば1月の中山(場06)は7月の
+# 札幌(場01)より後ろに並び、未来のレースが過去成績として集計されていた。
+# 実日付で検証したところ2025年だけで馬内レース対の45.7%が逆転していた。
+# race_dates.csv（build_race_dates.pyで生成）で実日付を引き、それ順に並べる。
+_RACE_DATE_MAP = None
+
+
+def _race_date_map():
+    global _RACE_DATE_MAP
+    if _RACE_DATE_MAP is None:
+        p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "race_dates.csv")
+        if os.path.exists(p):
+            m = pd.read_csv(p, dtype={"kaisai_key": str})
+            m["date"] = pd.to_datetime(m["date"], errors="coerce")
+            _RACE_DATE_MAP = dict(zip(m["kaisai_key"], m["date"]))
+        else:
+            _RACE_DATE_MAP = {}
+            print("  [警告] race_dates.csv が無いため race_id順で整列します"
+                  "（未来のレースが過去成績に混入する既知の不具合）")
+    return _RACE_DATE_MAP
+
+
+def attach_race_date(df):
+    """race_id から実開催日 _race_dt を付与（無ければNaT）。"""
+    m = _race_date_map()
+    if not m:
+        df["_race_dt"] = pd.NaT
+        return df
+    key = df["race_id"].astype(str).str.replace(r"\.0$", "", regex=True).str[:10]
+    df["_race_dt"] = key.map(m)
+    return df
+
+
+def sort_by_horse_time(df):
+    """馬ごとに時系列順で並べる。日付不明はrace_id順で後ろに置く（予測対象＝最新の想定）。"""
+    if "_race_dt" not in df.columns:
+        df = attach_race_date(df)
+    return df.sort_values(["馬名", "_race_dt", "race_id"],
+                          na_position="last").reset_index(drop=True)
 from datetime import datetime
 
 
@@ -186,7 +229,7 @@ def load_and_prepare(csv_path="race_data_clean.csv", df=None):
 
 def _loop_features_per_horse(df):
     """ループが計算する全特徴量を per-horse で再現（値はループと完全一致を目指す）。"""
-    df = df.sort_values(["馬名", "race_id"]).reset_index(drop=True)
+    df = sort_by_horse_time(df)
     n = len(df)
     # 事前計算列（ループ内で valid[...] として参照される生データ）
     chaku = pd.to_numeric(df["着順_num"], errors="coerce").to_numpy()
@@ -199,6 +242,9 @@ def _loop_features_per_horse(df):
     raceno = pd.to_numeric(df.get("レース番号"), errors="coerce").to_numpy() if "レース番号" in df.columns else np.full(n, np.nan)
     baba  = df.get("馬場状態").astype(str).to_numpy() if "馬場状態" in df.columns else np.array([""]*n)
     rid_str = df["race_id"].astype(str).to_numpy()
+    if "_race_dt" not in df.columns:
+        df = attach_race_date(df)
+    race_dt = df["_race_dt"].to_numpy()   # 前走間隔は実開催日で計算する
     # 着差→秒（ループの valid.apply(lambda r: 0 if 着順==1 else chakusa_to_sec(着差)) と同じ）
     if "着差" in df.columns:
         cs_raw = df["着差"].map(chakusa_to_sec).to_numpy()
@@ -263,11 +309,13 @@ def _loop_features_per_horse(df):
             res["過去平均体重増減"][i]= nanmean(taiju[v])
             res["過去最速上り"][i]    = np.nan if not np.isfinite(agari[v]).any() else np.nanmin(agari[v])
             res["上り偏差"][i]        = nanstd(agari[v])
-            # 前走間隔（週）
+            # 前走間隔（週）: 実開催日の差。2026-07-28まで race_id[:8] を日付として
+            # 解釈していたが、race_idは「年+場+回+日目」で日付ではないため、
+            # 実際には「場コードの差」を週数と呼んでいた（例: 札幌1回2日目→2026-01-01）。
             try:
-                d1 = datetime.strptime(rid_str[i][:8], "%Y%m%d")
-                d2 = datetime.strptime(rid_str[past[-1]][:8], "%Y%m%d")
-                res["前走間隔"][i] = (d1 - d2).days / 7
+                d1 = race_dt[i]
+                d2 = race_dt[past[-1]]
+                res["前走間隔"][i] = (d1 - d2).days / 7 if (pd.notna(d1) and pd.notna(d2)) else np.nan
             except Exception:
                 res["前走間隔"][i] = np.nan
             # 同距離(±200m)
@@ -362,7 +410,7 @@ def add_horse_history_features(df):
       履歴フォールバックでハングの主因）。値は完全に保ったまま、群内 shift(1) →
       grouped expanding/rolling（pandasのC実装）に置き換えて 20倍以上 高速化した。
     """
-    df = df.sort_values(["馬名", "race_id"]).reset_index(drop=True)
+    df = sort_by_horse_time(df)
     g = df.groupby("馬名", sort=False)
     names = df["馬名"]
     df["_win"]  = (df["着順_num"] == 1).astype(float)
@@ -717,7 +765,7 @@ def add_extra_advanced_features(df):
     ② 脚質（先行/差し/追込）
     ③ 開催時期（月・季節）
     """
-    df = df.sort_values(["馬名", "race_id"]).reset_index(drop=True)
+    df = sort_by_horse_time(df)
 
     # ── ① 脚質を通過順位から計算 ──────────────────────────────────────
     def calc_running_style(passage):
@@ -1139,7 +1187,7 @@ def add_course_bias_features(df, base_dir=None):
     df["差し有利コース×差し馬"] = (1.0 - senko_flag) * course_front
 
     # ── 実装2: コース替わり（前走→今回のコース形態変化）──
-    df = df.sort_values(["馬名", "race_id"]).reset_index(drop=True)
+    df = sort_by_horse_time(df)
     g = df.groupby("馬名")
     for col, prev in [("回り_num", "前走回り_num"), ("直線長_m", "前走直線長_m"), ("坂あり", "前走坂あり")]:
         if col in df.columns:
@@ -1190,7 +1238,7 @@ def add_interaction_features(df):
     ④ 前走着順×人気 乖離（前走好走なのに人気薄）
     ⑤ 斤量×年齢 負担指数
     """
-    df = df.sort_values(["馬名", "race_id"]).reset_index(drop=True)
+    df = sort_by_horse_time(df)
     df["_win"] = (df["着順_num"] == 1).astype(float)
 
     # ── ① 距離カテゴリ×馬場状態 過去成績 ──────────────────────────
@@ -1378,7 +1426,7 @@ def build_features(csv_path="race_data_clean.csv", out_path="race_features.csv",
     # ── 乗り替わり・斤量変化: 騎手列・斤量はCSV出力しないが、ここで計算して保持 ──
     # model.py は race_features.csv に騎手列がないと全NaNで重要度0%になる
     if "騎手" in df.columns or "斤量" in df.columns:
-        df = df.sort_values(["馬名", "race_id"]).reset_index(drop=True)
+        df = sort_by_horse_time(df)
         if "騎手" in df.columns:
             prev_jockey = df.groupby("馬名")["騎手"].shift(1)
             df["乗り替わり"] = (prev_jockey.notna() & (prev_jockey != df["騎手"])).astype(int)
@@ -1403,7 +1451,7 @@ def build_features(csv_path="race_data_clean.csv", out_path="race_features.csv",
 def add_distance_stamina_features(df):
     """距離適性・スタミナ系特徴量（経験最長距離・長距離複勝率・前走余力 など）。
     add_horse_history_features() 後に呼ぶこと（前走着順・距離延長幅が前提）。"""
-    df = df.sort_values(["馬名", "race_id"]).reset_index(drop=True)
+    df = sort_by_horse_time(df)
 
     _cur_dist = pd.to_numeric(df["距離"], errors="coerce")
 
@@ -1495,7 +1543,7 @@ def _run_feature_pipeline(df, use_train_snapshot=False):
     df["距離カテゴリ"] = pd.cut(
         df["レース番号"], bins=[0, 4, 8, 12], labels=[1, 2, 3]
     ).astype(float)
-    df = df.sort_values(["馬名", "race_id"]).reset_index(drop=True)
+    df = sort_by_horse_time(df)
     dist_avg = []
     for _, group in df.groupby(["馬名", "距離カテゴリ"]):
         group = group.copy()
