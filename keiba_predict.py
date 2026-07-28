@@ -1523,12 +1523,55 @@ def _race_bet_plan(pdf):
     return plan
 
 
+# ── 市場の歪み補正（2026-07-28導入）────────────────────────────────────────
+# オッズとレース文脈だけから「そのレースで過剰人気になっている馬」を判定する。
+# 2025検証(<=2024学習): 全馬の単勝ROI 72.25%→82.34% / 複勝 71.56%→81.40%
+#   （補正係数の下位を除外した場合。固定の「100倍超を除外」78.83%より良い）
+# 歪みは大穴に集中: 補正係数は30倍以下=0.94〜1.05 / 100-300倍=0.68 / 300倍超=0.32。
+# ※逆（過小評価馬を買う）は期間を変えると再現しないので採用しない＝守りにのみ使う。
+DEBIAS_MIN = 0.90        # これ未満の馬は買い目から除外。1.0に近づけるほど厳しい
+_DEBIAS = None
+
+
+def _get_debias():
+    global _DEBIAS
+    if _DEBIAS is None:
+        p = os.path.join(BASE_DIR, "debias_model.pkl")
+        try:
+            with open(p, "rb") as f:
+                _DEBIAS = pickle.load(f)
+        except Exception as e:
+            print(f"  [歪み補正] 読込不可のため除外なしで継続: {e}")
+            _DEBIAS = {}
+    return _DEBIAS
+
+
+def excluded_horses(pdf, race_id):
+    """買ってはいけない（過剰人気の）馬番の集合を返す。判定不能なら空集合。"""
+    d = _get_debias()
+    if not d:
+        return set()
+    try:
+        from train_debias import apply_debias
+        res = apply_debias(d["model"], pdf.assign(race_id=str(race_id)))
+        bias = pd.to_numeric(res["bias"], errors="coerce")
+        no = pd.to_numeric(pdf["馬番"], errors="coerce")
+        ng = {int(n) for n, b in zip(no, bias)
+              if pd.notna(n) and pd.notna(b) and b < DEBIAS_MIN}
+        return ng
+    except Exception as e:
+        print(f"  [歪み補正] 判定スキップ: {e}")
+        return set()
+
+
 def _build_bet_rows(pdf, race_id):
     """_race_bet_plan のメニューを馬番展開して行リストで返す（today_bets.csv用）。
-    馬単は着順順序つき(1着-2着)、馬連/ワイドはソート済み表記。"""
+    馬単は着順順序つき(1着-2着)、馬連/ワイドはソート済み表記。
+    2026-07-28〜: 市場の歪み補正で「過剰人気」と判定された馬を含む買い目は落とす。"""
     plan = _race_bet_plan(pdf)
     if not plan["menu"]:
         return []
+    _ng = excluded_horses(pdf, race_id)
 
     def _no(row):
         v = pd.to_numeric(row["馬番"], errors="coerce")
@@ -1605,6 +1648,9 @@ def _build_bet_rows(pdf, race_id):
         else:
             amt = KIND_STAKE.get(kind, BET_UNIT) * _size_mult
         amt = max(100, int(round(amt / 100.0)) * 100)
+        # 市場の歪み補正: 過剰人気と判定された馬を含む買い目は落とす
+        if _ng and any(int(x) in _ng for x in str(combo).split("-") if x.isdigit()):
+            return
         rows.append({"race_id": str(race_id), "券種": kind, "買い方": name,
                      "組み合わせ": combo, "BT回収率": roi,
                      "判定": plan["判定"], "サイズ": plan["サイズ"], "金額": amt})
