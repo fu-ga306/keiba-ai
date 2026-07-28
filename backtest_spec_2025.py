@@ -35,6 +35,16 @@ def load():
     jv = jv[jv["race_id"].str.startswith(TEST_YEAR)]
     pay = {(r.race_id, r.券種, r.組み合わせ): int(r.払戻金) for r in jv.itertuples()}
 
+    # 期間分割（KEIBA_HALF=1/2: 実開催日で前半/後半のみ評価・頑健性確認用）
+    hf = os.environ.get("KEIBA_HALF")
+    if hf in ("1", "2"):
+        dates = pd.read_csv("race_dates.csv", dtype={"kaisai_key": str})
+        dmap = dict(zip(dates["kaisai_key"], pd.to_datetime(dates["date"])))
+        dts = df["race_id"].str[:10].map(dmap)
+        mid = dts.quantile(0.5)
+        df = df[dts <= mid] if hf == "1" else df[dts > mid]
+        print(f"[期間分割] {'前半' if hf=='1' else '後半'}のみ: {df['race_id'].nunique()}レース")
+
     # 前走間隔フィルタ（KEIBA_INTERVAL_FILTER=1で有効・2026-07-27検証）
     #   MFのエッジは通常ローテ(4-25週)でのみ成立し、連闘(≤3週)/長期休養明け(>25週)では
     #   単勝ROIが86%/85%と100%を割る（市場では同傾向が出ない＝MF固有の弱点。
