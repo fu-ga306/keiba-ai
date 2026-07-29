@@ -12,6 +12,7 @@ import os
 import gc
 import pickle
 import shutil
+import time
 
 PARTS_DIR = "model_mf_parts"
 TARGETS = ["win", "place2", "place3"]
@@ -33,8 +34,23 @@ def save_mf_split(save: dict, base_dir: str = "."):
                 pickle.dump(m, f, protocol=pickle.HIGHEST_PROTOCOL)
     with open(os.path.join(tmp, "meta.pkl"), "wb") as f:
         pickle.dump(meta, f, protocol=pickle.HIGHEST_PROTOCOL)
+    # 旧ディレクトリの削除はOneDriveがロックして PermissionError になることがある
+    # (2026-07-29に発生。中身は消えたがディレクトリだけ残り、tmpからの入れ替えに失敗した)。
+    # リトライしても消えない場合は、tmpを消さずに残して手動復旧できるようにする。
     if os.path.exists(final):
-        shutil.rmtree(final)
+        for i in range(5):
+            try:
+                shutil.rmtree(final)
+                break
+            except PermissionError:
+                time.sleep(2)
+        else:
+            try:
+                os.rename(final, final + f".old{int(time.time())}")
+            except OSError as e:
+                raise RuntimeError(
+                    f"旧{final}を退けられません({e})。{tmp} に新しい分割モデルが"
+                    f"揃っているので、手動で {final} を消して tmp をリネームしてください") from e
     os.replace(tmp, final)
     return final
 
