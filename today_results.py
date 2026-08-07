@@ -36,6 +36,7 @@ import pandas as pd
 
 BASE_DIR = os.environ.get("KEIBA_BASE_DIR", os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(BASE_DIR, "today_results.csv")
+LOG = os.path.join(BASE_DIR, "today_results.log")
 TIMES = os.path.join(BASE_DIR, "today_race_times.json")   # 発走時刻（衝突判定用）
 SLEEP_SEC = 2.0          # 取得の間に必ず入れる待機
 MAX_PER_RUN = 2          # 相乗り時に取りに行く上限（取りこぼしは次のジョブが拾う）
@@ -44,6 +45,22 @@ QUIET_MARGIN = 15        # 発走の前後この分数は取得しない
 SWEEP_FROM = (17, 0)     # 後片付けの開始
 SWEEP_TO = (20, 40)      # 21:00の結果照合に被らないよう終える
 CONFIRM_WAIT = 12        # 発走からこの分数は結果が確定しないので取りに行かない
+
+
+def _log(msg):
+    """画面と today_results.log の両方に出す。
+
+    auto_predict_publish はタスクスケジューラからコンソールなしで起動されるため、
+    print だけでは出力がどこにも残らない（2026-08-07に判明）。動いたかどうかを
+    後から確かめられるよう、この機能のログはファイルにも書く。
+    """
+    line = f"[{datetime.now().strftime('%m/%d %H:%M:%S')}] {msg}"
+    print(f"  {line}")
+    try:
+        with open(LOG, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
 
 
 def _load():
@@ -81,7 +98,7 @@ def fetch_one(rid):
     try:
         from result_tracker import get_race_result
     except Exception as e:
-        print(f"  結果取得モジュールを読めません: {e}")
+        _log(f"結果取得モジュールを読めません: {e}")
         return None
     res = get_race_result(rid)
     if res is None or len(res) == 0:
@@ -109,7 +126,7 @@ def fetch_one(rid):
                 elif k == "複勝":
                     fuku[combo] = amt
     except Exception as e:
-        print(f"    払戻取得スキップ({rid}): {str(e)[:60]}")
+        _log(f"払戻取得スキップ({rid}): {str(e)[:60]}")
     df["単勝"] = df["馬番"].map(lambda b: tan.get(str(b).lstrip("0") or "0"))
     df["複勝"] = df["馬番"].map(lambda b: fuku.get(str(b).lstrip("0") or "0"))
     return df[["race_id", "馬番", "馬名", "着順", "単勝", "複勝"]]
@@ -140,18 +157,18 @@ def update_for_race(race_id, pred_df=None):
         try:
             d = fetch_one(rid)
         except Exception as e:
-            print(f"    結果取得エラー({rid}): {str(e)[:60]}")
+            _log(f"結果取得エラー({rid}): {str(e)[:60]}")
             continue
         if d is None or d.empty:
             continue                   # まだ確定していない等
         got.append(d)
-        print(f"    結果取得: {rid} ({len(d)}頭)")
+        _log(f"結果取得: {rid} ({len(d)}頭)")
     if not got:
         return
     new = pd.concat([have] + got, ignore_index=True)
     new = new.drop_duplicates(["race_id", "馬番"], keep="last")
     new.to_csv(OUT, index=False, encoding="utf-8-sig")
-    print(f"  前レース結果を保存: {OUT}（{new['race_id'].nunique()}レース）")
+    _log(f"相乗り保存: {new['race_id'].nunique()}レース分")
 
 
 # ── B) 後片付け（レース終了後に残りを回収） ──────────────────────────────
@@ -176,6 +193,17 @@ def save_race_times(race_info):
             out[str(rid)] = int(m.group(1)) * 60 + int(m.group(2))
     with open(TIMES, "w", encoding="utf-8") as f:
         json.dump(out, f, ensure_ascii=False)
+    if out:
+        last = max(out.values())
+        _log(f"発走時刻を保存: {len(out)}レース（最終 {last // 60}:{last % 60:02d}）")
+        # 前日までの結果が残っているとダッシュボードに古い行が混ざるので、
+        # 当日のレース以外は落とす（毎朝7:05の登録時に1回だけ通る）。
+        have = _load()
+        if not have.empty:
+            keep = have[have["race_id"].astype(str).isin(out.keys())]
+            if len(keep) != len(have):
+                keep.to_csv(OUT, index=False, encoding="utf-8-sig")
+                _log(f"前日分を整理: {len(have)}行 → {len(keep)}行")
     return out
 
 
@@ -217,7 +245,7 @@ def sweep():
     )[:SWEEP_PER_RUN]
     if not todo:
         return 0
-    print(f"[{now.strftime('%H:%M')}] 結果の後片付け: 残り{len(todo)}件を取得")
+    _log(f"後片付け開始: 残り{len(todo)}件")
     got = []
     for i, rid in enumerate(todo):
         if i:
@@ -225,17 +253,17 @@ def sweep():
         try:
             d = fetch_one(rid)
         except Exception as e:
-            print(f"    結果取得エラー({rid}): {str(e)[:60]}")
+            _log(f"結果取得エラー({rid}): {str(e)[:60]}")
             continue
         if d is not None and not d.empty:
             got.append(d)
-            print(f"    結果取得: {rid} ({len(d)}頭)")
+            _log(f"結果取得: {rid} ({len(d)}頭)")
     if not got:
         return 0
     new = pd.concat([have] + got, ignore_index=True)
     new = new.drop_duplicates(["race_id", "馬番"], keep="last")
     new.to_csv(OUT, index=False, encoding="utf-8-sig")
-    print(f"  保存: {new['race_id'].nunique()}レース分")
+    _log(f"後片付け保存: {new['race_id'].nunique()}レース分")
     return len(got)
 
 
