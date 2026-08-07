@@ -149,10 +149,102 @@ def _submit_ipat(race_id, bets):
         print("  [自動投票] IPATバックエンド未検証(SETUP_DONE=False) → 実投票せず。"
               "少額での検証・selector確定後に有効化してください。")
         return False
-    # ── 以下、実装時に少額検証しながら確定させる（IPAT通常購入フロー）──
-    #   1. Selenium(実Chrome)でIPATログイン(INET-ID→加入者番号/暗証番号/P-ARS番号)
-    #   2. 「通常購入」→ 場・レース・式別・馬番・金額 を bets から入力
-    #   3. 「購入予定リスト」で金額合計を検算（race_total と一致確認）
-    #   4. 一致時のみ「購入する」を実行、結果を確認
-    #   ※各ステップでログ・スクショを残し、失敗時は投票中止(False)
-    raise NotImplementedError("IPAT購入フローは少額検証しながら実装・有効化する")
+    # ── 二重購入の防止（最優先）────────────────────────────────────────
+    #   実弾事故で最も多いのが二重購入。通信が切れて成否が分からないまま
+    #   再実行すると、同じ馬券をもう一度買ってしまう。
+    #   そこで「投票する前に痕跡を残し、痕跡があれば絶対に投票しない」構造にする。
+    #   痕跡はレース単位のファイルで、消さない限り再投票できない。
+    done = os.path.join(BASE_DIR, "vote_done", f"{race_id}.txt")
+    os.makedirs(os.path.dirname(done), exist_ok=True)
+    if os.path.exists(done):
+        print(f"  [自動投票] {race_id}: 投票済みの記録あり → 二重投票を防止して中止")
+        return False
+
+    total = sum(int(float(b.get("金額", 0) or 0)) for b in bets)
+    with open(done, "w", encoding="utf-8") as f:
+        f.write(f"{datetime.now():%Y/%m/%d %H:%M:%S}\t着手\t{len(bets)}点\t{total}円\n")
+
+    drv = None
+    try:
+        drv = _ipat_login()
+        if drv is None:
+            _mark(done, "失敗", "ログインできず")
+            return False
+
+        # 買い目を入力する。1点ずつ入れ、入力後に画面から読み戻して検算する。
+        entered = _ipat_enter_bets(drv, race_id, bets)
+        if entered is None:
+            _mark(done, "失敗", "入力に失敗（投票せず終了）")
+            return False
+
+        # ── 金額の検算 ──
+        #   画面の合計と、こちらが意図した合計が1円でも違えば投票しない。
+        #   桁の入力ミスや行のズレはここで必ず止まる。
+        if entered != total:
+            print(f"  [自動投票] 金額不一致 意図{total}円 / 画面{entered}円 → 投票中止")
+            _shot(drv, race_id, "amount_mismatch")
+            _mark(done, "中止", f"金額不一致 意図{total}/画面{entered}")
+            return False
+
+        ok = _ipat_confirm(drv, race_id)
+        _mark(done, "投票" if ok else "失敗", f"{total}円")
+        return ok
+    except Exception as e:
+        # 例外時は「成否不明」として痕跡を残す。手動で確認するまで再投票させない。
+        print(f"  [自動投票] 例外: {type(e).__name__}: {str(e)[:120]}")
+        if drv is not None:
+            _shot(drv, race_id, "exception")
+        _mark(done, "成否不明", f"{type(e).__name__}: {str(e)[:80]}")
+        return False
+    finally:
+        if drv is not None:
+            try:
+                drv.quit()
+            except Exception:
+                pass
+
+
+def _mark(path, status, note=""):
+    """投票の痕跡に結果を追記する。"""
+    try:
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(f"{datetime.now():%Y/%m/%d %H:%M:%S}\t{status}\t{note}\n")
+    except Exception:
+        pass
+
+
+def _shot(drv, race_id, tag):
+    """画面を保存する。後から何が起きたか追えるように。"""
+    try:
+        d = os.path.join(BASE_DIR, "vote_shots")
+        os.makedirs(d, exist_ok=True)
+        drv.save_screenshot(os.path.join(
+            d, f"{race_id}_{tag}_{datetime.now():%Y%m%d_%H%M%S}.png"))
+    except Exception:
+        pass
+
+
+def _ipat_login():
+    """IPATにログインしてWebDriverを返す。失敗時None。
+
+    ⚠️ここから下の3関数はIPATの実画面に合わせて確定させる必要がある。
+      selectorは環境・時期で変わるため、SETUP_DONE=True にする前に
+      少額（1点100円）で必ず実地確認すること。手順は AUTO_VOTE_手順書.md 参照。
+    """
+    raise NotImplementedError(
+        "IPATログインは実画面でselectorを確定させてから実装する。"
+        "AUTO_VOTE_手順書.md の手順2を参照。")
+
+
+def _ipat_enter_bets(drv, race_id, bets):
+    """買い目を入力し、画面が示す購入予定の合計金額を返す。失敗時None。"""
+    raise NotImplementedError(
+        "買い目入力は実画面でselectorを確定させてから実装する。"
+        "AUTO_VOTE_手順書.md の手順3を参照。")
+
+
+def _ipat_confirm(drv, race_id):
+    """購入を確定する。成功時True。"""
+    raise NotImplementedError(
+        "購入確定は実画面でselectorを確定させてから実装する。"
+        "AUTO_VOTE_手順書.md の手順4を参照。")

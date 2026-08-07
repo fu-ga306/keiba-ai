@@ -29,7 +29,8 @@ def load():
     mf = pd.read_csv("model_mf_result.csv", dtype={"race_id": str})[
         ["race_id", "馬名", "MF勝率", "MF勝率順位", "MF複勝順位"]]
     rf = pd.read_csv("race_features.csv", dtype={"race_id": str})[
-        ["race_id", "馬名", "馬番", "人気", "単勝オッズ", "クラス_num", "着順_num"]]
+        ["race_id", "馬名", "馬番", "人気", "単勝オッズ", "クラス_num", "着順_num",
+         "前走間隔"]]   # 前走間隔=レース単位ゲート(2026-07-30)で使う
     df = rf.merge(p3, on=["race_id", "馬名"], how="inner").merge(mf, on=["race_id", "馬名"], how="inner")
     jv = pd.read_csv("jv_payouts.csv", dtype=str)
     jv = jv[jv["race_id"].str.startswith(TEST_YEAR)]
@@ -128,8 +129,8 @@ def main():
           f" / 平均{np.mean(pts_list):.0f}点·レース / 総購入点数{sum(pts_list):,}")
     print(f"判定分布: {dict(verdict_cnt)}")
     print("\n【全体】"); print(line("合計", agg["all"]))
-    print("\n【判定帯別】")
-    for b in ["勝負", "買い", "堅実", "少額"]:
+    print("\n【判定別】")   # 2026-07-30: 帯を廃止したので「買い」のみ。旧帯は互換のため残置
+    for b in ["買い", "勝負", "堅実", "少額"]:
         if band_agg[b][0]: print(line(b, band_agg[b]))
     print("\n【券種別】")
     for k in ["単勝", "複勝", "ワイド", "馬連", "馬単", "3連複", "3連単"]:

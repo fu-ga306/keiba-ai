@@ -46,11 +46,50 @@ def _parse_result_table(soup, race_id):
     return df
 
 
+_today_cache = None
+
+
+def _from_today_cache(race_id):
+    """today_results.csv に当該レースがあれば結果表の形で返す。無ければNone。
+
+    40分前ジョブが貯めたものを21時の照合で使い回すための入口。
+    ファイルが壊れていても照合は止めない（Noneを返して通常取得に回す）。
+    """
+    global _today_cache
+    if _today_cache is None:
+        path = os.path.join(BASE_DIR, "today_results.csv")
+        try:
+            _today_cache = pd.read_csv(path, dtype={"race_id": str, "馬番": str}) \
+                if os.path.exists(path) else pd.DataFrame()
+        except Exception:
+            _today_cache = pd.DataFrame()
+    if _today_cache.empty or "race_id" not in _today_cache.columns:
+        return None
+    d = _today_cache[_today_cache["race_id"].astype(str) == str(race_id)]
+    if d.empty:
+        return None
+    out = d[["馬番", "馬名", "着順"]].copy().rename(columns={"着順": "着順_num"})
+    out["着順_num"] = pd.to_numeric(out["着順_num"], errors="coerce")
+    out = out.dropna(subset=["着順_num"])
+    if out.empty:
+        return None
+    print(f"  結果を当日キャッシュから取得: {race_id}（{len(out)}頭）")
+    return out
+
+
 def get_race_result(race_id):
     """レース結果を取得。まず requests(Chromeなし・高速)、取れなければ Selenium にフォールバック。
     （従来は1レースごとにChrome起動で36レース照合に約12分かかっていた→requestsで数十秒に短縮）"""
     race_id = str(race_id)
     url = f"https://race.netkeiba.com/race/result.html?race_id={race_id}"
+
+    # ── ⓪ 当日ジョブが取得済みならそれを使う（2026-08-07追加）──
+    #   40分前ジョブが同じ競馬場の終了レースを逐次取得して today_results.csv に
+    #   貯めている。21時の照合でそれを使い回せば、同じレースを2回取りに行かずに済む。
+    #   netkeibaへのアクセスを減らすことがそのままブロック回避になる。
+    cached = _from_today_cache(race_id)
+    if cached is not None:
+        return cached
 
     # ── ① requests（高速。netkeiba結果ページはUTF-8で静的取得可） ──
     try:

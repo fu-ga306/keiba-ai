@@ -95,12 +95,21 @@ def _load_csv():
     return _csv_cache
 
 
+# 2026-07-31: JV-VANの課金をやめる方針に伴い、直近分の取得元をnetkeibaへ戻す。
+#   ・過去分(jv_payouts.csv 2019-2026)はローカルに永久に残るので今後もそのまま使う
+#   ・USE_JV=False にすると JV-Link の呼び出し(fetch_jv)を試みず、
+#     ローカルCSVに無いものは直接netkeibaへ行く（無駄な32bit起動と待ちを省く）
+#   ・環境変数 KEIBA_USE_JV=1 で一時的に戻せる
+USE_JV = os.environ.get("KEIBA_USE_JV") == "1"
+
+
 def get_payout(race_id, allow_web=True):
     """[{race_id,券種,組み合わせ,払戻金,人気}] を返す。取れなければ空リスト。"""
     rid = str(race_id).replace(".0", "")
-    hr = _load_hr().get(rid)
-    if hr:
-        return [dict(r, race_id=rid) for r in hr["rows"]]
+    if USE_JV:
+        hr = _load_hr().get(rid)
+        if hr:
+            return [dict(r, race_id=rid) for r in hr["rows"]]
     csv = _load_csv().get(rid)
     if csv:
         return csv

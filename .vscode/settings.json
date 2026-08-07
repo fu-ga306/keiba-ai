@@ -1,3 +1,6 @@
 {
-    "python.REPL.enableREPLSmartSend": false
+    "python.REPL.enableREPLSmartSend": false,
+    "//": "2026-08-02: VSCodeがPython 3.14を選ぶとschedule/sklearnが無く▶実行が全て落ちるため、パッケージの入った3.11を既定にする。",
+    "python.defaultInterpreterPath": "C:\\Users\\別府飛河\\AppData\\Local\\Microsoft\\WindowsApps\\python3.11.exe",
+    "python.terminal.activateEnvironment": false
 }

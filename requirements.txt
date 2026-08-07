@@ -1,8 +1,25 @@
-﻿streamlit
+﻿# keiba_ai プロジェクト依存ライブラリ一覧
+# セットアップ: setup_venv.ps1 を実行すれば自動でこの内容がインストールされます
+# 手動で入れる場合: python -m pip install -r requirements.txt
+
+# ── Web UI / ダッシュボード ──────────────────────────
+streamlit
 plotly
-pandas
-numpy
-requests
-beautifulsoup4
 flask>=2.3.0
 gunicorn>=21.0.0
+
+# ── データ処理 ──────────────────────────────────────
+pandas
+numpy
+
+# ── スクレイピング ──────────────────────────────────
+requests
+beautifulsoup4
+selenium
+webdriver-manager
+
+# ── 機械学習モデル ──────────────────────────────────
+lightgbm
+xgboost
+catboost
+scikit-learn

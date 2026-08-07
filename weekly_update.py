@@ -115,8 +115,39 @@ def main():
     run_step(
         "train_mf_v2.py",
         [PYTHON, os.path.join(BASE_DIR, "train_mf_v2.py")],
-        timeout=7200  # 2時間
+        # 2026-08-03に7200秒で足りずタイムアウトした（他の処理と並走していた影響もある）。
+        # 翌日は開催がないので余裕を持たせる。
+        timeout=21600  # 6時間
     )
+
+    # ── Step 3.5: 確率較正用のOOS出力を更新 ──────────────────────────────
+    #   買い判定は「較正済み勝率 × 実オッズ」の期待値で行う（2026-08-04導入）。
+    #   MFは正例重み(win 2.0/place3 1.5)と時間重みで学習しているため生の確率は
+    #   過大で、2025 OOSでは 勝率 予測11.0%→実際7.2%（1.5倍）だった。
+    #   較正しないと期待値も推奨賭け率もずれ、買う馬自体が変わる。
+    #   較正器は「正直なOOS出力」から作る必要があり、backtestモード
+    #   （≤前年学習/当年検証）でのみ model_mf_result.csv が更新される。
+    #   本番モデル(model_mf.pkl)には触らない（出力は model_mf_bt.pkl）。
+    log("[Step3.5] 較正用のOOS出力を更新（train_mf_v2 backtest）")
+    ok_bt = run_step(
+        "train_mf_v2.py backtest",
+        [PYTHON, os.path.join(BASE_DIR, "train_mf_v2.py"), "backtest"],
+        timeout=21600  # 6時間
+    )
+
+    # ── Step 3.6: 確率較正器を作り直す ──────────────────────────────────
+    #   モデルが変われば確率の癖も変わるので、毎週作り直す。
+    #   失敗しても keiba_predict は較正器が無ければ生の確率で動く（予測は止まらない）
+    #   が、その場合は期待値が過大になり買い過ぎるため、警告を残す。
+    if ok_bt:
+        log("[Step3.6] 確率較正器を再作成")
+        if not run_step("build_calibrator.py",
+                        [PYTHON, os.path.join(BASE_DIR, "build_calibrator.py")],
+                        timeout=1800):
+            log("  [警告] 較正器の再作成に失敗。古い較正器のまま動きます")
+    else:
+        log("[Step3.6] スキップ（Step3.5が失敗したため較正器は更新しない）")
+        log("  [警告] 較正器が古いままです。期待値がずれる可能性があります")
 
     # ── Step 4: result_tracker 更新 ───────────────────────────────────────
     log("[Step4] レース結果照合")
@@ -193,6 +224,9 @@ def main():
             "weekly_update_log.txt",
             "accuracy_log.csv",
             "accuracy_summary.txt",
+            # 確率較正器（2026-08-05追加・7KB）。買い判定が較正済み確率に
+            # 依存するようになったため、これが古いと期待値がずれる。
+            "mf_calibrator.pkl",
         ]
         for f in push_files:
             fpath = os.path.join(BASE_DIR, f)

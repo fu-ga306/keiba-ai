@@ -5,7 +5,7 @@ import numpy as np
 import pickle
 import smtplib
 import re
-import schedule
+#import schedule
 import time
 import os
 import sys
@@ -53,6 +53,14 @@ SEND_EMAIL = "buy_only"
 #   True  = 単勝/複勝/ワイド/馬連/馬単の5種すべて取得（EV表示用・負荷5倍）。
 # 将来 案B(requests化) で本質解決したらこのフラグは不要になる。
 FETCH_ALL_ODDS = False
+
+# 実際に取得するオッズページ（2026-08-05）。
+#   3年検証で買うと決めたのは 単勝(b1) と 馬単(b6) の2つだけ。
+#   複勝(b2)/ワイド(b4)/馬連(b5) は買わないので取得しない。
+#   7/18にIPブロックを受けてChrome起動を5→1に減らした経緯があるため、
+#   5種全部に戻さず必要な2種に絞る（起動1→2回）。ブロック再発は
+#   単勝の運用まで止めるので、負荷は必要最小限にとどめる。
+FETCH_ODDS_TYPES = ("b1", "b6")
 BASE_DIR      = os.environ.get("KEIBA_BASE_DIR", os.path.dirname(os.path.abspath(__file__)))
 
 HEADERS = {
@@ -392,9 +400,9 @@ def get_race_data(race_id):
     # ── オッズ取得（単勝・複勝・ワイド・馬連）────────────────────────────
     def fetch_odds_page(race_id, odds_type, sleep_sec=3):
         """netkeibaのオッズページをSeleniumで取得。
-        FETCH_ALL_ODDS=Falseのときは単勝(b1)以外はChromeを起動せず空を返す
-        （下流は空マップで正常動作。ブロック対策でChrome起動を5→1に削減）。"""
-        if not FETCH_ALL_ODDS and odds_type != "b1":
+        FETCH_ODDS_TYPES に無い券種はChromeを起動せず空を返す
+        （下流は空マップで正常動作）。FETCH_ALL_ODDS=True なら全種取得。"""
+        if not FETCH_ALL_ODDS and odds_type not in FETCH_ODDS_TYPES:
             return BeautifulSoup("", "html.parser")
         driver = _make_chrome_driver()
         try:
@@ -440,10 +448,17 @@ def get_race_data(race_id):
         df["人気"]      = np.nan
 
     # ── 複勝オッズ取得 ──
+    # 2026-07-31: netkeibaのb1ページは単勝と複勝を同じテーブル群で返すので、
+    #   b2を別途叩かずに soup_tan を再利用する（リクエスト増ゼロ・Chrome起動も増えない）。
+    #   FETCH_ALL_ODDS=False でb2が空になり複勝が常に欠測だった問題の解消も兼ねる。
+    #   b1に複勝表が無い版に当たった場合だけ、従来どおりb2へフォールバックする。
     try:
-        soup_fuku = fetch_odds_page(race_id, "b2")
-        tables = soup_fuku.find_all("table", class_="RaceOdds_HorseList_Table")
-        fuku_table = tables[0] if tables else None
+        tables = soup_tan.find_all("table", class_="RaceOdds_HorseList_Table")
+        fuku_table = tables[1] if len(tables) > 1 else None
+        if fuku_table is None:
+            soup_fuku = fetch_odds_page(race_id, "b2")
+            tables = soup_fuku.find_all("table", class_="RaceOdds_HorseList_Table")
+            fuku_table = tables[0] if tables else None
         fuku_map = {}
         if fuku_table:
             for tr in fuku_table.find_all("tr")[1:]:
@@ -521,19 +536,31 @@ def get_race_data(race_id):
     try:
         soup_umatan = fetch_odds_page(race_id, "b6")
         umatan_map = {}
-        umatan_tables = soup_umatan.find_all("table", class_="RaceOdds_HorseList_Table")
-        umatan_table = umatan_tables[0] if umatan_tables else None
-        if umatan_table:
-            for tr in umatan_table.find_all("tr")[1:]:
+        # 2026-08-05: netkeibaのHTML構造が変わっていた。
+        #   旧: table.RaceOdds_HorseList_Table を1つ探して4列(1着/2着/?/オッズ)を読む
+        #   新: table.Odds_Table が1着馬ごとに1つ。thが1着馬番、
+        #       各trが (2着馬番, オッズ) の2列。
+        # 旧コードは該当テーブルが0件で、馬単オッズが常に空だった。
+        for tbl in soup_umatan.find_all("table", class_="Odds_Table"):
+            th = tbl.find("th")
+            if th is None:
+                continue
+            uma1 = th.get_text(strip=True)
+            if not uma1.isdigit():
+                continue
+            for tr in tbl.find_all("tr"):
                 td = tr.find_all("td")
-                if len(td) >= 4:
-                    try:
-                        uma1 = td[0].get_text(strip=True)
-                        uma2 = td[1].get_text(strip=True)
-                        odds_val = float(td[3].get_text(strip=True))
-                        umatan_map[(uma1, uma2)] = odds_val  # (1着馬番, 2着馬番) -> オッズ
-                    except:
-                        pass
+                if len(td) < 2:
+                    continue
+                uma2 = td[0].get_text(strip=True)
+                if not uma2.isdigit():
+                    continue
+                try:
+                    # 1,424.8 のようにカンマ区切りで来る
+                    odds_val = float(td[1].get_text(strip=True).replace(",", ""))
+                except ValueError:
+                    continue
+                umatan_map[(uma1, uma2)] = odds_val  # (1着馬番, 2着馬番) -> オッズ
         df["_umatan_map"] = [umatan_map] * len(df)
         print(f"  馬単オッズ取得成功: {len(umatan_map)}組み合わせ")
     except Exception as e:

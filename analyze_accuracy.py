@@ -19,6 +19,12 @@ import pandas as pd
 import numpy as np
 from result_tracker import get_race_result, BASE_DIR
 
+
+class _SkipBets(Exception):
+    """当日の買い目でないので照合をスキップする合図。
+    except Exception に拾われて「エラー」と誤記録されないよう専用にする。"""
+
+
 PRED_FILE = os.path.join(BASE_DIR, "today_predictions.csv")
 LOG_FILE  = os.path.join(BASE_DIR, "accuracy_log.csv")
 
@@ -204,6 +210,17 @@ def main():
         try:
             from payout_scraper import get_payout, _close_fallback_driver
             bets = pd.read_csv(bets_path, dtype={"race_id": str, "組み合わせ": str})
+            # 開催がない日でも21時の照合タスクは動く。today_bets.csv は前回の
+            # 買い目が残ったままなので、そのまま照合すると同じ数字を毎日記録し
+            # 実績が水増しされる（2026-08-03/04に発生。8/2と同一の行が3日分）。
+            # 買い目が今日作られたものでなければ何もしない。
+            _today = datetime.now().strftime("%Y/%m/%d")
+            if "予想日時" in bets.columns:
+                _d = bets["予想日時"].astype(str).str[:10]
+                if not (_d == _today).any():
+                    print(f"  今日({_today})の買い目ではないためスキップ"
+                          f"（買い目の日付: {_d.max()}）")
+                    raise _SkipBets
             pay_map = {}
             for rid in sorted(bets["race_id"].unique()):
                 res = get_payout(rid)
@@ -268,6 +285,8 @@ def main():
                 blog_df = pd.concat([_ex, blog_df], ignore_index=True)
             blog_df.to_csv(blog, index=False, encoding="utf-8-sig")
             print(f"  買い目ログ保存: {blog}")
+        except _SkipBets:
+            pass          # 当日の買い目でないので何も記録しない（正常系）
         except Exception as e:
             print(f"  買い目照合エラー: {e}")
     else:

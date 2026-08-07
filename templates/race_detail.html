@@ -8,6 +8,7 @@
   {% if date_str %}<span class="page-date">{{ date_str }}</span>{% endif %}
 </div>
 
+
 <!-- レース情報 -->
 <div class="race-info-card">
   <div class="race-info-row">
@@ -55,6 +56,80 @@
   </div>
 </div>
 
+<!-- 全馬テーブル -->
+<section class="section-block">
+  <h2 class="section-title">🐴 全馬予想詳細</h2>
+  <div class="table-scroll">
+    <table class="horse-table">
+      <thead>
+        {# 列見出しクリックで並べ替え。data-k は tbody の data-* と対応させる #}
+        <tr class="sortable">
+          {% if has_result %}<th data-k="res" title="確定した着順と払戻">結果</th>{% endif %}
+          <th data-k="mark">印</th>
+          <th data-k="ban">馬番</th>
+          <th>馬名</th>
+          <th>シグナル</th>
+          <th data-k="grade" title="複勝確率による評価。S:50%以上 A:40%台 B:30%台 C:20%台 D:20%未満">評価</th>
+          <th data-k="abil" title="能力6軸（勝負力・安定感・末脚・先行力・距離適性・実績）の平均。レース内100点満点・オッズは見ない">能力</th>
+          <th data-k="airank" title="市場フリーモデルの3着内予測順">AI順位</th>
+          <th data-k="gap" title="人気順位 − AI順位。正ならAIが市場より高く評価">乖離</th>
+          <th data-k="pop">人気</th>
+          <th data-k="odds">単勝オッズ</th>
+          <th data-k="win">勝率</th>
+          <th data-k="ren">連対率</th>
+          <th data-k="fuku">複勝率</th>
+          <th data-k="ev">単勝EV</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for h in horses %}
+        {% set mo = {'◎':1,'○':2,'▲':3,'△':4,'×':5} %}
+        <tr class="{{ 'row-axis' if h.signal_cls == 'axis' else '' }} {{ 'row-fuku' if h.signal_cls == 'fuku' else '' }} {{ 'row-buy' if h.is_buy else '' }}"
+            data-mark="{{ mo.get(h.推奨ランク, 9) }}" data-ban="{{ h.馬番 | int }}"
+            data-airank="{{ h.ai_rank_val }}" data-gap="{{ h.gap_val }}"
+            data-pop="{{ h.人気 or 99 }}" data-odds="{{ h.単勝オッズ or 9999 }}"
+            data-win="{{ h.win_pct }}" data-ren="{{ h.ren_pct }}"
+            data-fuku="{{ h.fuku_pct }}" data-ev="{{ h.ev_val }}"
+            data-res="{{ h.res_pos or 99 }}"
+            data-grade="{{ {'S':1,'A':2,'B':3,'C':4,'D':5}.get(h.grade, 9) }}"
+            data-abil="{{ h.abil_avg if h.abil_avg is not none else -1 }}">
+          {% if has_result %}
+          <td class="res-cell center{% if h.res_pos and h.res_pos <= 3 %} res-medal res-{{ h.res_pos }}{% endif %}">
+            {%- if h.res_pos -%}
+              <span class="res-pos">{{ '🥇' if h.res_pos == 1 else ('🥈' if h.res_pos == 2 else ('🥉' if h.res_pos == 3 else h.res_pos ~ '着')) }}</span>
+              {%- if h.res_tan %}<span class="res-pay">単{{ h.res_tan }}</span>{% endif -%}
+              {%- if h.res_fuku %}<span class="res-pay">複{{ h.res_fuku }}</span>{% endif -%}
+            {%- else -%}<span class="res-none">–</span>{%- endif -%}
+          </td>
+          {% endif %}
+          <td class="rank-mark rank-{{ h.signal_cls }} center">
+            {%- if h.is_star %}<span class="star" title="市場より高評価（乖離{{ h.gap }}）">★</span>{% endif -%}
+            {{ h.推奨ランク }}</td>
+          <td class="center">{{ h.馬番 | int }}</td>
+          <td class="horse-name-cell">{{ h.馬名 }}{% if h.buy_kinds %}<span class="buy-kind">{{ h.buy_kinds }}</span>{% endif %}</td>
+          <td><span class="signal-badge signal-{{ h.signal_cls }}">{{ h.signal_label }}</span></td>
+          <td class="center"><span class="grade grade-{{ h.grade }}">{{ h.grade }}</span></td>
+          <td class="abil-cell">
+            {%- if h.abil_avg is not none -%}
+            <span class="abil-num">{{ "%.1f"|format(h.abil_avg) }}</span>
+            <span class="abil-bar"><i style="width:{{ h.abil_avg }}%"></i></span>
+            {%- else -%}<span class="res-none">–</span>{%- endif -%}
+          </td>
+          <td class="center ai-rank">{{ h.ai_rank if h.ai_rank else '-' }}</td>
+          <td class="center {{ 'gap-plus' if h.gap_val >= 3 else ('gap-minus' if h.gap_val <= -3 else '') }}">{{ h.gap or '-' }}</td>
+          <td class="center">{{ h.人気 }}</td>
+          <td class="center">{{ h.単勝オッズ }}</td>
+          <td class="center pct-cell">{{ h.win_pct }}%</td>
+          <td class="center pct-cell">{{ h.ren_pct }}%</td>
+          <td class="center pct-cell">{{ h.fuku_pct }}%</td>
+          <td class="center {{ h.ev_cls }}">{{ "%.2f"|format(h.ev_val) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
 <!-- 推奨買い目（マトリクス判定・実払戻BT連動） -->
 <section class="section-block">
   <h2 class="section-title">💰 推奨買い目</h2>
@@ -87,62 +162,14 @@
   {% endif %}
 </section>
 
-<!-- 馬券推奨 -->
-{% if bet_recs %}
-<section class="section-block">
-  <h2 class="section-title">💴 馬券推奨（参考・旧ロジック）</h2>
-  {% if bet_recs and bet_recs[0].strategy %}
-  <div class="bet-strategy-banner">{{ bet_recs[0].strategy }}</div>
-  {% endif %}
-  <div class="bet-list-detail">
-    {% for b in bet_recs %}
-    <div class="bet-item-detail {{ b.cls }}">
-      <div class="bet-type-lg">{{ b.type }}</div>
-      <div class="bet-horses-list">
-        {% for h in b.horses %}
-        <span class="bet-horse-chip">{{ h }}</span>
-        {% endfor %}
-        {% if not b.horses %}<span class="bet-note-lg">{{ b.note }}</span>{% endif %}
-      </div>
-      {% if b.note and b.horses %}<div class="bet-note-lg">{{ b.note }}</div>{% endif %}
-    </div>
-    {% endfor %}
-  </div>
-</section>
-{% endif %}
 
-<!-- シグナル分類サマリー -->
-<section class="section-block">
-  <h2 class="section-title">🏷️ シグナル分類</h2>
-  <div class="signal-summary">
-    {% for sig_key, sig_label, sig_cls in [('◎','軸','axis'),('○','複勝圏','fuku'),('▲','相手候補','aite'),('△','3着候補','chui'),('×','穴・ヒモ','yosomi')] %}
-    {% set sig_horses = horses | selectattr('推奨ランク', 'equalto', sig_key) | list %}
-    {% if sig_horses %}
-    <div class="sig-group">
-      <div class="sig-header">
-        <span class="rank-mark rank-{{ sig_cls }}">{{ sig_key }}</span>
-        <span class="sig-label signal-{{ sig_cls }}">{{ sig_label }}</span>
-      </div>
-      {% for h in sig_horses %}
-      <div class="sig-horse">
-        <span class="uma-ban-sm">{{ h.馬番 | int }}</span>
-        <span class="uma-name-sm">{{ h.馬名 }}</span>
-        <span class="win-pct-sm">勝{{ h.win_pct }}%</span>
-        <span class="odds-sm">{{ h.単勝オッズ }}倍</span>
-      </div>
-      {% endfor %}
-    </div>
-    {% endif %}
-    {% endfor %}
-  </div>
-</section>
 
 <!-- 能力値パラメータ -->
 {% if param_horses %}
 <section class="section-block">
   <h2 class="section-title">📊 能力値パラメータ（レース内相対・100が最上位）</h2>
   <div class="ability-grid">
-    {% for ph in param_horses %}
+    {% for ph in param_horses if not ph.is_sub %}
     <div class="ability-card {{ 'ability-myo' if ph.is_myo else '' }}">
       <div class="ability-head">
         <span class="rank-mark rank-{{ ph.signal_cls }}">{{ ph.mark }}</span>
@@ -166,52 +193,41 @@
     </div>
     {% endfor %}
   </div>
-  <p class="bets-note">※ 各値はこのレース出走馬の中での相対順位（百分位）。「—」は初出走などデータ不足。</p>
+  {# 印が付かなかった馬。このモデルはオッズを見ないので、選ばれなかった馬の
+     能力値にも「なぜ選ばれなかったか」という情報がある。既定は畳んでおく。 #}
+  {% set subs = param_horses | selectattr('is_sub') | list %}
+  {% if subs %}
+  <details class="ability-more">
+    <summary>印なしの{{ subs|length }}頭も表示する</summary>
+    <div class="ability-grid">
+      {% for ph in subs %}
+      <div class="ability-card ability-sub">
+        <div class="ability-head">
+          <span class="uma-ban-sm">{{ ph.ban }}</span>
+          <span class="ability-name">{{ ph.name }}</span>
+        </div>
+        <div class="ability-bars">
+          {% for a in ph.abilities %}
+          <div class="ability-row">
+            <span class="ability-label">{{ a.label }}</span>
+            <div class="ability-track">
+              <div class="ability-fill {{ 'fill-hi' if a.val and a.val >= 75 else ('fill-mid' if a.val and a.val >= 45 else 'fill-lo') }}"
+                   style="width: {{ a.val if a.val is not none else 0 }}%"></div>
+            </div>
+            <span class="ability-val">{{ a.val if a.val is not none else '—' }}</span>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  </details>
+  {% endif %}
+  <p class="bets-note">※ 各値はこのレース出走馬の中での相対順位（百分位）。「—」は初出走などデータ不足。<br>
+     ※ このモデルはオッズ・人気を一切使わず、能力データだけで評価しています。</p>
 </section>
 {% endif %}
 
-<!-- 全馬テーブル -->
-<section class="section-block">
-  <h2 class="section-title">🐴 全馬予想詳細</h2>
-  <div class="table-scroll">
-    <table class="horse-table">
-      <thead>
-        <tr>
-          <th>印</th>
-          <th>馬番</th>
-          <th>馬名</th>
-          <th>シグナル</th>
-          <th>人気</th>
-          <th>単勝オッズ</th>
-          <th>勝率</th>
-          <th>連対率</th>
-          <th>複勝率</th>
-          <th>単勝EV</th>
-          <th>MF順位</th>
-          <th>乖離</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for h in horses %}
-        <tr class="{{ 'row-axis' if h.signal_cls == 'axis' else '' }} {{ 'row-fuku' if h.signal_cls == 'fuku' else '' }}">
-          <td class="rank-mark rank-{{ h.signal_cls }} center">{{ h.推奨ランク }}</td>
-          <td class="center">{{ h.馬番 | int }}</td>
-          <td class="horse-name-cell">{{ h.馬名 }}</td>
-          <td><span class="signal-badge signal-{{ h.signal_cls }}">{{ h.signal_label }}</span></td>
-          <td class="center">{{ h.人気 }}</td>
-          <td class="center">{{ h.単勝オッズ }}</td>
-          <td class="center pct-cell">{{ h.win_pct }}%</td>
-          <td class="center pct-cell">{{ h.ren_pct }}%</td>
-          <td class="center pct-cell">{{ h.fuku_pct }}%</td>
-          <td class="center {{ h.ev_cls }}">{{ "%.2f"|format(h.ev_val) }}</td>
-          <td class="center">{{ h.MF予測順位 }}</td>
-          <td class="center">{{ "%.2f"|format(h.乖離スコア | float) if h.乖離スコア else '-' }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
-</section>
 
 <!-- MF穴馬候補 -->
 {% if ana_candidates %}
@@ -231,5 +247,38 @@
   </div>
 </section>
 {% endif %}
+
+<script>
+// 出走表の並べ替え（外部ライブラリなし）。
+// 見出しの data-k と、各行の data-* を対応させて数値ソートする。
+// 既定は印順（◎○▲△×→無印）。同じ列を再クリックで昇順/降順が入れ替わる。
+(function () {
+  var head = document.querySelector('.horse-table tr.sortable');
+  if (!head) return;
+  var tbody = document.querySelector('.horse-table tbody');
+  // 小さい方が良い指標（順位・人気・オッズ）は既定を昇順、率などは降順にする
+  var ASC_FIRST = { mark: 1, ban: 1, airank: 1, pop: 1, odds: 1, res: 1, grade: 1 };
+  var cur = null, asc = true;
+  head.querySelectorAll('th[data-k]').forEach(function (th) {
+    th.style.cursor = 'pointer';
+    th.addEventListener('click', function () {
+      var k = th.dataset.k;
+      if (cur === k) { asc = !asc; } else { cur = k; asc = !!ASC_FIRST[k]; }
+      var rows = Array.prototype.slice.call(tbody.querySelectorAll('tr'));
+      rows.sort(function (a, b) {
+        var x = parseFloat(a.dataset[k]), y = parseFloat(b.dataset[k]);
+        if (isNaN(x)) x = asc ? Infinity : -Infinity;
+        if (isNaN(y)) y = asc ? Infinity : -Infinity;
+        return asc ? x - y : y - x;
+      });
+      rows.forEach(function (r) { tbody.appendChild(r); });
+      head.querySelectorAll('th').forEach(function (o) {
+        o.classList.remove('sorted-asc', 'sorted-desc');
+      });
+      th.classList.add(asc ? 'sorted-asc' : 'sorted-desc');
+    });
+  });
+})();
+</script>
 
 {% endblock %}

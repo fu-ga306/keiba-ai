@@ -18,6 +18,8 @@ GITHUB_RAW = "https://raw.githubusercontent.com/fu-ga306/keiba-ai/main"
 TODAY_PRED_URL = f"{GITHUB_RAW}/today_predictions.csv"
 RECORD_URL = f"{GITHUB_RAW}/prediction_record_v2.csv"
 TODAY_BETS_URL = f"{GITHUB_RAW}/today_bets.csv"
+# 同じ競馬場の終了レースの着順・払戻（2026-08-07追加）。40分前ジョブが逐次取得する。
+TODAY_RESULTS_URL = f"{GITHUB_RAW}/today_results.csv"
 
 # flaskは予想を生成するのと同じPCで動くので、ローカルにファイルがあれば直接読む。
 # → GitHub raw のCDNキャッシュ(max-age=300)＋自前キャッシュによる「判定は買いなのに
@@ -27,6 +29,7 @@ LOCAL_MAP = {
     TODAY_PRED_URL: "today_predictions.csv",
     RECORD_URL: "prediction_record_v2.csv",
     TODAY_BETS_URL: "today_bets.csv",
+    TODAY_RESULTS_URL: "today_results.csv",
 }
 
 _cache = {}
@@ -73,6 +76,89 @@ SIGNAL_MAP = {
 TRACK_EMO = {"芝": "🌿", "ダ": "🟤", "ダート": "🟤"}
 VALID_RANKS = set(RANK_ORDER.keys())  # {'◎', '○', '▲', '△', '×'}
 
+# 買い対象の判定は keiba_predict を単一の情報源にする。
+# ここに定数を書くと、片方だけ直して表示と実際の買い目がズレる。
+# 2026-08-04: 買い方を較正済み期待値方式に変更。★や印はもう買いの根拠ではなく、
+#   「乖離≥3・20倍以下・モデル1位ならEV≥1.7/2〜5位ならEV≥2.2」を満たす馬のうち
+#   期待値最大の1頭だけを単勝で買う。印基準のままだと実際に買う馬と表示がズレる。
+try:
+    from keiba_predict import (MYOMI_BETS as _BUY_BETS, MYOMI_MARKS as _BUY_MARKS,
+                               USE_EV_BETTING as _USE_EV, EV_GAP_MIN as _EV_GAP,
+                               EV_ODDS_MAX as _EV_ODDS, EV_MIN_TOP as _EV_TOP,
+                               EV_MIN_SUB as _EV_SUB)
+except Exception:
+    _BUY_BETS, _BUY_MARKS = {"◎": ("複勝",), "○": ("単勝",)}, ("◎", "○")
+    _USE_EV, _EV_GAP, _EV_ODDS, _EV_TOP, _EV_SUB = False, 3.0, 20.0, 1.7, 2.2
+try:
+    from keiba_predict import (USE_UMATAN as _USE_UMATAN,
+                               UMATAN_MAX_POP as _UM_MAX_POP,
+                               UMATAN_RANKS as _UM_RANKS)
+except Exception:
+    _USE_UMATAN, _UM_MAX_POP, _UM_RANKS = False, 3, (1, 2, 3, 4, 5)
+
+
+def _ev_candidates(group: pd.DataFrame) -> set:
+    """期待値方式で買う馬の馬番を返す（keiba_predict の条件と同じ）。"""
+    if not _USE_EV:
+        return set()
+    g = group.copy()
+    mr = pd.to_numeric(g.get("MF複勝順位"), errors="coerce")
+    gap = pd.to_numeric(g.get("乖離"), errors="coerce")
+    od = pd.to_numeric(g.get("単勝オッズ"), errors="coerce")
+    ev = pd.to_numeric(g.get("単勝期待値"), errors="coerce") + 1.0
+    hit = ((gap >= _EV_GAP) & (od <= _EV_ODDS) &
+           (((mr == 1) & (ev >= _EV_TOP)) | (mr.between(2, 5) & (ev >= _EV_SUB))))
+    t = g[hit.fillna(False)]
+    if t.empty:
+        return set()
+    best = t.assign(_ev=ev[t.index]).nlargest(1, "_ev")
+    return {str(int(v)) for v in pd.to_numeric(best["馬番"], errors="coerce").dropna()}
+
+
+def _result_map(race_id: str) -> dict:
+    """このレースの確定結果を {馬番: {着順, 単勝, 複勝}} で返す。
+
+    40分前ジョブとレース後の後片付けが today_results.csv に貯めたものを読むだけ。
+    ダッシュボードから直接スクレイピングはしない（ブロック回避）。
+    まだ確定していなければ空の辞書。
+    """
+    try:
+        d = fetch_csv(TODAY_RESULTS_URL)
+    except Exception:
+        return {}
+    if d is None or d.empty or "race_id" not in d.columns:
+        return {}
+    g = d[d["race_id"].astype(str) == str(race_id)]
+    if g.empty:
+        return {}
+    out = {}
+    for _, h in g.iterrows():
+        bn = pd.to_numeric(h.get("馬番"), errors="coerce")
+        pos = pd.to_numeric(h.get("着順"), errors="coerce")
+        if pd.isna(bn) or pd.isna(pos):
+            continue
+        tan = pd.to_numeric(h.get("単勝"), errors="coerce")
+        fuku = pd.to_numeric(h.get("複勝"), errors="coerce")
+        out[int(bn)] = {
+            "pos": int(pos),
+            "tan": f"{int(tan):,}" if pd.notna(tan) and tan > 0 else "",
+            "fuku": f"{int(fuku):,}" if pd.notna(fuku) and fuku > 0 else "",
+        }
+    return out
+
+
+def _umatan_partners(group: pd.DataFrame, ax: set) -> set:
+    """馬単の相手（2着に置く馬）を返す。keiba_predict の条件と同じ。"""
+    if not _USE_EV or not _USE_UMATAN or not ax:
+        return set()
+    g = group.copy()
+    mr = pd.to_numeric(g.get("MF複勝順位"), errors="coerce")
+    pr = pd.to_numeric(g.get("人気"), errors="coerce").rank(method="first")
+    bn = pd.to_numeric(g.get("馬番"), errors="coerce")
+    sub = g[mr.isin(_UM_RANKS) & (pr <= _UM_MAX_POP)
+            & (~bn.astype("Int64").astype(str).isin(ax))]
+    return {str(int(v)) for v in pd.to_numeric(sub["馬番"], errors="coerce").dropna()}
+
 
 def rank_sort_key(s):
     return s.map(lambda x: RANK_ORDER.get(str(x) if pd.notna(x) else "", 9))
@@ -80,6 +166,8 @@ def rank_sort_key(s):
 
 def enrich_group(group: pd.DataFrame) -> list[dict]:
     rows = []
+    _ev_buy = _ev_candidates(group)
+    _ev_sub = _umatan_partners(group, _ev_buy)
     for _, r in group.iterrows():
         d = r.to_dict()
         raw_rank = d.get("推奨ランク", "")
@@ -88,11 +176,46 @@ def enrich_group(group: pd.DataFrame) -> list[dict]:
         sig_label, sig_cls = SIGNAL_MAP.get(rank, ("穴・ヒモ", "yosomi"))
         d["signal_label"] = sig_label
         d["signal_cls"] = sig_cls
+        # ★＝市場より高く評価している馬（乖離+3以上・20倍以下）。買いの対象。
+        # 2026-07-31: 3年OOSで ★の◎○▲ は単勝97.3%／★なしの◎は83.1%。
+        d["is_star"] = str(d.get("妙味", "")) == "★"
+        _gap = pd.to_numeric(d.get("乖離"), errors="coerce")
+        d["gap"] = f"{_gap:+.0f}" if pd.notna(_gap) else ""
+        d["gap_val"] = float(_gap) if pd.notna(_gap) else -99
+        # 買い対象＝★かつ◎○▲。△×の★は参考表示に留める。
+        # 買い対象の印は keiba_predict 側の設定を正とする（ここに書くと二重管理になる。
+        # 2026-08-01: ▲を除外したのにダッシュボードだけ緑のままだった）。
+        if _USE_EV:
+            _bn = pd.to_numeric(d.get("馬番"), errors="coerce")
+            _k = str(int(_bn)) if pd.notna(_bn) else ""
+            # 軸＝単勝を買う馬。相手＝馬単の2着に置く馬（上位人気の印）。
+            # どちらも「買い対象」として色を付けるが、役割が分かるよう券種を書き分ける。
+            if _k in _ev_buy:
+                d["is_buy"], d["buy_kinds"] = True, ("単勝・馬単軸" if _ev_sub
+                                                     else "単勝")
+            elif _k in _ev_sub:
+                d["is_buy"], d["buy_kinds"] = True, "馬単の相手"
+            else:
+                d["is_buy"], d["buy_kinds"] = False, ""
+        else:
+            d["is_buy"] = d["is_star"] and rank in _BUY_MARKS
+            d["buy_kinds"] = "・".join(_BUY_BETS.get(rank, ())) if d["is_buy"] else ""
+        _ev_v = pd.to_numeric(d.get("単勝期待値"), errors="coerce")
+        d["ev_val"] = round(float(_ev_v) + 1.0, 2) if pd.notna(_ev_v) else None
+        # AI予想順位＝市場フリーモデルの3着内予測順（印の根拠そのもの）。
+        # 印は上位5頭にしか付かないので、6位以下の序列を見るためにも列で出す。
+        _ai = pd.to_numeric(d.get("MF複勝順位"), errors="coerce")
+        d["ai_rank"] = int(_ai) if pd.notna(_ai) else None
+        d["ai_rank_val"] = float(_ai) if pd.notna(_ai) else 999
         d["win_pct"] = f"{float(d.get('勝ち確率', 0)) * 100:.1f}"
         d["ren_pct"] = f"{float(d.get('連対確率', 0)) * 100:.1f}"
         d["fuku_pct"] = f"{float(d.get('複勝確率', 0)) * 100:.1f}"
-        d["ev_val"] = float(d.get("単勝期待値", 0) or 0)
-        d["ev_cls"] = "ev-good" if d["ev_val"] >= 1.0 else ("ev-ok" if d["ev_val"] >= 0.7 else "ev-bad")
+        # 2026-08-05: ここで ev_val を上書きしていたため、上で計算した正しい値
+        #   （単勝期待値+1.0＝確率×オッズ）が「確率×オッズ−1」に戻っていた。
+        #   買い判定の閾値(EV_MIN_TOP=1.7等)は「確率×オッズ」基準なので、
+        #   表示も同じ土俵に揃える。1.0が損益分岐。
+        d["ev_cls"] = ("ev-good" if (d["ev_val"] or 0) >= 1.3
+                       else "ev-ok" if (d["ev_val"] or 0) >= 1.0 else "ev-bad")
         rows.append(d)
     return rows
 
@@ -481,12 +604,16 @@ def race_detail(race_id):
     # 能力値パラメータ（印付き馬＋◎妙、レース内百分位0-100を6軸バー表示）
     ABILITY_AXES = [("能力_勝負", "勝負力"), ("能力_安定", "安定感"), ("能力_末脚", "末脚"),
                     ("能力_先行", "先行力"), ("能力_距離", "距離適性"), ("能力_実績", "実績")]
+    # 2026-08-06: 印付き馬＋◎妙だけに絞っていたが、全頭を出すよう変更。
+    #   このモデルはオッズ・人気を一切見ない能力評価なので、印が付かなかった馬の
+    #   能力値にも意味がある（なぜ選ばれなかったかが読める）。
+    #   ただし18頭ぶん並べると見づらいので、印付きを先頭にしてそれ以外は
+    #   テンプレート側で折りたたむ（is_sub で判別）。
     param_horses = []
     if "能力_勝負" in group.columns:
         for h in horses:
             is_myo = str(h.get("妙味軸", "")) == "◎妙"
-            if not (h.get("推奨ランク") in VALID_RANKS or is_myo):
-                continue
+            is_marked = (h.get("推奨ランク") in VALID_RANKS) or is_myo
             abilities = []
             for col, label in ABILITY_AXES:
                 v = pd.to_numeric(h.get(col), errors="coerce")
@@ -495,11 +622,21 @@ def race_detail(race_id):
             param_horses.append({
                 "mark": h.get("推奨ランク") or ("◎妙" if is_myo else ""),
                 "is_myo": is_myo,
+                "is_sub": not is_marked,      # 印なし＝折りたたみ側
                 "ban": int(ban) if pd.notna(ban) else "-",
                 "name": h.get("馬名", ""),
                 "signal_cls": h.get("signal_cls", ""),
                 "abilities": abilities,
             })
+        # 印付きを先に、その中はAI順位順。印なしもAI順位順で後ろに続ける。
+        param_horses.sort(key=lambda p: (p["is_sub"], p.get("ban") if isinstance(p.get("ban"), int) else 99))
+        _ai = {}
+        for h in horses:
+            b = pd.to_numeric(h.get("馬番"), errors="coerce")
+            if pd.notna(b):
+                _ai[int(b)] = h.get("ai_rank_val", 999)
+        param_horses.sort(key=lambda p: (p["is_sub"],
+                                         _ai.get(p.get("ban"), 999)))
 
     # 穴馬候補: AI高推奨だが人気薄の馬
     ana_candidates = [
@@ -509,10 +646,33 @@ def race_detail(race_id):
         and pd.to_numeric(h.get("人気"), errors="coerce") >= 4
     ]
 
+    # 確定していれば各馬に着順・払戻を付ける（2026-08-07）。
+    # 結果は別枠にせず、その馬の行に横並びで出す。
+    rmap = _result_map(race_id)
+    for h in horses:
+        bn = pd.to_numeric(h.get("馬番"), errors="coerce")
+        r = rmap.get(int(bn)) if pd.notna(bn) else None
+        h["res_pos"] = r["pos"] if r else None
+        h["res_tan"] = r["tan"] if r else ""
+        h["res_fuku"] = r["fuku"] if r else ""
+
+        # 評価グレード（2026-08-07）。複勝確率＝キャリブレーション済みの絶対値なので、
+        # レース内の相対順ではなく固定のしきい値で切る。頭数の少ないレースで
+        # 実力がないのにAが付く、といったことを防ぐ。
+        fp = pd.to_numeric(h.get("fuku_pct"), errors="coerce")
+        fp = float(fp) if pd.notna(fp) else 0.0
+        h["grade"] = ("S" if fp >= 50 else "A" if fp >= 40 else
+                      "B" if fp >= 30 else "C" if fp >= 20 else "D")
+        # 能力総合点＝6軸（レース内百分位0-100）の平均。オッズを一切見ない評価。
+        vals = [pd.to_numeric(h.get(c), errors="coerce") for c, _ in ABILITY_AXES]
+        vals = [float(v) for v in vals if pd.notna(v)]
+        h["abil_avg"] = round(sum(vals) / len(vals), 1) if vals else None
+
     return render_template(
         "race_detail.html",
         race_id=race_id,
         horses=horses,
+        has_result=bool(rmap),
         jyo=jyo,
         race_no=race_no,
         dist=dist,

@@ -94,7 +94,8 @@ def git_push(message: str):
 
         # 変更があるファイルだけ追加
         files = ["today_predictions.csv", "prediction_record_v2.csv", "today_bets.csv",
-                 "odds_history.csv"]   # オッズ変動特徴の蓄積データ（追記式・バックアップ用）
+                 "odds_history.csv",   # オッズ変動特徴の蓄積データ（追記式・バックアップ用）
+                 "today_results.csv"]  # 同じ競馬場の終了レースの着順・払戻（2026-08-07）
         for f in files:
             path = os.path.join(BASE_DIR, f)
             if os.path.exists(path):
@@ -174,6 +175,16 @@ def run_morning_prediction():
     git_push(f"当日予想更新 {date_str} 07:00")
     notify_dashboard()
 
+    # note公開用のダイジェストをメール送信（2026-08-05追加）。
+    # 買い推奨レースをMarkdownで整形して送るだけ。公開は手動で行う。
+    # 失敗しても予想の処理は止めない。
+    try:
+        subprocess.run([PYTHON, os.path.join(BASE_DIR, "note_digest.py")],
+                       cwd=BASE_DIR, timeout=300,
+                       env=dict(os.environ, PYTHONUTF8="1"))
+    except Exception as e:
+        print(f"  note用ダイジェストの送信に失敗（続行）: {e}")
+
 
 # ── 個別レース予想（各レース40分前実行） ──────────────────────────────────
 def run_race_prediction(race_id: str, race_time: str):
@@ -204,6 +215,17 @@ def run_race_prediction(race_id: str, race_time: str):
         print(f"  予想実行エラー: {e}")
         return
 
+    # 同じ競馬場の終わったレースの結果を取る（2026-08-07追加）。
+    #   ダッシュボードに前レースの着順・払戻を出すため。
+    #   ⚠️まだ取っていないレースだけを1件ずつ取る設計。毎回全部取りに行くと
+    #     netkeibaのIPブロックを招く（2026-07-27に実際に400を食らった）。
+    #   ここで貯めたものは21時の結果照合でも再利用され、取得が二重にならない。
+    try:
+        import today_results
+        today_results.update_for_race(race_id)
+    except Exception as e:
+        print(f"  前レース結果の取得に失敗（続行）: {e}")
+
     # GitHubにプッシュ → ダッシュボード即時更新
     git_push(f"{jyo_name} {race_no}R 予想更新 {datetime.now().strftime('%H:%M')}")
     notify_dashboard()
@@ -220,8 +242,22 @@ def setup_schedule():
         print("本日のレースが取得できませんでした")
         return 0
 
+    # 発走時刻を保存しておく（結果の後片付けジョブが「他のスクレイピングと
+    # 被らない時刻か」を判定するのに使う。2026-08-07）
+    try:
+        import today_results
+        today_results.save_race_times(race_info)
+    except Exception as e:
+        print(f"  発走時刻の保存に失敗（続行）: {e}")
+
     now = datetime.now()
     scheduled = 0
+
+    # 前日に登録したレースジョブを破棄する（2026-08-02）。
+    # 下の登録は every().day.at() ＝毎日繰り返しなので、常駐が日をまたぐと
+    # 「昨日のrace_idを今日の同時刻に再予想してpush」が起き、ダッシュボードが
+    # 前日のまま固まる。tagを付けてここで消すことで、その日の分だけが残る。
+    schedule.clear("race")
 
     for race_id, race_time in sorted(race_info.items()):
         time_match = re.search(r"(\d{1,2}):(\d{2})", race_time)
@@ -244,7 +280,7 @@ def setup_schedule():
             run_race_prediction,
             race_id=race_id,
             race_time=race_time,
-        )
+        ).tag("race")
 
         jyo_cd   = int(str(race_id)[4:6])
         race_no  = int(str(race_id)[10:12])
@@ -325,16 +361,30 @@ def main():
     # 当日レースの個別予想スケジュールを設定
     now = datetime.now()
 
-    # 7時前なら起動時にスケジュール設定
-    # 7時以降なら朝の予想完了後に設定
-    if now.hour < 7:
-        print("  7時前のため、7時の一括予想後にレーススケジュールを設定します")
-        # 7時5分にスケジュール設定を行う
-        schedule.every().day.at("07:05").do(setup_and_register)
-    else:
-        # すでに7時以降 → 今すぐスケジュール設定
+    # 個別レースの登録は毎日7:05に行う（2026-08-02に毎日化）。
+    # 以前は一度きり(CancelJob)だったため、常駐が日をまたぐと翌日のレースが
+    # 1本も登録されないまま動き続けていた。
+    schedule.every().day.at("07:05").do(setup_and_register)
+    print("  [済] 個別レース登録(07:05・毎日)をスケジュール登録")
+
+    # 7時以降に手動起動した場合は、7:05を待たず今すぐ当日分を登録する
+    if now.hour >= 7:
         n = setup_schedule()
-        print(f"  {n}レースをスケジュール登録")
+        print(f"  {n}レースをスケジュール登録（起動時）")
+
+    # 日次で自ら終了する（2026-08-02）。
+    # レースジョブは every().day.at() ＝毎日繰り返しのため、常駐が生き続けると
+    # 前日分のジョブが翌日も動く。タスクスケジューラが毎朝6:55に起動し直す設計に
+    # 合わせ、夜に必ず落として翌朝まっさらな状態から始める。
+    # 結果の後片付け（2026-08-07）。相乗り取得では後続レースのない最終レースが
+    # 漏れるため、レース終了後の空き時間に回収する。today_results.sweep() が
+    # 「発走±15分に入っていないか」を毎回自分で確認するので、ここでは10分おきに
+    # 声をかけるだけでよい（17:00〜20:40の外なら何もせず戻る）。
+    schedule.every(10).minutes.do(run_result_sweep)
+    print("  [済] 結果の後片付け(17:00-20:40・10分おき)をスケジュール登録")
+
+    schedule.every().day.at("22:30").do(_nightly_exit)
+    print("  [済] 日次終了(22:30)をスケジュール登録")
 
     print(f"\n待機中... (Ctrl+Cで停止)\n")
     while True:
@@ -342,11 +392,30 @@ def main():
         time.sleep(10)
 
 
+def run_result_sweep():
+    """レース終了後、まだ取れていない当日結果を回収してダッシュボードに反映。"""
+    try:
+        import today_results
+        n = today_results.sweep()
+    except Exception as e:
+        print(f"  結果の後片付けに失敗（続行）: {e}")
+        return
+    if n:
+        git_push(f"当日結果を更新 {datetime.now().strftime('%H:%M')}")
+
+
+def _nightly_exit():
+    """翌朝6:55のタスク起動に備えて常駐を終了する。"""
+    print(f"\n[{datetime.now().strftime('%H:%M')}] 日次終了。"
+          f"翌朝6:55にタスクスケジューラが起動し直します。")
+    sys.stdout.flush()
+    sys.exit(0)
+
+
 def setup_and_register():
-    """7時5分に個別レーススケジュールを設定（一括予想完了後）"""
+    """7時5分に個別レーススケジュールを設定（一括予想完了後・毎日実行）"""
     n = setup_schedule()
     print(f"  {n}レースをスケジュール登録（7:05）")
-    return schedule.CancelJob  # 一度だけ実行
 
 
 if __name__ == "__main__":

@@ -773,3 +773,60 @@ body {
   .signal-summary { grid-template-columns: 1fr; }
   .race-no { font-size: 17px; }
 }
+
+/* ── 妙味表示（2026-07-31）──────────────────────────────
+   ★＝市場フリーのモデルが市場より高く評価している馬（乖離+3以上・20倍以下）。
+   ★の付いた◎○▲だけが買い対象（3年OOSで単勝97.3%／★なしの◎は83.1%）。
+   ★は全馬に出すが平均0.42頭/レースなので画面は詰まらない。 */
+.star { color: #e8a000; font-weight: 700; margin-right: 2px; }
+.gap { color: #888; font-size: 0.78em; margin-left: 6px; }
+.row-buy td { background: #eaf7ea; }
+.row-buy .horse-name-cell { font-weight: 600; }
+
+/* ── AI順位・乖離・ソート（2026-07-31）───────────────────────────
+   AI順位＝市場フリーモデルの3着内予測順（印の根拠）。印は上位5頭にしか
+   付かないので、6位以下の序列を見るために列で出す。
+   乖離＝人気順位−AI順位。+3以上でAIが市場より高評価＝★の条件。 */
+.ai-rank { font-weight: 700; }
+.gap-plus { color: #1a7f37; font-weight: 700; }
+.gap-minus { color: #b0b0b0; }
+.horse-table tr.sortable th[data-k] { user-select: none; }
+.horse-table tr.sortable th[data-k]:hover { background: #eef3fa; }
+.horse-table th.sorted-asc::after { content: " ▲"; font-size: 0.75em; color: #4a7fc1; }
+.horse-table th.sorted-desc::after { content: " ▼"; font-size: 0.75em; color: #4a7fc1; }
+.buy-kind { margin-left: 6px; font-size: 0.75em; color: #1a7f37; font-weight: 700; }
+
+/* 印なし馬の能力値（2026-08-06追加・既定は折りたたみ） */
+.ability-more { margin-top: 12px; }
+.ability-more > summary {
+  cursor: pointer; padding: 8px 12px; border-radius: 6px;
+  background: rgba(255,255,255,.06); font-size: .9rem; user-select: none;
+}
+.ability-more > summary:hover { background: rgba(255,255,255,.12); }
+.ability-more[open] > summary { margin-bottom: 10px; }
+.ability-card.ability-sub { opacity: .8; }
+
+
+/* 全馬一覧の結果列（2026-08-07・確定後のみ表示） */
+.res-cell { white-space: nowrap; line-height: 1.25; min-width: 74px; }
+.res-pos { display: block; font-weight: 700; font-size: .95rem; }
+.res-pay { display: inline-block; font-size: .68rem; opacity: .75; margin-right: 4px; }
+.res-none { opacity: .3; }
+.res-medal .res-pos { font-size: 1.15rem; }
+.res-1 { background: rgba(255,209,102,.16); }
+.res-2 { background: rgba(190,200,215,.14); }
+.res-3 { background: rgba(205,140,90,.14); }
+
+/* 評価グレードと能力総合点（2026-08-07・参考画像に合わせた表示） */
+.grade { display:inline-block; min-width:1.5em; font-weight:800; font-size:1.02rem; letter-spacing:.02em; }
+.grade-S { color:#ff5d8f; }
+.grade-A { color:#ff8c42; }
+.grade-B { color:#ffc233; }
+.grade-C { color:#4a9eff; }
+.grade-D { color:#8b95a5; }
+.abil-cell { white-space:nowrap; min-width:96px; }
+.abil-num { display:inline-block; width:2.6em; text-align:right; font-weight:700; font-size:.86rem; }
+.abil-bar { display:inline-block; width:52px; height:7px; margin-left:5px; border-radius:4px;
+            background:rgba(140,150,165,.25); vertical-align:middle; overflow:hidden; }
+.abil-bar i { display:block; height:100%; border-radius:4px;
+              background:linear-gradient(90deg,#4a9eff,#8b5cf6); }

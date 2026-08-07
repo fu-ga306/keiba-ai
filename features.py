@@ -868,6 +868,20 @@ def add_extra_advanced_features(df):
                 df = df.merge(_lk, on=_keys, how="left")
                 df["コース脚質バイアス"] = df["コース脚質バイアス"].fillna(df["_bias_lk"])
                 df = df.drop(columns=["_bias_lk"], errors="ignore")
+                # 予測は1レース分しか無いため脚質binが偏り、上の完全一致では
+                # 25〜89%が埋まらない（2026-08-01に検出）。粗い鍵へ段階的に落とす。
+                _lk2 = pd.read_csv(_bias_csv)
+                for _sub in (["競馬場cd", "_track", "_距離帯"],
+                             ["競馬場cd", "_track"], ["_track"]):
+                    if df["コース脚質バイアス"].isna().sum() == 0:
+                        break
+                    _agg = (_lk2.groupby(_sub)["コース脚質バイアス"].mean()
+                            .rename("_bias_fb").reset_index())
+                    for _k in _sub:
+                        _agg[_k] = _agg[_k].astype(df[_k].dtype)
+                    df = df.merge(_agg, on=_sub, how="left")
+                    df["コース脚質バイアス"] = df["コース脚質バイアス"].fillna(df["_bias_fb"])
+                    df = df.drop(columns=["_bias_fb"], errors="ignore")
             except Exception as _e:
                 print(f"  [コース脚質バイアス] CSV補完スキップ: {_e}")
         df = df.drop(columns=["_相対位置", "_先行力", "_逃げ気質", "_脚質bin",
@@ -1425,28 +1439,26 @@ def build_features(csv_path="race_data_clean.csv", out_path="race_features.csv",
         "過去獲得賞金累計", "過去平均獲得賞金",
     ]
 
-    # ── 乗り替わり・斤量変化: 騎手列・斤量はCSV出力しないが、ここで計算して保持 ──
-    # model.py は race_features.csv に騎手列がないと全NaNで重要度0%になる
-    if "騎手" in df.columns or "斤量" in df.columns:
-        df = sort_by_horse_time(df)
-        if "騎手" in df.columns:
-            prev_jockey = df.groupby("馬名")["騎手"].shift(1)
-            df["乗り替わり"] = (prev_jockey.notna() & (prev_jockey != df["騎手"])).astype(int)
-        if "斤量" in df.columns:
-            df["斤量変化"] = df.groupby("馬名")["斤量"].diff()
+    # ※乗り替わり・斤量変化・連闘・休み明け・負担率は _run_feature_pipeline 内の
+    #   add_rotation_weight_features() へ移動した（2026-07-31）。
+    #   ここに置いていたため学習でしか作られず、予測経路では欠落していた。
+    #   その結果これらの相対化列も作られず、モデルが要求する297列に対し
+    #   予測時は272列しか揃わずLightGBMが落ちていた。
 
-    # 前走間隔・馬体重・斤量から派生する特徴量（model.py で NaN 強制されていた）
-    if "前走間隔" in df.columns:
-        df["連闘"]    = (df["前走間隔"] <= 1).astype(float)
-        df["休み明け"] = (df["前走間隔"] >= 12).astype(float)
-        # 初出走（前走間隔=NaN）は NaN のまま
-        df.loc[df["前走間隔"].isna(), ["連闘", "休み明け"]] = float("nan")
-    if "斤量" in df.columns and "馬体重" in df.columns:
-        df["負担率"] = df["斤量"] / df["馬体重"].replace(0, float("nan"))
-
-    out = df[[c for c in FEATURE_COLS if c in df.columns]]
+    # 相対化列(_R偏差/_R順)は add_all_relative_features が動的に作るので、
+    # FEATURE_COLS に手書きせず、ここで自動的に保存対象へ加える。
+    # ※過去に「計算したのに保存ホワイトリストへ書き忘れてCSVから落ちる」事故があった。
+    rel = [c for c in df.columns if c.endswith(("_R偏差", "_R順"))]
+    # 速度/上り指数の履歴も同様に自動で保存対象へ入れる（2026-08-03追加）。
+    # ここに書き忘れると計算だけしてCSVから落ちる（過去に同じ事故あり）。
+    spd = [c for c in SPEED_HIST_COLS if c in df.columns]
+    chk = [c for c in CHOKYO_COLS if c in df.columns]     # 調教（2026-08-06追加）
+    keep = [c for c in FEATURE_COLS if c in df.columns] + \
+           [c for c in rel + spd + chk if c not in FEATURE_COLS]
+    out = df[keep]
     out.to_csv(out_path, index=False, encoding="utf-8-sig")
-    print(f"保存完了 → {out_path}（{len(out)}行 × {len(out.columns)}列）")
+    print(f"保存完了 → {out_path}（{len(out)}行 × {len(out.columns)}列"
+          f"／うち相対化 {len(rel)}列）")
     return out
 
 
@@ -1533,6 +1545,368 @@ def add_field_relative_features(df):
     return df
 
 
+# 相対化から除く列（識別子・結果・市場評価・既に相対化済みのもの）
+#
+# ★当日結果そのものの列を必ず入れること（2026-07-31の事故）★
+#   タイム秒/賞金/_1角位置/_4角位置/_chakusa_sec/先行指数 は「そのレースの結果」で、
+#   学習データには存在するが予測時には存在しない。これを相対化して学習に混ぜたため、
+#   予測時に該当12列が全欠損となりMF複勝率が0.182〜0.185の横並びに潰れ、
+#   印が人気と大きく乖離した（BT: ◎平均1.9番人気 → 実際8〜13番人気）。
+#   「前走〜」「過去〜」は履歴なので予測時にも存在し、除外してはいけない。
+# ── レース内で全馬が同じ値になる列（2026-08-03に判明）────────────────────
+# これらを add_all_relative_features に通すと:
+#   _R偏差 … レース内の標準偏差が0なので全行NaN（実測で欠損100%）
+#   _R順   … 全馬同値を method="first" で順位付けするので意味のない連番
+# となり、FEATURE_COLS_MF の中に「中身のない列」が44本（22×2形態）できていた。
+# 一方、生の値そのものは有用で、コース系4列を素のまま足すと +0.7pt（raw_ablation.py）。
+# ※相対化を導入した2026-07-31の設計漏れ。REL_BASE_COLS からこれらを外し、
+#   代わりに生の列を FEATURE_COLS_MF へ入れるのが正しい形。
+RACE_CONST_COLS = [
+    "クラス_num", "コース先行勝率", "コース好走相対4角", "コース差し複勝率",
+    "メンバークラス平均", "メンバー賞金平均", "メンバー過去勝率平均",
+    "メンバー過去勝率最大", "レース番号", "先行圧", "出走頭数", "回り_num",
+    "想定先行馬数", "想定先行馬率", "想定逃げ馬数", "日", "直線長_m",
+    "競馬場cd", "距離", "距離カテゴリ", "開催季節", "開催月",
+]
+
+# 生のまま特徴量に採用すべき列（raw_ablation.py の実測で採否を決めた）。
+#   コース系  +0.7pt → 採用
+#   メンバー系 ±0.0pt → 見送り
+#   展開系    -0.4pt → 見送り
+#   血統/馬主 -1.2pt → 見送り（集計方法に問題がある可能性。要調査）
+RAW_ADOPT_COLS = [
+    "コース脚質バイアス", "コース先行勝率", "コース差し複勝率", "コース好走相対4角",
+]
+
+_REL_SKIP_EXACT = {
+    "race_id", "馬名", "馬番", "枠番", "着順_num", "上り", "人気", "単勝オッズ",
+    "出走頭数", "レース番号", "競馬場cd", "日", "回", "距離", "クラス_num",
+    "馬場状態_num", "is_turf", "回り_num", "開催月", "開催季節",
+    # ↓当日結果に由来する列（予測時は未確定）
+    "タイム秒", "賞金", "_1角位置", "_2角位置", "_3角位置", "_4角位置",
+    "_chakusa_sec", "先行指数", "着差", "通過",
+}
+_REL_SKIP_SUB = ("レース内", "_R偏差", "_R順", "対相手", "メンバー", "_std")
+
+
+# 相対化の対象列（固定）。学習と予測で必ず同じ集合になるようリスト化する。
+# 2026-07-31: 動的選択にしていたため学習297列/予測272列とズレ、予測が落ちた。
+# 変更するときは MFモデルの再学習が必要（use_cols と一致していないと動かない）。
+REL_BASE_COLS = [
+    "クラス_num", "クラス変化", "コース先行勝率",
+    "コース好走相対4角", "コース差し複勝率", "コース脚質バイアス",
+    "メンバークラス平均", "メンバー賞金平均", "メンバー過去勝率平均",
+    "メンバー過去勝率最大", "レース番号", "他馬想定先行馬数",
+    "体重増減", "体重増減_異常度", "先行圧",
+    "先行有利コース×先行馬", "出走頭数", "前走4角位置",
+    "前走上り", "前走余力", "前走着差_秒",
+    "前走着順", "前走脚質指数", "前走距離",
+    "前走間隔", "同距離過去勝率", "同距離過去平均着順",
+    "回り_num", "回り別_過去勝率", "回り別_過去複勝率",
+    "差し×先行圧", "差し有利コース×差し馬", "差し馬×ハイペース想定",
+    "年齢", "延長×前走余力", "延長×距離経験不足",
+    "想定先行馬数", "想定先行馬率", "想定逃げ馬数",
+    "斤量", "斤量_相対", "斤量×年齢_負担",
+    "斤量変化", "日", "枠番",
+    "父系_今回距離適性", "父系_勝率", "父系_芝ダ適性",
+    "父系_複勝率", "父系_長距離勝率", "直線長_m",
+    "直線長変化", "直近3走平均タイム秒", "直近3走平均上り",
+    "直近3走平均着順", "直近5走勝利数", "直近5走平均着順",
+    "直近5走着外率", "直近5走着順_std", "直近5走複勝数",
+    "競馬場cd", "競馬場過去勝率", "競馬場過去平均着順",
+    "経験最長距離", "経験範囲超過", "脚質コース適合",
+    "脚質スコア", "芝ダート×先行_過去勝率", "調教師勝率",
+    "調教師勝率_sm", "調教師複勝率", "負担率",
+    "距離", "距離×クラス_過去勝率", "距離×馬場_過去平均着順",
+    "距離カテゴリ", "距離別過去平均上り", "距離別過去平均着順",
+    "距離変化", "距離変化比率", "距離延長×先行",
+    "距離延長幅", "近5走平均着差_秒", "近5走着差_std",
+    "近走改善度", "逃げ争い", "速度_伸び",
+    "速度_前走", "速度_直近3", "速度_直近3_順",
+    "速度_過去平均", "速度_過去平均_順", "速度_過去最高",
+    "速度_過去最高_順", "過去出走数", "過去勝率",
+    "過去平均4角位置", "過去平均タイム秒", "過去平均上り",
+    "過去平均体重増減", "過去平均先行指数", "過去平均獲得賞金",
+    "過去平均着差_秒", "過去平均着順", "過去最速タイム秒",
+    "過去最速上り", "過去獲得賞金累計", "過去着順_std",
+    "過去複勝率", "過去重賞出走数", "開催季節",
+    "開催月", "馬主勝率", "馬主勝率_sm",
+    "馬主複勝率", "馬体重", "馬体重_相対",
+    "騎手勝率", "騎手勝率_sm", "騎手直近複勝率",
+    "騎手競馬場勝率", "騎手複勝率",
+]
+
+# ── 差し替え用の新しい素材リスト（2026-08-03準備・まだ未使用）──────────────
+# レース内定数を除いたもの。122列 → 100列。
+# 切り替えは「REL_BASE_COLS の再生成」と「MFモデルの再学習」を必ずセットで行う。
+# 片方だけ変えると、モデルが要求する列とCSVの列が食い違って予測が落ちる
+# （2026-07-31に同じ形で本番が停止した）。手順は apply_v2.py にまとめてある。
+REL_BASE_COLS_V2 = [c for c in REL_BASE_COLS if c not in RACE_CONST_COLS]
+
+# 切り替えはフラグファイルの有無で行う（環境変数だとタスクスケジューラから
+# 起動されるプロセスに引き継がれず、学習と予測で食い違うため）。
+# 作成/削除は apply_v2.py が行う。手で作らないこと。
+V2_FLAG = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                       "features_v2.flag")
+if os.path.exists(V2_FLAG):
+    REL_BASE_COLS = REL_BASE_COLS_V2
+
+
+# ── 調教（坂路）特徴量（2026-08-06追加）────────────────────────────────
+# 2026-08-04に一度見送った経緯がある。当時は元データ(chokyo_hc.csv)が無く、
+# 8/2の予想37レースで調教データ0件＝「学習時は値があるのに予測時は必ず欠損」
+# という不一致を作るところだった。
+# 8/6にJV-LinkのSLOP(坂路)がセットアップモードで取得できると分かったので、
+# 供給経路ができた前提で組み込む。
+#
+# ⚠️予測時にも値が入ることが必須。そのため chokyo_features.py（過去分の一括生成・
+#   race_data_clean.csv とRAレコードに依存）は使わず、chokyo_hc.csv から
+#   その場で計算する。レース日より前の調教だけを見るのでリークは無い。
+CHOKYO_COLS = ["chk_last4f", "chk_last1f", "chk_days", "chk_n14", "chk_best4f"]
+_CHOKYO_CACHE = None
+
+
+def _load_chokyo(base_dir=None):
+    """chokyo_hc.csv を馬ごとの配列にして返す。無ければNone。"""
+    global _CHOKYO_CACHE
+    if _CHOKYO_CACHE is not None:
+        return _CHOKYO_CACHE
+    base_dir = base_dir or os.path.dirname(os.path.abspath(__file__))
+    path = os.path.join(base_dir, "chokyo_hc.csv")
+    if not os.path.exists(path):
+        print("  調教データなし（chokyo_hc.csv）→ 調教特徴量はスキップ")
+        _CHOKYO_CACHE = {}
+        return _CHOKYO_CACHE
+    try:
+        ck = pd.read_csv(path, dtype={"horse_id": str, "調教日": str})
+        ck["date"] = pd.to_datetime(ck["調教日"], format="%Y%m%d", errors="coerce")
+        ck = ck.dropna(subset=["date", "time4f"]).sort_values(["horse_id", "date"])
+        _CHOKYO_CACHE = {h: (g["date"].values, g["time4f"].values, g["lap1f"].values)
+                         for h, g in ck.groupby("horse_id")}
+        print(f"  調教データ読込: {len(ck):,}行 / {len(_CHOKYO_CACHE):,}頭")
+    except Exception as e:
+        print(f"  調教データの読込に失敗（スキップ）: {e}")
+        _CHOKYO_CACHE = {}
+    return _CHOKYO_CACHE
+
+
+def add_chokyo_features(df, base_dir=None):
+    """レース日より前の坂路調教から特徴量を作る。学習・予測の両方で同じ計算をする。"""
+    hd = _load_chokyo(base_dir)
+    for c in CHOKYO_COLS:
+        df[c] = np.nan
+    if not hd or "horse_id" not in df.columns:
+        return df
+    df = attach_race_date(df)
+    if "_race_dt" not in df.columns:
+        return df
+    hid = df["horse_id"].astype(str).values
+    rdt = pd.to_datetime(df["_race_dt"], errors="coerce").values
+    out = np.full((len(df), 5), np.nan)
+    win14 = np.timedelta64(14, "D")
+    for i in range(len(df)):
+        h = hd.get(hid[i])
+        if h is None or pd.isna(rdt[i]):
+            continue
+        dates, t4, l1 = h
+        idx = np.searchsorted(dates, rdt[i])   # レース日より前の調教まで
+        if idx == 0:
+            continue
+        last = idx - 1
+        days = (rdt[i] - dates[last]) / np.timedelta64(1, "D")
+        if days <= 0:                          # 当日の調教は使わない
+            last -= 1
+            if last < 0:
+                continue
+            days = (rdt[i] - dates[last]) / np.timedelta64(1, "D")
+        lo = np.searchsorted(dates, rdt[i] - win14)
+        seg = t4[lo:idx]
+        out[i] = (t4[last], l1[last], days, idx - lo,
+                  np.nanmin(seg) if len(seg) else np.nan)
+    for j, c in enumerate(CHOKYO_COLS):
+        df[c] = out[:, j]
+    return df
+
+
+# ── 速度指数・上り指数（2026-08-03追加）──────────────────────────────────
+# 実験用の final_features.py だけが持っていて本番に無かった特徴量。
+# 同じ買い方でも実験モデルはワイド★軸127.6%、本番モデルは81.4%と46pt差があり、
+# 印の質も 1位複勝率 62.8% 対 57.1% と開いていた。その主因がこの一群。
+#
+# ⚠️最重要の注意 ⚠️
+#   速度指数・上り指数そのものは「当日のタイム・上り」から作る＝当日結果である。
+#   絶対に特徴量にしてはいけない。2026-07-31に当日結果を相対化して3度目の
+#   リークを出したのと同じ形。ここでは shift(1) を挟んだ過去分だけを残し、
+#   生の指数は計算し終えたら必ず drop する。
+SPEED_BASE_CSV = "speed_baseline.csv"
+SPEED_HIST_COLS = [
+    "速度_過去平均", "速度_過去最高", "速度_過去標準偏差", "速度_直近3",
+    "速度_前走", "速度_伸び",
+    "上指_過去平均", "上指_過去最高", "上指_直近3", "上指_前走",
+    "速度_同距離帯", "速度_同芝ダ", "速度_同場", "速度_同馬場",
+]
+
+
+def _speed_baseline(df, base_dir=None):
+    """(競馬場cd, 距離, is_turf, 馬場状態_num) ごとの基準タイムを返す。
+
+    学習時に作って保存し、予測時は読み込む。毎回その場のデータから中央値を
+    取ると学習と予測で基準がズレ、同じ馬が違う速度指数になってしまう
+    （コース脚質バイアスで実際に起きた問題と同じ）。
+    """
+    base_dir = base_dir or os.path.dirname(os.path.abspath(__file__))
+    path = os.path.join(base_dir, SPEED_BASE_CSV)
+    keys = ["競馬場cd", "距離", "is_turf", "馬場状態_num"]
+    if os.path.exists(path):
+        try:
+            b = pd.read_csv(path)
+            if len(b) and set(keys).issubset(b.columns):
+                return b
+        except Exception as e:
+            print(f"  速度基準の読込に失敗（作り直します）: {e}")
+    d = df.copy()
+    for k in keys:
+        d[k] = pd.to_numeric(d[k], errors="coerce")
+    b = (d.dropna(subset=keys + ["タイム秒"])
+           .groupby(keys, observed=True)["タイム秒"].median()
+           .rename("基準秒").reset_index())
+    b = b[b["基準秒"] > 0]
+    try:
+        b.to_csv(path, index=False, encoding="utf-8-sig")
+    except Exception as e:
+        print(f"  速度基準の保存に失敗（続行）: {e}")
+    return b
+
+
+def add_speed_index_features(df, base_dir=None):
+    """速度指数・上り指数を作り、その馬の過去分だけを特徴量として残す。"""
+    if "タイム秒" not in df.columns:
+        for c in SPEED_HIST_COLS:
+            df[c] = np.nan
+        return df
+
+    keys = ["競馬場cd", "距離", "is_turf", "馬場状態_num"]
+    for k in keys:
+        if k in df.columns:
+            df[k] = pd.to_numeric(df[k], errors="coerce")
+    b = _speed_baseline(df, base_dir)
+    df = df.merge(b, on=keys, how="left")
+    # 基準が引けない条件（新設コース等）は距離だけの中央値で埋める
+    if df["基準秒"].isna().any():
+        fb = (b.groupby("距離", observed=True)["基準秒"].mean()
+                .rename("_基準fb").reset_index())
+        df = df.merge(fb, on="距離", how="left")
+        df["基準秒"] = df["基準秒"].fillna(df["_基準fb"])
+        df = df.drop(columns=["_基準fb"])
+
+    _sec = pd.to_numeric(df["タイム秒"], errors="coerce")
+    df["_速度指数"] = (df["基準秒"] - _sec) / df["基準秒"] * 1000
+    df.loc[df["_速度指数"].abs() > 200, "_速度指数"] = np.nan
+
+    _agari = pd.to_numeric(df.get("上り"), errors="coerce")
+    if _agari is not None and _agari.notna().any():
+        _ab = (df.dropna(subset=keys).assign(_a=_agari)
+                 .groupby(keys, observed=True)["_a"].transform("median"))
+        df["_上り指数"] = (_ab - _agari) / _ab * 1000
+        df.loc[df["_上り指数"].abs() > 300, "_上り指数"] = np.nan
+    else:
+        df["_上り指数"] = np.nan
+
+    # ここから先は必ず shift(1) を挟む＝自分のレースを見ない
+    df = sort_by_horse_time(df)
+    g = df.groupby("馬名", sort=False)
+    df["速度_過去平均"] = g["_速度指数"].transform(lambda s: s.shift(1).expanding().mean())
+    df["速度_過去最高"] = g["_速度指数"].transform(lambda s: s.shift(1).expanding().max())
+    df["速度_過去標準偏差"] = g["_速度指数"].transform(lambda s: s.shift(1).expanding().std())
+    df["速度_直近3"] = g["_速度指数"].transform(
+        lambda s: s.shift(1).rolling(3, min_periods=1).mean())
+    df["速度_前走"] = g["_速度指数"].transform(lambda s: s.shift(1))
+    df["速度_伸び"] = df["速度_直近3"] - df["速度_過去平均"]
+    df["上指_過去平均"] = g["_上り指数"].transform(lambda s: s.shift(1).expanding().mean())
+    df["上指_過去最高"] = g["_上り指数"].transform(lambda s: s.shift(1).expanding().max())
+    df["上指_直近3"] = g["_上り指数"].transform(
+        lambda s: s.shift(1).rolling(3, min_periods=1).mean())
+    df["上指_前走"] = g["_上り指数"].transform(lambda s: s.shift(1))
+
+    # 条件別の過去平均。groupbyに必ず馬名を含める（含めないと他馬の行を跨ぎ、
+    # 時系列順でないためリークになる）。
+    df["_速度距離帯"] = (pd.to_numeric(df["距離"], errors="coerce") / 400).round()
+    df["_速度道悪"] = (pd.to_numeric(df.get("馬場状態_num"), errors="coerce") >= 2).astype(float)
+    for ks, nm in ((["馬名", "_速度距離帯"], "同距離帯"), (["馬名", "is_turf"], "同芝ダ"),
+                   (["馬名", "競馬場cd"], "同場"), (["馬名", "_速度道悪"], "同馬場")):
+        if not all(k in df.columns for k in ks):
+            df[f"速度_{nm}"] = np.nan
+            continue
+        df[f"速度_{nm}"] = (df.groupby(ks, sort=False, observed=True)["_速度指数"]
+                            .transform(lambda s: s.shift(1).expanding().mean()))
+
+    # 生の指数と作業列は必ず捨てる（当日結果なので残すと事故る）
+    df = df.drop(columns=[c for c in ("_速度指数", "_上り指数", "基準秒",
+                                      "_速度距離帯", "_速度道悪") if c in df.columns])
+    return df
+
+
+def add_rotation_weight_features(df):
+    """乗り替わり・斤量変化・連闘・休み明け・負担率を付ける。
+
+    2026-07-31: もともと build_features（学習）の末尾にあり、予測経路の
+    _run_feature_pipeline を通らなかった。そのため予測時にこれらと
+    その相対化列が欠落し、モデルの要求列数(297)に届かず落ちていた。
+    学習・予測の二重管理を無くすためパイプラインへ移設。
+    """
+    if "騎手" in df.columns or "斤量" in df.columns:
+        df = sort_by_horse_time(df)
+        if "騎手" in df.columns:
+            prev_jockey = df.groupby("馬名")["騎手"].shift(1)
+            df["乗り替わり"] = (prev_jockey.notna()
+                              & (prev_jockey != df["騎手"])).astype(int)
+        if "斤量" in df.columns:
+            df["斤量変化"] = df.groupby("馬名")["斤量"].diff()
+    if "前走間隔" in df.columns:
+        df["連闘"] = (df["前走間隔"] <= 1).astype(float)
+        df["休み明け"] = (df["前走間隔"] >= 12).astype(float)
+        df.loc[df["前走間隔"].isna(), ["連闘", "休み明け"]] = float("nan")
+    if "斤量" in df.columns and "馬体重" in df.columns:
+        df["負担率"] = df["斤量"] / df["馬体重"].replace(0, float("nan"))
+    return df
+
+
+def add_all_relative_features(df, max_cols=90):
+    """主要な数値特徴量をレース内で相対化する（偏差・順位の2形態）。
+
+    2026-07-31追加。市場評価(人気・オッズ)を使わない予想では、絶対値より
+    「そのレースの相手と比べてどうか」が圧倒的に効くと実測で判明したため。
+      ・速度指数は生の値が重要度91位 → レース内偏差にすると4位
+      ・血統も絶対値では埋もれるが、レース内順位にすると上位
+      ・◎の複勝率 58.3% → 61.0%（+2.7pt・今回の改良で最大の効果）
+    レース内だけで完結する計算なので、外部データもリークも無い。
+    列数が増えすぎないよう、欠損が多い列とフラグ列は除き上限を設ける。
+    """
+    g = df.groupby("race_id")
+    n = g["race_id"].transform("size")
+    # 対象列は必ず REL_BASE_COLS（固定リスト）から選ぶ。
+    # 2026-07-31: 当初は「欠損率と分散から動的に上位90列」を選んでいたが、
+    #   学習(32万行)と予測(1レース9頭)で選ばれる列が変わり、
+    #   モデルの要求列(297)に対し予測時は272列しか揃わずLightGBMが落ちた。
+    #   列の集合は入力データに依存してはならないので固定リストにする。
+    cand = [c for c in REL_BASE_COLS if c in df.columns
+            and pd.api.types.is_numeric_dtype(df[c])]
+    made = []
+    for c in cand:
+        x = pd.to_numeric(df[c], errors="coerce")
+        gg = x.groupby(df["race_id"])
+        # レース内で全馬が同じ値だと標準偏差0になり _R偏差 はNaNになる
+        # （例: 逃げ争いが全馬0）。学習・予測とも同じ挙動なので不整合は無い。
+        # ※0埋めにする改善は有効だが、モデルはNaN(→-999)で学習済みのため
+        #   変更するときは必ず race_features 再生成とMF再学習をセットで行うこと。
+        sd = gg.transform("std").replace(0, np.nan)
+        df[f"{c}_R偏差"] = (x - gg.transform("mean")) / sd
+        df[f"{c}_R順"] = gg.rank(ascending=False, method="first") / n
+        made += [f"{c}_R偏差", f"{c}_R順"]
+    df.attrs["relative_cols"] = made
+    return df
+
+
 def _run_feature_pipeline(df, use_train_snapshot=False):
     """load_and_prepare 済みの df に対し、学習と同じ特徴量関数を順に適用する。
     build_features（学習）と build_features_for_prediction（予測）で共通利用し、
@@ -1558,6 +1932,10 @@ def _run_feature_pipeline(df, use_train_snapshot=False):
     df = add_blood_features(df, use_train_snapshot=use_train_snapshot)
     df = add_interaction_features(df)
     df = add_field_relative_features(df)
+    df = add_speed_index_features(df)      # 2026-08-03: 速度/上り指数の過去履歴
+    df = add_chokyo_features(df)           # 2026-08-06: 坂路調教（レース日より前のみ）
+    df = add_rotation_weight_features(df)  # 2026-07-31: 学習専用だったものを移設
+    df = add_all_relative_features(df)     # 2026-07-31: 全特徴のレース内相対化
     if "距離" in df.columns:
         df["距離"] = pd.to_numeric(df["距離"], errors="coerce")
         df["距離"] = df["距離"].fillna(df["距離"].median())

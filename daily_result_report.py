@@ -42,14 +42,17 @@ def build_report(date_str=None):
     if v.empty:
         return None, None
 
-    # 払戻はJV-Link優先(netkeibaのIPブロックに影響されない)。当日分をまずJVで取得。
+    # 払戻の取得元（2026-07-31にnetkeibaへ戻した）:
+    #   過去分は jv_payouts.csv（2019-2026・ローカルに永続）、当日分はnetkeiba。
+    #   payout_source.USE_JV=True（環境変数 KEIBA_USE_JV=1）のときだけJVを試みる。
     import payout_source
     import collections
-    try:
-        ok, msg = payout_source.fetch_jv(date_str.replace("/", ""))
-        print(f"JV取得: {'成功' if ok else '失敗'}")
-    except Exception as e:
-        print(f"JV取得スキップ: {e}")
+    if payout_source.USE_JV:
+        try:
+            ok, msg = payout_source.fetch_jv(date_str.replace("/", ""))
+            print(f"JV取得: {'成功' if ok else '失敗'}")
+        except Exception as e:
+            print(f"JV取得スキップ: {e}")
     get_payout = payout_source.get_payout
     races = sorted(v["race_id"].dropna().unique())
     hit_rows, tot_inv, tot_ret, tot_pts, tot_hits = [], 0, 0, 0, 0

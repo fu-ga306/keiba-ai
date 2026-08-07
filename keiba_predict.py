@@ -145,6 +145,44 @@ def calc_place_probs_harvill(win_probs: np.ndarray):
     return place2, place3
 
 
+# ── 確率の較正（2026-08-04追加）────────────────────────────────────────
+#   MFモデルは正例重み(win 2.0 / place3 1.5)と時間重みをかけて学習しているため、
+#   出てくる値は確率として過大。2025 OOSの実測:
+#       勝率   予測11.0% → 実際 7.2%（1.5倍過大）
+#       複勝率 予測26.8% → 実際21.5%（1.25倍過大）
+#   期待値も推奨賭け率(ケリー)も「確率が正しい」ことが前提なので、
+#   較正しないと表示も買い判断もすべてずれる。
+#   較正器は build_calibrator.py が model_mf_result.csv（backtestモードの
+#   正直なOOS出力）から作る。週次でモデルを更新したら作り直すこと。
+_CALIBRATOR = None
+_CALIBRATOR_LOADED = False
+
+
+def _calibrate(values, target: str):
+    """較正器があれば適用する。無ければ生値をそのまま返す（予測は止めない）。"""
+    global _CALIBRATOR, _CALIBRATOR_LOADED
+    if not _CALIBRATOR_LOADED:
+        _CALIBRATOR_LOADED = True
+        path = os.path.join(BASE_DIR, "mf_calibrator.pkl")
+        try:
+            import pickle
+            with open(path, "rb") as fh:
+                _CALIBRATOR = pickle.load(fh).get("cal", {})
+            print(f"  確率較正器を読込: {len(_CALIBRATOR)}本")
+        except FileNotFoundError:
+            print("  確率較正器なし（生の確率を使用。build_calibrator.pyで作成できます）")
+        except Exception as e:
+            print(f"  確率較正器の読込に失敗（生の確率を使用）: {e}")
+    if not _CALIBRATOR or target not in _CALIBRATOR:
+        return values
+    try:
+        return np.clip(_CALIBRATOR[target].predict(np.asarray(values, dtype=float)),
+                       0.0, 1.0)
+    except Exception as e:
+        print(f"  較正の適用に失敗（生の確率を使用）: {e}")
+        return values
+
+
 def kelly_fraction(win_prob: float, odds: float, fraction: float = 0.25) -> float:
     if odds <= 1 or win_prob <= 0:
         return 0.0
@@ -397,16 +435,25 @@ def build_report(pdf, race_id, jyo_name, race_no,
             block.append("")
         return block
 
-    # top5_ai: 総合スコア(MF60%+通常40%+EVペナルティ)の上位5頭 = 印と同じ基準
-    top5_ai = pdf.sort_values("総合スコア", ascending=False).head(5)
+    # top5_ai: 実際に打った印(◎○▲△×)そのものを表示する。
+    # 2026-07-31: 以前は総合スコア(MF60%+通常40%)順だったが、印の土台を
+    #   市場フリーMFのplace3へ切替えたため基準がズレ、同じメール内で
+    #   「表の◎」と「TOP5の◎」が別馬になる不整合が出ていた（デモで発覚）。
+    _mk_order = {"◎": 0, "○": 1, "▲": 2, "△": 3, "×": 4}
+    if "印" in pdf.columns and pdf["印"].isin(_mk_order).any():
+        top5_ai = (pdf[pdf["印"].isin(_mk_order)]
+                   .assign(_o=lambda x: x["印"].map(_mk_order))
+                   .sort_values("_o").drop(columns="_o").head(5))
+    else:
+        top5_ai = pdf.sort_values("総合スコア", ascending=False).head(5)
     # top5_ev: 通常モデル高評価かつEV<0（市場評価と近い）→ 安定した信頼馬
     top5_ev = pdf[(pdf["単勝期待値"] < 0) & (pdf["勝ち確率"] >= 0.03)].sort_values("勝ち確率", ascending=False).head(5)
     if top5_ev.empty:
         top5_ev = pdf[pdf["勝ち確率"] >= 0.03].sort_values("勝ち確率", ascending=False).head(5)
 
     lines += rec_block(
-        "AI総合予想 TOP5", "[AI]", top5_ai,
-        "MF60%+通常40%ブレンド+EVペナルティで選出。印の◎○▲と同じ基準。"
+        "AI予想 印（◎○▲△×）", "[AI]", top5_ai,
+        "市場フリーモデルの3着内予測順。★=市場より高評価(乖離+3以上/20倍以下)＝買い対象。"
     )
     lines += rec_block(
         "安定高評価 TOP5", "[安定]", top5_ev,
@@ -577,58 +624,62 @@ def build_report(pdf, race_id, jyo_name, race_no,
         pop_s  = f"{int(pop)}人気" if pd.notna(pop) else "-"
         tag_s  = " / ".join(tag)
 
+        # ★＝市場より高く評価している馬（乖離+3以上・20倍以下）。買いの対象。
+        _star = "★" if str(row.get("妙味", "")) == "★" else "　"
+        _gap = pd.to_numeric(row.get("乖離"), errors="coerce")
+        _gap_s = f" 乖離{_gap:+.0f}" if pd.notna(_gap) and abs(_gap) >= 1 else ""
         lines.append(
-            f"  │ {mk}【{lbl}】 馬番{int(row['馬番'])}番 {str(row['馬名']):<12}"
-            f"  {odds_s} {pop_s}"
+            f"  │{_star}{mk}【{lbl}】 馬番{int(row['馬番'])}番 {str(row['馬名']):<12}"
+            f"  {odds_s} {pop_s}{_gap_s}"
             f"  勝率{wp*100:.1f}%  EV{_ev(ev)}"
             f"  総合{score:.0f}点"
         )
         if tag_s:
             lines.append(f"  │           {tag_s}")
-        # ◎は馬券内軸(place3-1位・BT複勝率64.2%)。単勝の主役は◎妙。
         if i == 0:
-            lines.append("  │  [役割] ◎=馬券内軸(BT複勝率64.2%)。単勝・高配当の主役は◎妙(下の妙味軸)")
+            lines.append("  │  [見方] ★=市場より高評価。★◎は複勝、★○は単勝を買う")
         if i < 4:
             lines.append("  ├─────────────────────────────────────────────────────────┤")
     lines.append("  └─────────────────────────────────────────────────────────┘")
     lines.append("")
-    # バックテスト要約（B印・2025 honest 3,144レース・実払戻）
-    lines.append("  [BT] B印 2025 honest(3144R・実払戻)")
-    lines.append("  ◎複勝率64.2% / ◎妙:単勝167%・馬単妙→総流し148%・◎-妙ワイド115%")
-    lines.append("  【鉄則】◎妙が出たレースを厚く買う。重賞14頭以上は見送り(AI優位なし)")
+    # 検証要約（2026-07-31改訂・市場フリーMF＋妙味方式・2023-2025の3年OOS）
+    lines.append("  [検証] 市場フリーMF＋妙味★方式（2023-2025の3年・実払戻）")
+    lines.append("  ◎複勝率 62.4/64.4/62.8%（3年平均63%）・1-3着カバー 2.06-2.10頭")
+    lines.append("  ★◎の複勝112.9% / ★○の単勝100.3% ・ 年約700点")
+    lines.append("  ※★▲は3年とも劣る(88.4%・2024は69.7%)ため買わない")
+    lines.append("  【鉄則】★◎は複勝、★○は単勝。★無しは見送り(全体の66%)")
     lines.append("")
 
-    # ── 券種推奨（3モデルによる役割判定） ────────────────────────────
-    if "券種推奨" in pdf.columns and (pdf["券種推奨"] != "").any():
-        lines.append(header("[券種推奨（3モデル判定）]", "─"))
-        lines.append("  軸◎=勝てる本命  軸(人気)=実力上位だが妙味薄  相手○=連対候補  穴▲=複勝妙味")
+    # ── 購入する馬（★の◎○▲）──────────────────────────────────────
+    # 2026-07-31: 旧「券種推奨（3モデル判定）」は主モデル基準で軸を選んでおり、
+    #   印(市場フリーMF)と別の馬を「軸◎」として出す不整合があった（デモで発覚）。
+    #   実際に買う馬＝★の付いた◎○▲ をそのまま出す形に置き換え。
+    _buy = pdf[(pdf.get("妙味", pd.Series("", index=pdf.index)) == "★")
+               & (pdf["印"].isin(MYOMI_MARKS))] if "印" in pdf.columns \
+        else pdf.iloc[0:0]
+    lines.append(header("[購入する馬]", "─"))
+    if len(_buy) == 0:
+        n_star = int((pdf.get("妙味", pd.Series("", index=pdf.index)) == "★").sum())
+        lines.append(f"  見送り（★の◎○▲なし。★は{n_star}頭）")
+        lines.append("  ※市場と評価が割れた馬がいないレースは買わない。全体の約66%が見送り。")
+    else:
+        lines.append("  ★＝市場より高く評価（乖離+3以上・20倍以下）。")
+        lines.append("  印ごとに券種を変える：★◎は複勝（3年112.9%）／★○は単勝（100.3%）。")
         lines.append("")
-        role_order = {"軸◎": 0, "軸(人気)": 1, "相手○": 2, "穴▲": 3}
-        rec_df = pdf[pdf["券種推奨"] != ""].copy()
-        rec_df["_ord"] = rec_df["券種推奨"].map(role_order).fillna(9)
-        rec_df = rec_df.sort_values("_ord")
-        for _, row in rec_df.iterrows():
-            role  = row["券種推奨"]
-            odds  = row.get("単勝オッズ", np.nan)
-            pop   = row.get("人気", np.nan)
-            wp    = row["勝ち確率"]
-            p2    = row["連対確率"]
-            p3    = row["複勝確率"]
-            ev    = row["単勝期待値"]
-            odds_s = f"{odds:.1f}倍" if pd.notna(odds) else "未確定"
-            pop_s  = f"{int(pop)}人気" if pd.notna(pop) else "-"
-            ev_s   = f"{ev:+.2f}" if pd.notna(ev) else "-"
+        for _, row in _buy.iterrows():
+            odds = row.get("単勝オッズ", np.nan)
+            pop = row.get("人気", np.nan)
+            gap = pd.to_numeric(row.get("乖離"), errors="coerce")
+            kinds = "・".join(MYOMI_BETS.get(row["印"], ()))
             lines.append(
-                f"  {role:<7} 馬番{int(row['馬番']):>2} {str(row['馬名']):<12} "
-                f"{odds_s:>7} {pop_s:>5}"
-            )
-            lines.append(
-                f"           勝率{wp*100:4.1f}%  連対率{p2*100:4.1f}%  "
-                f"複勝率{p3*100:4.1f}%  EV{ev_s}"
-            )
+                f"  ★{row['印']} 馬番{int(row['馬番']):>2} {str(row['馬名']):<12} "
+                f"{(f'{odds:.1f}倍' if pd.notna(odds) else '未確定'):>7} "
+                f"{(f'{int(pop)}人気' if pd.notna(pop) else '-'):>5} "
+                f"乖離{gap:+.0f}")
+            lines.append(f"           → {kinds}　"
+                         f"勝率{row['勝ち確率']*100:4.1f}% 複勝率{row['複勝確率']*100:4.1f}%")
         lines.append("")
-        lines.append("  ※ 連対率・複勝率は専用モデルが各馬独立に予想した値です。")
-        lines.append("")
+    lines.append("")
 
     # ── [妙味重視の狙い目（回収率重視）] ────────────────────────────
     lines.append(header("[妙味重視の狙い目（回収率重視）]", "─"))
@@ -879,7 +930,7 @@ def build_report(pdf, race_id, jyo_name, race_no,
             lines.append(f"   ── 合計 {len(_rows_bet)}点 / {_tot_amt:,}円 ──")
         lines.append("   ※ 相手（人気上位/◯位内）は直前オッズの人気で自動決定＝レースごとに最適化")
     elif _plan["判定"] == "見送り":
-        lines.append("  このレースは購入非推奨。資金は🔥勝負/✅買い/🟢堅実レースに温存。")
+        lines.append("  このレースは購入非推奨（レース単位ゲートで除外）。資金は✅買いレースに温存。")
     lines.append("  ※ BT=2025実払戻3144R。判定/買い目はtoday_bets.csvに保存され、翌日照合されます。")
     lines.append("")
 
@@ -1042,6 +1093,12 @@ def predict_race_pdf(race_id: str, *, history_df: pd.DataFrame, models_pack: dic
             pdf["MF予測順位"] = pd.Series(mf_preds).rank(ascending=False).values
             pdf["乖離スコア"] = pdf["予測順位"] - pdf["MF予測順位"]
             mf_raw = np.clip(np.nan_to_num(mf_preds, nan=0.0), 0, None)
+            # 較正してから確率にする（2026-08-04追加）。
+            # MFは正例重み2.0＋時間重みで学習しているため生の値は過大で、
+            # 2025 OOSの実測では 勝率 予測11.0%に対し実際7.2%（1.5倍過大）だった。
+            # 期待値も推奨賭け率も「確率が正しい」前提なので、ここを直さないと
+            # 表示・買い判断のすべてがずれる。
+            mf_raw = _calibrate(mf_raw, "win")
             pdf["MF勝ち確率"] = mf_raw / mf_raw.sum() if mf_raw.sum() > 0 else np.ones(len(mf_raw)) / len(mf_raw)
             # EV を MF勝ち確率ベースで上書き（通常モデルの暫定値を置き換え）
             pdf["単勝期待値"] = pdf["MF勝ち確率"] * pdf["単勝オッズ"] - 1
@@ -1057,10 +1114,51 @@ def predict_race_pdf(race_id: str, *, history_df: pd.DataFrame, models_pack: dic
         try:
             X_p3 = pdf.reindex(columns=mf_p3_cols)
             p3   = _wavg(mf_p3_models, X_p3, mf_p3_weights)
-            pdf["MF複勝率"]   = np.clip(np.nan_to_num(p3, nan=0.0), 0, None)
+            # 複勝率も較正する（生値は 予測26.8%に対し実際21.5%＝1.25倍過大）。
+            # 順位は較正しても変わらない（単調変換のため）ので印には影響しない。
+            pdf["MF複勝率"]   = _calibrate(
+                np.clip(np.nan_to_num(p3, nan=0.0), 0, None), "place3")
             pdf["MF複勝順位"] = pd.Series(p3).rank(ascending=False).values
         except Exception as e:
             print(f"  MF複勝予測エラー（スキップ）: {e}")
+
+    # ── 表示用の確率をMFへ統一（2026-07-31）────────────────────────────
+    # 印はMFのplace3で決めるのに、表示する勝率・連対率・複勝率は主モデル(市場込み)
+    # の値だった。そのため「◎の複勝率18.7% < △の45.7%」という矛盾した表示が出ていた。
+    # 印と数字の出所を揃える。主モデルの値は参照用に 主_ 接頭辞で残す。
+    if mf_info and pdf["MF勝ち確率"].notna().any():
+        for c in ("勝ち確率", "連対確率", "複勝確率", "3着内確率"):
+            if c in pdf.columns:
+                pdf[f"主_{c}"] = pdf[c]
+        try:
+            pdf["勝ち確率"] = pdf["MF勝ち確率"]
+            # 連対はMFのplace2を使う。無ければ勝率と複勝率の間を取る。
+            mf_p2 = mf_info.get("place2")
+            if mf_p2 and mf_p2.get("models"):
+                p2 = _wavg(mf_p2["models"], pdf.reindex(columns=mf_p2["use_cols"]),
+                           mf_p2.get("weights"))
+                p2 = np.clip(np.nan_to_num(p2, nan=0.0), 0, 1)
+                s2 = p2.sum()
+                pdf["連対確率"] = p2 * (2.0 / s2) if s2 > 0 else p2
+            if pdf["MF複勝率"].notna().any():
+                p3v = np.clip(pdf["MF複勝率"].to_numpy(), 0, 1)
+                s3 = p3v.sum()
+                pdf["複勝確率"] = p3v * (3.0 / s3) if s3 > 0 else p3v
+                pdf["3着内確率"] = pdf["複勝確率"]
+            # 確率の包含関係を保つ（勝率 <= 連対率 <= 複勝率）
+            pdf["連対確率"] = np.maximum(pdf["連対確率"], pdf["勝ち確率"])
+            pdf["複勝確率"] = np.maximum(pdf["複勝確率"], pdf["連対確率"])
+            pdf["3着内確率"] = pdf["複勝確率"]
+            pdf["単勝期待値"] = pdf["勝ち確率"] * pdf["単勝オッズ"] - 1
+            pdf["複勝期待値"] = pdf["複勝確率"] * (pdf["単勝オッズ"] / 3.5).clip(1.1, 8.0) - 1
+            # 実オッズがあるならそちらで複勝EVを取り直す（確率を差し替えたので再計算）
+            if "複勝オッズ_min" in pdf.columns and pdf["複勝オッズ_min"].notna().any():
+                pdf["複勝期待値_実"] = pdf["複勝確率"] * pdf["複勝オッズ_min"] - 1
+            else:
+                pdf["複勝期待値_実"] = pdf["複勝期待値"]
+            print("  表示確率をMFに統一")
+        except Exception as e:
+            print(f"  MF確率への統一エラー（主モデルのまま）: {e}")
 
     # ── 戦略判定（predict/auto 共通）
     # EV条件は実データでEV>=0.3の勝率が0%のため除外。AI予測順位とオッズ範囲を基準にする。
@@ -1182,7 +1280,17 @@ def predict_race_pdf(race_id: str, *, history_df: pd.DataFrame, models_pack: dic
     #   ② OP以上（重賞はAI優位が消える市場）        → ◎=人気1位
     #   ③ それ以外（AIの得意ゾーン）               → ◎=複勝確率(place3)1位
     #   BT(2025): ◎複勝率64.5→65.9% / 妙発生1679→1855R / 妙単勝ROI167→172% / 馬単妙総流し148→157%
-    if "複勝確率" in pdf.columns and pdf["複勝確率"].notna().any():
+    # 2026-07-31: 印の土台を「市場フリーのMFモデル(place3)」へ切替。
+    #   主モデルは人気・オッズを特徴に持つため印が人気順の写しになっていた
+    #   （◎の85.7%が1番人気）。MFは市場を一切見ないので、◎が1番人気になるのは
+    #   約56%に下がり、印が人気帯に散る。3年検証で ◎複勝率 62.4/64.4/62.8%、
+    #   1-3着カバー 2.07/2.10/2.06頭と安定。MFが無い時だけ従来の複勝確率に戻る。
+    if "MF複勝順位" in pdf.columns and \
+            pd.to_numeric(pdf["MF複勝順位"], errors="coerce").notna().any():
+        fuku_sorted = pdf.assign(
+            _mfr=pd.to_numeric(pdf["MF複勝順位"], errors="coerce")
+        ).sort_values("_mfr", na_position="last")
+    elif "複勝確率" in pdf.columns and pdf["複勝確率"].notna().any():
         fuku_sorted = pdf.sort_values("複勝確率", ascending=False)
     else:
         fuku_sorted = pdf.sort_values("総合スコア", ascending=False)
@@ -1190,8 +1298,14 @@ def predict_race_pdf(race_id: str, *, history_df: pd.DataFrame, models_pack: dic
     _cls_v0 = pd.to_numeric(pdf["クラス_num"].iloc[0], errors="coerce") if "クラス_num" in pdf.columns else np.nan
     _fav_idx = _pop_all.idxmin() if _pop_all.notna().any() else None
     _fav_odds = pd.to_numeric(pdf.loc[_fav_idx, "単勝オッズ"], errors="coerce") if _fav_idx is not None else np.nan
-    _use_fav = (pd.notna(_fav_odds) and float(_fav_odds) <= 2.0) or \
-               (pd.notna(_cls_v0) and int(_cls_v0) >= 5)
+    # 2026-07-31: MFを土台にする場合、◎を人気1位へ固定する分岐は使わない。
+    #   市場評価で上書きすると、MFを市場フリーにした意味（印が人気順から離れる）が
+    #   消えるため。MFが無い時だけ従来のアダプティブ◎を残す。
+    _mf_base = "MF複勝順位" in pdf.columns and \
+        pd.to_numeric(pdf["MF複勝順位"], errors="coerce").notna().any()
+    _use_fav = (not _mf_base) and (
+        (pd.notna(_fav_odds) and float(_fav_odds) <= 2.0)
+        or (pd.notna(_cls_v0) and int(_cls_v0) >= 5))
     honmei_idx = _fav_idx if (_use_fav and _fav_idx is not None) else fuku_sorted.index[0]
     pdf.at[honmei_idx, "推奨ランク"] = "◎"
     pdf.at[honmei_idx, "印"] = "◎"
@@ -1221,6 +1335,44 @@ def predict_race_pdf(race_id: str, *, history_df: pd.DataFrame, models_pack: dic
         pdf.at[batu_idx, "推奨ランク"] = "×"
         pdf.at[batu_idx, "印"] = "×"
 
+    # ── 妙味判定（★）: モデル評価と市場評価の乖離を全頭に付ける ─────────────
+    #   乖離 = 人気順位 − モデル順位（正＝モデルが市場より高く評価している）
+    #   3年12.6万頭の実測（final_marks_2023/24/25）:
+    #     乖離+3以上           単勝ROI 90.4%   （一致馬は65.9%）
+    #     ＋モデル3位以内       97.3%（2023:97.8 / 2024:95.1 / 2025:98.9・振れ3.8pt）
+    #     ＋オッズ20倍以下 が上記の条件。年997点。
+    #   ◎に限れば単勝102.2%・複勝112.9%（★なしの◎は83.1%/92.2%）。
+    #   ★は全頭に出す（平均0.42頭/レース・66%のレースは0頭）。買うのは★かつ◎○▲のみ。
+    #   △×の★は参考表示（年244点で45.8〜126.5%と暴れるため購入対象外）。
+    pdf["乖離"] = np.nan
+    pdf["妙味"] = ""
+    try:
+        _mr = pd.to_numeric(pdf.get("MF複勝順位"), errors="coerce")
+        if _mr.isna().all() and "複勝確率" in pdf.columns:
+            _mr = pdf["複勝確率"].rank(ascending=False, method="first")
+        _pr = pd.to_numeric(pdf["人気"], errors="coerce").rank(method="first")
+        _od = pd.to_numeric(pdf["単勝オッズ"], errors="coerce")
+        pdf["乖離"] = _pr - _mr
+
+        if MYOMI_MODE == "ratio":
+            # 確率比方式: P_model / P_market。
+            # 市場推定勝率は単勝オッズの逆数をレース内で正規化して控除率を割り戻す。
+            # モデル側も同じくレース内で合計1に揃えてから比を取る（尺度を合わせる）。
+            _inv = 1.0 / _od.where(_od > 0)
+            _p_mkt = _inv / _inv.sum(skipna=True)
+            _p_mdl = pd.to_numeric(pdf.get("MF勝ち確率"), errors="coerce")
+            if _p_mdl.notna().sum() < 2 or not (_p_mdl.sum(skipna=True) > 0):
+                _p_mdl = pd.to_numeric(pdf.get("勝ち確率"), errors="coerce")
+            _p_mdl = _p_mdl / _p_mdl.sum(skipna=True)
+            pdf["乖離比率"] = _p_mdl / _p_mkt
+            _hit = (pdf["乖離比率"] >= MYOMI_RATIO_MIN) & (_od <= MYOMI_ODDS_MAX)
+        else:
+            _hit = (pdf["乖離"] >= MYOMI_GAP_MIN) & (_od <= MYOMI_ODDS_MAX)
+
+        pdf.loc[_hit.fillna(False), "妙味"] = "★"
+    except Exception as _e:
+        print(f"  妙味判定スキップ: {_e}")
+
     # ── 妙味軸（回収率エンジン◎妙）: MF勝率が最上位の馬。◎(place3-1位=馬券内軸)と
     #   別馬のときだけ付与する。◎は堅い馬に寄る一方、MF最上位は市場と別の価値馬を指す。
     #   BT(2025 honest/3144R・B印): 発生1679R(53%)・単勝ROI167.1%・複勝107.8%・
@@ -1237,7 +1389,7 @@ def predict_race_pdf(race_id: str, *, history_df: pd.DataFrame, models_pack: dic
 
     # ── 買い指数（購入推奨度・レース単位）──────────────────────────────────
     # レース単位の買い目マトリクス(_race_bet_plan)に完全連動(2026-07-16再較正)。
-    # 判定: 勝負(90+)/買い(75+)/少額(55)/見送り(25-40)。詳細は_race_bet_plan参照。
+    # 判定: 買い(指数70-100)/見送り(25-45)。レース単位ゲート。詳細は_race_bet_plan参照。
     pdf["買い指数"] = np.nan
     pdf["購入推奨"] = ""
     pdf["想定単回収"] = ""
@@ -1291,6 +1443,7 @@ def predict_race_pdf(race_id: str, *, history_df: pd.DataFrame, models_pack: dic
             "単勝期待値", "推奨賭け率",
             "乖離スコア", "MF予測順位", "MF勝ち確率", "MF複勝率", "MF複勝順位",
             "該当戦略", "推奨ランク", "総合スコア", "券種推奨", "妙味軸",
+            "妙味", "乖離",   # 2026-07-31: ★判定と市場との評価差（メール/ダッシュボード用）
             "買い指数", "購入推奨", "想定単回収", "買いサイズ",
             "予測順位", "連対順位", "複勝順位",
             "過去勝率", "過去出走数", "前走間隔",
@@ -1386,11 +1539,109 @@ def predict_race_pdf(race_id: str, *, history_df: pd.DataFrame, models_pack: dic
     return pdf
 
 
-# ── 購入しきい値（2026-07-17）─────────────────────────────────────────────
+# ── 購入しきい値（2026-07-30改訂）─────────────────────────────────────────
 #   買い指数がこの値未満のレースは「買い目を出さない」（判定表示はするが購入対象外）。
-#   目安: 55=少額も買う / 70=買い・勝負・堅実 / 85=勝負のみ
+#   新方式の指数は「ゲート通過=70」を起点に、優位が上乗せされる材料ごとに+10する。
+#   目安: 70=ゲートを通った全レースを買う / 80=上乗せ1つ以上 / 90=上乗せ2つ以上
 #   today_bets.csv・メール・ダッシュボードの買い目表示すべてに連動する。
 BUY_INDEX_MIN = 70
+
+# ── レース単位の購入ゲート（2026-07-30・帯を廃止して導入）──────────────────
+#   2025全3130Rの実払戻で測定（race_eval.py → race_rule.py）。
+#   対照実験・前後半分割・レース単位ブートストラップを通した材料だけを採用。
+RACE_GATE_MIN_INTERVAL = 8.0      # 軸の前走間隔(週)。これ未満は見送り（63-71%）
+RACE_GATE_SKIP_CLASS = (3, 4)     # 見送りにする クラス_num の範囲＝中級（67.2%）
+RACE_GATE_ALLOW_UNKNOWN = True    # 前走間隔が不明（新馬・海外帰り等）は通す
+
+# ── 妙味判定（2026-07-31）──────────────────────────────────────────────
+#   市場フリーのMFモデルと市場評価が食い違う馬を「★」とする。
+#   乖離 = 人気順位 − モデル順位。正なら市場より高く評価している。
+#   3年実測: 乖離+3以上 × モデル3位以内 × 20倍以下 → 単勝97.3%（振れ3.8pt・997点/年）
+#   ★かつ◎○▲だけを買う。△×の★は参考表示（小サンプルで年80pt振れるため）。
+MYOMI_GAP_MIN = 3.0               # この順位以上、市場より高く評価していれば★
+MYOMI_ODDS_MAX = 20.0             # 人気薄すぎる馬は対象外（20倍超は不安定）
+
+# ── ★の測り方（2026-08-02追加・既定は従来のまま）────────────────────────
+#   "rank"  : 乖離 = 人気順位 − モデル順位 が MYOMI_GAP_MIN 以上（従来方式）
+#   "ratio" : 確率比 P_model / P_market が MYOMI_RATIO_MIN 以上
+#
+#   順位差は「3番人気と6番人気」も「10番人気と13番人気」も同じ+3として扱うが、
+#   確率比ならその差を保てる。2025実測(gap_ratio.py・ワイド★軸×人気上位3頭):
+#     順位差≥3 : 319R 的中40.8% 回収121.2% CI下102.4
+#     比率≥2.5 : 335R 的中50.4% 回収133.1% CI下115.2  ← 対象が多く回収率も上
+#   用量反応も単調(≥1.5:106.7 → ≥2.0:118.2 → ≥2.5:133.1 → ≥3.0:150.2)。
+#
+#   ⚠️既定を "rank" のままにしている理由:
+#     ①検証が2025単年のみ。2023/2024での再確認が未了。
+#     ②検証時の P_model は final_marks の score を softmax したもので、本番の
+#       MF勝ち確率とはスケールが違う。閾値2.5をそのまま移植できない。
+#     切り替える前に本番の確率分布で閾値を測り直すこと。
+MYOMI_MODE = "rank"               # "rank"（従来）/ "ratio"（確率比）
+MYOMI_RATIO_MIN = 2.5             # ratio方式のときの閾値（要・本番分布での再較正）
+
+# ── 買い方: 較正済み期待値方式（2026-08-04・3年検証で確定）──────────────
+#   2023/2024/2025の3年OOSで検証（bet_cache_*.csv / refine.py）。
+#   従来の★方式（乖離≥3・20倍以下の◎を複勝）は3年で 81.4/73.6/82.0% と
+#   控除率に負けていた。較正済み勝率×実オッズの期待値を使い、
+#   「モデル順位ごとに要求する期待値を変える」ことで初めて3年とも100%を超えた。
+#
+#   条件: 乖離≥3 かつ 単勝20倍以下 かつ
+#         モデル1位ならEV≥1.7 / モデル2〜5位ならEV≥2.2
+#   買い方: 条件を満たす中で期待値が最大の1頭を、単勝で1点
+#   成績: 114.6% / 114.8% / 111.5%（通算113.6%・年241レース・的中64本/3年）
+#
+#   ⚠️通算のCI下限は85前後で、統計的に確定はしていない（的中64本のため）。
+#     年数を重ねる以外に確度を上げる手段はない。少額での運用が前提。
+#   ※検証で分かったこと（変更する前に読むこと）:
+#     ・乖離は0〜5で振って3が唯一3年100%超。0-2は2025が、4-5は2024が崩れる
+#     ・クラス・頭数・距離での絞り込みは全て悪化（部分集合にすると必ずどこかの年が崩れる）
+#     ・較正をオッズ帯別/頭数別に分けるのも悪化（サンプルが減り較正自体が不安定になる）
+#     ・複勝・ワイド・馬連・馬単・3連複は22通り試して全滅。事前オッズが無い券種は
+#       期待値を計算できず、単勝オッズからの推定では新しい情報が増えないため。
+USE_EV_BETTING = True             # False で従来の★方式に戻す
+EV_GAP_MIN = 3.0                  # 乖離（人気順位 − モデル複勝順位）の下限
+EV_ODDS_MAX = 20.0                # 単勝オッズの上限
+EV_MIN_TOP = 1.7                  # モデル複勝1位に要求する期待値
+EV_MIN_SUB = 2.2                  # モデル複勝2〜5位に要求する期待値
+EV_MAX_PICKS = 1                  # 1レースに買う頭数（期待値の高い順）
+EV_STAKE = 1000                   # 単勝1点あたりの金額（円）
+
+# ── 馬単の併用（2026-08-05・3年検証で追加）────────────────────────────
+#   軸（上のEV条件で選んだ1頭）を1着に固定し、相手は上位人気の印へ流す。
+#   軸の優位は「勝つ力の過小評価」で、勝率は同人気平均の1.93倍あるが
+#   連対率1.55倍・複勝率1.35倍と減衰する。だから軸は1着固定が最も効き、
+#   2着は素直に強い馬（上位人気）を置くのが噛み合う。
+#
+#   3年OOS（2023/2024/2025・bet_cache_*.csv）:
+#     単勝のみ            通算113.6% CI下87.5 最悪年111.5% 収支+9.8千
+#     馬単 相手3番人気以内  通算134.1% CI下92.2 最悪年118.1% 収支+58.4千
+#     単勝＋馬単（併用）    通算128.0% CI下97.9 最悪年117.2% 収支+68.2千 ← 採用
+#   併用すると互いに独立に外れるため分散が下がり、CI下限が単体より上がる。
+#
+#   ⚠️CI下限97.9で統計的な確定には至っていない（3年723レース）。少額運用が前提。
+#   ※検証で分かったこと（変更する前に読むこと）:
+#     ・相手を穴にすると崩れる。軸が人気薄なので相手まで穴にすると当たらない
+#     ・馬連・ワイド・3連複は同じ軸から流しても100%前後が上限（軸の優位が
+#       2着以内・3着以内では薄まるうえ控除率が重い）
+#     ・複勝は実オッズで測っても最良82.7%。当たりやすい分オッズが圧縮される
+USE_UMATAN = True                 # False で単勝のみに戻す
+UMATAN_MAX_POP = 3                # 相手にする印の人気上限（3番人気以内）
+UMATAN_RANKS = (1, 2, 3, 4, 5)    # 相手にする印（モデル複勝順位）
+UMATAN_STAKE = 500                # 馬単1点あたりの金額（円）
+# 印ごとに買う券種を変える（2026-07-31・3年OOSの実測にもとづく）:
+#   ★◎ 単勝102.2% / 複勝112.9%  → 3着内には来るが勝ち切れないので複勝
+#   ★○ 単勝100.3% / 複勝 87.1%  → 勝ち切る側なので単勝
+#   ★▲ 単勝 88.4% / 複勝 80.0%  → 3年とも劣る（2024は69.7%）ので買わない
+#   ◎○▲を一律で単勝+複勝にすると97.3%だが、上記の使い分けなら3年平均101.4%。
+MYOMI_BETS = {"◎": ("複勝",), "○": ("単勝",)}
+MYOMI_MARKS = tuple(MYOMI_BETS)   # ★でも購入対象にする印（▲以下は参考表示のみ）
+USE_MYOMI_BETTING = True          # False で従来のゲート方式に戻す
+# 検証用の切り分けトグル（環境変数・既定は上の本番値のまま）:
+#   KEIBA_GATE_INTERVAL=0 で間隔ゲートを無効 / KEIBA_GATE_CLASS=0 でクラスゲートを無効
+if os.environ.get("KEIBA_GATE_INTERVAL") == "0":
+    RACE_GATE_MIN_INTERVAL = None
+if os.environ.get("KEIBA_GATE_CLASS") == "0":
+    RACE_GATE_SKIP_CLASS = None
 
 # ── 資金設定（2026-07-17・自動投票対応の下地）────────────────────────────
 #   today_bets.csv に1点ごとの「金額」列が出力される（将来の自動投票はこれを注文リストとして読む）。
@@ -1401,8 +1652,8 @@ BET_UNIT = 100                    # 基本1点あたりの金額(円)・KIND_STA
 #   仕組み: 1点の金額 = KIND_STAKE[券種] × SIZE_WEIGHT[サイズ] → 100円丸め・最低100円。
 #           合計が RACE_BUDGET[判定帯] を超えたらBT回収率の低い買い方から丸ごと削る。
 #   例: 勝負帯で単勝500×1 + 馬単100×5 → 予算内なら両方、超えれば弱い連系から自動除外。
-RACE_BUDGET = {                   # 帯別の1レース予算(円)。帯の強さ＝予算配分で表現(旧BAND_WEIGHT代替)
-    "勝負": 2000, "買い": 1500, "堅実": 1000, "少額": 500,
+RACE_BUDGET = {                   # 1レース予算(円)。帯を廃止したので「買い」の1本のみ。
+    "買い": 2000,                 # 標準=1000円/R(単勝500+馬連100×5)・厚め=1800円/Rが収まる額
 }
 # 予算超過時に「どの買い目を残すか」の優先度。2025BT(予算配分込み):
 #   "balanced" = メニュー順(単勝→複勝→ワイド→…)。複勝/ワイドも買い分散・的中安定。回収198.5%・的中1113。
@@ -1412,10 +1663,12 @@ KIND_STAKE = {                    # 券種ごとの1点あたり基本額(円)�
     "単勝": 500, "複勝": 300, "ワイド": 200,
     "馬連": 100, "馬単": 100, "3連複": 100, "3連単": 100,
 }
-SIZE_WEIGHT = {                   # MF自信度サイズの倍率（1点の掛け金を確信度で厚薄）
+SIZE_WEIGHT = {                   # 確信度サイズの倍率（1点の掛け金を厚薄）
     # 確信度シグナルはここ(掛け金)で反映。予算側にも効かせる案は2025BTで効果ゼロと確認済み(2026-07-22)。
     "厚め": 1.6, "標準": 1.0, "薄め": 0.6,
 }
+if os.environ.get("KEIBA_FLAT_SIZE") == "1":   # 厚薄が効いているかの検証用（全て等倍）
+    SIZE_WEIGHT = {k: 1.0 for k in SIZE_WEIGHT}
 BAND_WEIGHT = {}                  # 旧方式の残置(未使用)。帯別配分は RACE_BUDGET に移行済み
 KIND_UNIT = {}                    # 券種別の金額“固定”上書き(円)。指定券種はSIZE倍率も無視して固定額
 KIND_SKIP = []                    # 買わない券種 例: ["3連単"] で点数を大幅削減
@@ -1424,102 +1677,159 @@ RACE_BUDGET_MAX = None            # (旧)全帯共通の上限。設定時は RA
 
 
 def _race_bet_plan(pdf):
-    """レース条件（クラス×妙人気帯×MF自信度×頭数）から買い目プランを決める共有ロジック。
-    2025実払戻BT(2026-07-16確定)。買い指数・レポート・today_bets・ダッシュボードが全てこれに連動。
-    BUY_INDEX_MIN 未満の判定は menu を空にして購入対象から外す。
+    """レース単位で「買う/買わない」を決める（2026-07-30・判定帯を廃止）。
 
-    判定マトリクス（妙=◎妙の人気帯 × クラス）:
-      妙7-9人気 → 全クラスで最強帯(単BT175-315%) → 勝負
-      妙4-6人気 → 下級/中級で買い(BT139-193%)。OP級はNG(59-94%)
-      妙2-3人気 → 下級のみ少額(単BT126%)。中級/OP級はNG
-      妙10人気-/妙なし/OP14頭以上 → 見送り
-    サイズ: 妙のMF勝率 >=0.385(2025上位四分位)=厚め(単BT232%) / <0.20=薄め(105%)
-    頭数: 17頭以上はワイド除外(BT84%) / 10頭以下は総流し系が特に強い(224%)
+    【なぜ変えたか】
+    旧方式は妙の人気帯で 勝負/買い/堅実/少額 に分けていたが、その根拠のBT数値
+    （勝負帯 単勝291%・買い帯183%）は時系列リーク・血統リーク下で出た幻だった。
+    リーク修正後のクリーン実測では 勝負帯88.5% / 買い帯75.7% で、しかも勝負帯は
+    年間の的中が27回しかなく信頼区間[53%,125%]＝帯そのものに識別力がない(band_clean.py)。
+
+    【新方式】
+    レースごとに測れる材料だけで「そのレースを買うか」を決める。採用材料は
+    2025全3,130Rの実払戻で測定し、①対照実験(市場=1番人気にも同傾向が出ないか)
+    ②前後半分割 ③レース単位ブートストラップ を通したもの(race_eval.py/race_rule.py)。
+
+      ・軸の前走間隔 <8週  → 見送り。実測63-71%。市場側も同傾向だが我々の劣化幅が大きい
+      ・クラス3-4級(中級)  → 見送り。実測67.2%(前70.1/後64.1)で前後半とも一貫して悪い
+      → 通過は856R(全体の27%)。単勝+馬連で92.1%(前80.1/後106.0)
+
+    【券種】単勝＋馬連の2本に絞る。同じ856Rでの実測が
+      馬連93.2 / 単勝86.6 / 馬単89.7 / 複勝85.2 / 3連複83.2 / ワイド81.4% で、
+      控除率の低い単勝(20%)・馬連(22.5%)に我々の優位が最も残るため
+      （3連単は控除27.5%に対し優位ゼロと確認済み・exotic2.py）。
+
+    【正直な限界】100%は超えない。これは「勝てるレースを選ぶ」施策ではなく
+    「負けの大きいレースを買わない」施策。全体78.0%→92.1%＝損失を22%→8%に圧縮する。
     """
-    n = len(pdf)
-    cls_v = pd.to_numeric(pdf["クラス_num"].iloc[0], errors="coerce") if "クラス_num" in pdf.columns else np.nan
-    cls = int(cls_v) if pd.notna(cls_v) else 3
-    is_op = cls >= 5
     plan = {"判定": "見送り", "指数": 25, "サイズ": "-", "理由": "", "menu": []}
+    cls_v = pd.to_numeric(pdf["クラス_num"].iloc[0], errors="coerce") \
+        if "クラス_num" in pdf.columns else np.nan
+    cls = float(cls_v) if pd.notna(cls_v) else np.nan
 
-    if is_op and n >= 14:
-        plan["理由"] = "重賞/OP級14頭以上(AI優位なし・全買い目BT<100%)"
-        return plan
-    myo = pdf[pdf["妙味軸"] == "◎妙"] if "妙味軸" in pdf.columns else pdf.iloc[0:0]
-    _pop_all2 = pd.to_numeric(pdf["人気"], errors="coerce")
-    _fav_odds2 = np.nan
-    if _pop_all2.notna().any():
-        _fav_odds2 = pd.to_numeric(pdf.loc[_pop_all2.idxmin(), "単勝オッズ"], errors="coerce")
-    if myo.empty:
-        # ◎妙なし＝MF1位と◎が一致（両モデル合意）。市場が確信していない(1人気>2.0倍)
-        # 非OPレースなら「堅実」帯: ◎軸で買う（BT: 単勝135%/馬単145%/3連複123%/3連単153%・887R）
-        if pd.notna(_fav_odds2) and float(_fav_odds2) > 2.0 and cls <= 4:
-            plan.update({"判定": "堅実", "指数": 75, "サイズ": "標準",
-                         "理由": "モデル合意◎×市場不確実(1人気2倍超)＝堅実帯(BT≈140%)"})
-            plan["menu"] = [("単勝", "◎単勝", 135),
-                            ("馬単", "馬単 ◎→○▲△", 145),
-                            ("3連複", "3連複 ◎○▲", 123),
-                            ("3連単", "3連単 ◎→○▲→○▲△", 153)]
+    # ── 較正済み期待値方式（2026-08-04・既定）──────────────────────────
+    #   3年OOS検証で確定した唯一の黒字構成。設定値の根拠は EV_* 定数のコメント参照。
+    #   条件: 乖離≥3・20倍以下・モデル1位はEV≥1.7 / 2〜5位はEV≥2.2
+    #   買い方: 該当馬のうち期待値が最大の1頭を単勝で1点。
+    if USE_EV_BETTING and "乖離" in pdf.columns and "単勝期待値" in pdf.columns:
+        _mr = pd.to_numeric(pdf.get("MF複勝順位"), errors="coerce")
+        _gap = pd.to_numeric(pdf["乖離"], errors="coerce")
+        _od = pd.to_numeric(pdf["単勝オッズ"], errors="coerce")
+        # 単勝期待値は「確率×オッズ−1」で保持しているのでEVに戻す
+        _ev = pd.to_numeric(pdf["単勝期待値"], errors="coerce") + 1.0
+        _hit = ((_gap >= EV_GAP_MIN) & (_od <= EV_ODDS_MAX) &
+                (((_mr == 1) & (_ev >= EV_MIN_TOP)) |
+                 (_mr.between(2, 5) & (_ev >= EV_MIN_SUB))))
+        tgt = pdf[_hit.fillna(False)]
+        if tgt.empty:
+            plan.update({"指数": 40, "理由": "期待値の条件を満たす馬なし"})
             return plan
-        plan.update({"指数": 40, "理由": "◎妙なし×(1人気2倍以下orOP)=旨味なし(BT75-87%)"})
-        return plan
-    m = myo.iloc[0]
-    pop = pd.to_numeric(m.get("人気"), errors="coerce")
-    mfw = pd.to_numeric(m.get("MF勝ち確率"), errors="coerce")
-    modds = pd.to_numeric(m.get("単勝オッズ"), errors="coerce")
-    if pd.isna(pop) or pop >= 10:
-        plan["理由"] = "妙10番人気以下(運任せ・BT99%)"
-        return plan
-    if is_op and pop <= 6:
-        plan["理由"] = "OP級×妙6人気以内(BT59-94%)"
-        return plan
-    if 3 <= cls <= 4 and pop <= 3:
-        plan["理由"] = "中級×妙2-3人気(BT86-109%)"
-        return plan
-    # 買い帯オッズゲート: 4-6人気でもオッズ8倍未満は市場評価と近く妙味なし(馬単BT59%)
-    if 4 <= pop <= 6 and pd.notna(modds) and float(modds) < 8.0:
-        plan.update({"指数": 50,
-                     "理由": f"妙{int(pop)}人気だがオッズ{float(modds):.1f}倍<8倍=妙味薄(馬単BT59%)"})
+        best = tgt.assign(_ev=_ev[tgt.index]).nlargest(EV_MAX_PICKS, "_ev")
+        ev_max = float(_ev[best.index].max())
+        plan.update({"判定": "買い",
+                     "指数": 70 + min(30, int((ev_max - EV_MIN_TOP) * 20)),
+                     "サイズ": "標準",
+                     "理由": f"期待値{ev_max:.2f}（候補{len(tgt)}頭から1頭）",
+                     "menu": [("単勝", "EV単勝", 113)],
+                     "ev_picks": best["馬番"].tolist()})
         return plan
 
-    size = "標準"
-    if pd.notna(mfw) and float(mfw) >= 0.385:
-        size = "厚め"
-    elif pd.notna(mfw) and float(mfw) < 0.20:
-        size = "薄め"
-    wide_ok = n <= 16
-    pop = int(pop)
+    # ── 妙味方式（2026-07-31・USE_EV_BETTING=False のとき）──────────────
+    #   ★（モデルが市場より3順位以上高く評価・20倍以下）が付いた◎○▲だけを買う。
+    #   3年実測: 単勝97.3%（97.8/95.1/98.9）・複勝93.1%・年997点。
+    #   ★が無いレースは見送り（全体の66%）。従来のゲート方式は下に残してあり、
+    #   USE_MYOMI_BETTING=False で戻せる。
+    if USE_MYOMI_BETTING and "妙味" in pdf.columns:
+        tgt = pdf[(pdf["妙味"] == "★") & (pdf["印"].isin(MYOMI_MARKS))]
+        if tgt.empty:
+            n_star = int((pdf["妙味"] == "★").sum())
+            plan.update({"指数": 40,
+                         "理由": f"妙味馬なし（★{n_star}頭・◎○▲に該当なし）"})
+            return plan
+        gap = pd.to_numeric(tgt["乖離"], errors="coerce").max()
+        idx = 70 + min(30, int(max(0, gap - MYOMI_GAP_MIN) * 10))
+        marks = "".join(tgt["印"].tolist())
+        plan.update({"判定": "買い", "指数": idx, "サイズ": "標準",
+                     "理由": f"妙味★{len(tgt)}頭({marks})・乖離最大{gap:.0f}"})
+        # 印ごとに券種を変える（★◎は複勝・★○は単勝）。実際に居る印の分だけ組む。
+        _roi = {"複勝": 113, "単勝": 100}
+        plan["menu"] = [(k, f"★{mk}{k}", _roi.get(k, 100))
+                        for mk in MYOMI_BETS if (tgt["印"] == mk).any()
+                        for k in MYOMI_BETS[mk]]
+        if plan["指数"] < BUY_INDEX_MIN:
+            plan["menu"] = []
+            plan["判定"] = "見送り"
+        return plan
 
-    # メニューは betting_guide.md（2026-07-17確定・券種別最適構成）に完全準拠。
-    # 相手は「人気」でレースごとに動的に決まる＝レース単位の最適化。
-    if pop <= 3:      # ここに来るのは下級×2-3人気のみ
-        plan.update({"判定": "少額", "指数": 55, "サイズ": "薄め",
-                     "理由": f"下級×妙{pop}人気(単勝BT126%のみの薄利帯)"})
-        plan["menu"] = [("単勝", "妙単勝", 126), ("馬単", "馬単 妙→◎○▲", 120)]
-    elif pop <= 6:    # 買い帯: 下級/中級×妙4-6人気×オッズ8倍以上（ゲート後BT: 単勝183/馬単231）
-        plan.update({"判定": "買い", "指数": 75 + (10 if size == "厚め" else 0), "サイズ": size,
-                     "理由": f"{'下級' if cls <= 2 else '中級'}×妙{pop}人気×{float(modds):.0f}倍(買い帯)" if pd.notna(modds)
-                              else f"{'下級' if cls <= 2 else '中級'}×妙{pop}人気(買い帯)"})
-        plan["menu"] = [("単勝", "妙単勝", 183),
-                        ("馬単", "馬単 妙→複勝上位5", 241),
-                        ("馬連", "馬連 妙-複勝上位5", 171),
-                        ("3連複", "3連複 妙◎軸-複勝上位5", 132),
-                        ("3連単", "3連単 妙→複勝3→複勝5", 259)]
-    else:             # 勝負帯: 妙7-9人気（BT: 単勝291/馬単345）
-        plan.update({"判定": "勝負", "指数": 90 + (5 if size == "厚め" else 0), "サイズ": size,
-                     "理由": f"妙{pop}人気(勝負帯・全クラス最強)"})
-        plan["menu"] = [("単勝", "妙単勝", 291),
-                        ("複勝", "妙複勝", 145),
-                        ("ワイド", "ワイド 複妙-複勝上位3", 147),
-                        ("馬単", "馬単 妙→複勝上位6", 337),
-                        ("馬連", "馬連 妙-複勝上位6", 194),
-                        ("3連複", "3連複 妙◎軸-複勝上位5", 131),
-                        ("3連単", "3連単 妙◎軸マルチ上位5", 251)]
+    # 軸を決める: 妙(MF勝率1位≠◎)があればそれ、無ければ◎
+    myo = pdf[pdf["妙味軸"] == "◎妙"] if "妙味軸" in pdf.columns else pdf.iloc[0:0]
+    hon = pdf[pdf["印"] == "◎"] if "印" in pdf.columns else pdf.iloc[0:0]
+    has_myo = not myo.empty
+    if has_myo:
+        axis = myo.iloc[0]
+    elif not hon.empty:
+        axis = hon.iloc[0]
+    else:
+        plan["理由"] = "軸(◎)が決まらない"
+        return plan
+
+    # ── ゲート①: 軸の前走間隔 ──────────────────────────────────────────
+    iv = pd.to_numeric(axis.get("前走間隔"), errors="coerce")
+    if RACE_GATE_MIN_INTERVAL is None:
+        pass                                   # 検証で無効化中
+    elif pd.isna(iv):
+        if not RACE_GATE_ALLOW_UNKNOWN:
+            plan.update({"指数": 40, "理由": "軸の前走間隔が不明"})
+            return plan
+    elif float(iv) < RACE_GATE_MIN_INTERVAL:
+        plan.update({"指数": 40,
+                     "理由": f"軸の前走間隔{float(iv):.0f}週<{RACE_GATE_MIN_INTERVAL:.0f}週"
+                             f"(実測63-71%・詰まったローテは市場も我々も沈む)"})
+        return plan
+
+    # ── ゲート②: クラス（中級は前後半とも一貫して悪い）────────────────────
+    lo, hi = RACE_GATE_SKIP_CLASS if RACE_GATE_SKIP_CLASS else (None, None)
+    if lo is not None and pd.notna(cls) and lo <= cls <= hi:
+        plan.update({"指数": 45,
+                     "理由": f"中級(クラス{int(cls)})=実測67.2%・前後半とも100%割れ"})
+        return plan
+
+    # ── 指数: ゲート通過70を起点に、優位が上乗せされる材料ごとに+10 ─────────
+    #   妙あり     … 通過レースのうち妙ありは101.8%(妙なし込み全体92.1%)
+    #   OP級       … 間隔ゲート通過のOP級は99.3%
+    #   間隔15週以上 … 93.5%(≥8週全体は84.6%)
+    idx, why = 70, []
+    if has_myo:
+        idx += 10
+        why.append("妙あり")
+    if pd.notna(cls) and cls >= 5:
+        idx += 10
+        why.append("OP級")
+    if pd.notna(iv) and float(iv) >= 15:
+        idx += 10
+        why.append("間隔15週+")
+    idx = min(idx, 100)
+    size = "厚め" if idx >= 90 else "標準"
+
+    iv_s = f"間隔{float(iv):.0f}週" if pd.notna(iv) else "間隔不明"
+    plan.update({"判定": "買い", "指数": idx, "サイズ": size,
+                 "理由": f"ゲート通過({iv_s}"
+                         + (f"・クラス{int(cls)}" if pd.notna(cls) else "")
+                         + ")" + ("＋" + "＋".join(why) if why else "")})
+
+    # ── メニュー: 単勝＋馬連の2本のみ（軸が妙か◎かでラベルを切替）───────────
+    if has_myo:
+        plan["menu"] = [("単勝", "妙単勝", 87),
+                        ("馬連", "馬連 妙-複勝上位5", 93)]
+    else:
+        plan["menu"] = [("単勝", "◎単勝", 87),
+                        ("馬連", "馬連 ◎-複勝上位5", 93)]
 
     # 購入しきい値: 指数がBUY_INDEX_MIN未満なら買い目を出さない（判定・理由は残す）
     if plan["menu"] and plan["指数"] < BUY_INDEX_MIN:
         plan["理由"] += f" → 指数{plan['指数']}<購入閾値{BUY_INDEX_MIN}のため購入対象外"
         plan["menu"] = []
+        plan["判定"] = "見送り"
     return plan
 
 
@@ -1575,6 +1885,42 @@ def _build_bet_rows(pdf, race_id):
     plan = _race_bet_plan(pdf)
     if not plan["menu"]:
         return []
+
+    # 期待値方式は買う馬が確定しているので、印の展開を通さず直接1点を組む
+    # （2026-08-04）。印は表示用に残るが、買い目とは切り離す。
+    if plan.get("ev_picks"):
+        rows = []
+        for no in plan["ev_picks"]:
+            try:
+                n = int(pd.to_numeric(no, errors="coerce"))
+            except (TypeError, ValueError):
+                continue
+            r = pdf[pd.to_numeric(pdf["馬番"], errors="coerce") == n]
+            ev = float(pd.to_numeric(r["単勝期待値"], errors="coerce").iloc[0]) + 1.0 \
+                if len(r) else np.nan
+            rows.append({"race_id": race_id, "券種": "単勝", "買い方": "EV単勝",
+                         "組み合わせ": str(n), "BT回収率": 113,
+                         "判定": plan["判定"], "サイズ": plan["サイズ"],
+                         "金額": EV_STAKE,
+                         "期待値": round(ev, 2) if pd.notna(ev) else ""})
+            # 馬単: 軸を1着固定 → 相手は上位人気の印（2026-08-05）
+            if USE_UMATAN:
+                _mr = pd.to_numeric(pdf.get("MF複勝順位"), errors="coerce")
+                _pr = pd.to_numeric(pdf["人気"], errors="coerce").rank(method="first")
+                _bn = pd.to_numeric(pdf["馬番"], errors="coerce")
+                _sub = pdf[_mr.isin(UMATAN_RANKS) & (_pr <= UMATAN_MAX_POP)
+                           & (_bn != n)]
+                for _, s in _sub.iterrows():
+                    m = pd.to_numeric(s["馬番"], errors="coerce")
+                    if pd.isna(m):
+                        continue
+                    rows.append({"race_id": race_id, "券種": "馬単",
+                                 "買い方": "EV馬単", "組み合わせ": f"{n}-{int(m)}",
+                                 "BT回収率": 134, "判定": plan["判定"],
+                                 "サイズ": plan["サイズ"], "金額": UMATAN_STAKE,
+                                 "期待値": ""})
+        return rows
+
     _ng = excluded_horses(pdf, race_id)
 
     def _no(row):
@@ -1604,7 +1950,7 @@ def _build_bet_rows(pdf, race_id):
     if "◎" not in marks:
         return []
     hon = marks["◎"]
-    myo = marks.get("妙")     # 堅実帯は妙なし（◎軸）
+    myo = marks.get("妙")     # 妙が出ないレースは◎を軸にする
     myo_p = marks.get("複妙", myo)   # place系の軸（無ければ勝率妙にフォールバック）
 
     # 人気順の馬番リスト（妙を除く）・馬番→人気/オッズのマップ（相手の動的決定に使用）
@@ -1662,9 +2008,21 @@ def _build_bet_rows(pdf, race_id):
     def s2(a, b):
         return f"{min(a, b):02d}-{max(a, b):02d}"
 
+    # ★（妙味）が付いた馬を印ごとに引く。★◎は複勝、★○は単勝に使う。
+    star_by_mark = {}
+    if "妙味" in pdf.columns and "印" in pdf.columns:
+        for mk in MYOMI_MARKS:
+            _s = pdf[(pdf["妙味"] == "★") & (pdf["印"] == mk)]
+            star_by_mark[mk] = [n for n in (_no(r) for _, r in _s.iterrows())
+                                if n is not None]
+
     for kind, name, roi in plan["menu"]:
-        # ── 堅実帯（◎軸・妙なし）──
-        if name == "◎単勝":
+        # ── 妙味方式: ★◎複勝 / ★○単勝 のように印と券種が対になっている ──
+        if name.startswith("★") and len(name) > 1 and name[1] in MYOMI_MARKS:
+            for t in star_by_mark.get(name[1], []):
+                add(kind, name, f"{t:02d}", roi)
+        # ── ◎軸（妙が出ないレース）──
+        elif name == "◎単勝":
             add(kind, name, f"{hon:02d}", roi)
         elif name == "馬単 ◎→○▲△":
             for t in [marks[m] for m in ("○", "▲", "△") if m in marks and marks[m] != hon]:
@@ -1674,6 +2032,9 @@ def _build_bet_rows(pdf, race_id):
             if len(set(tri)) == 3:
                 x = sorted(tri)
                 add(kind, name, f"{x[0]:02d}-{x[1]:02d}-{x[2]:02d}", roi)
+        elif name.startswith("馬連 ◎-複勝上位"):   # 妙が出ないレースの◎軸馬連
+            for t in _mf_partners({hon}, _tail_n(name)):
+                add(kind, name, s2(hon, t), roi)
         elif name == "3連単 ◎→○▲→○▲△":
             a2 = [marks[m] for m in ("○", "▲") if m in marks and marks[m] != hon]
             b3 = [marks[m] for m in ("○", "▲", "△") if m in marks and marks[m] != hon]
