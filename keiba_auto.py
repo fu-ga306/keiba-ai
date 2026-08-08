@@ -5,7 +5,8 @@ import numpy as np
 import pickle
 import smtplib
 import re
-#import schedule
+import schedule   # 7分前ジョブの登録に必須。コメントアウトすると main() が
+                  # NameError で落ちる（2026-08-08〜09に発生）
 import time
 import os
 import sys
