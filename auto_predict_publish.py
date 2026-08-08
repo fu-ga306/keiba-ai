@@ -175,6 +175,10 @@ def run_morning_prediction():
     git_push(f"当日予想更新 {date_str} 07:00")
     notify_dashboard()
 
+    # 一括予想が終わってから keiba_auto.py を起動する（2026-08-08）。
+    # 先に起動すると両方が同時に model.pkl を読み、メモリ不足で落ちる。
+    run_keiba_auto()
+
     # note公開用のダイジェストをメール送信（2026-08-05追加）。
     # 買い推奨レースをMarkdownで整形して送るだけ。公開は手動で行う。
     # 失敗しても予想の処理は止めない。
@@ -292,21 +296,108 @@ def setup_schedule():
 
 
 # ── メイン ────────────────────────────────────────────────────────────────
-def run_keiba_auto():
-    """keiba_auto.py をサブプロセスで起動（メール送信・個別予想）"""
-    print(f"\n[{datetime.now().strftime('%H:%M')}] keiba_auto.py 起動")
+def _free_mem_gb():
+    """物理メモリの空き(GB)。取れなければ None。"""
     try:
+        import ctypes
+
+        class _S(ctypes.Structure):
+            _fields_ = [("dwLength", ctypes.c_ulong),
+                        ("dwMemoryLoad", ctypes.c_ulong),
+                        ("ullTotalPhys", ctypes.c_ulonglong),
+                        ("ullAvailPhys", ctypes.c_ulonglong),
+                        ("ullTotalPageFile", ctypes.c_ulonglong),
+                        ("ullAvailPageFile", ctypes.c_ulonglong),
+                        ("ullTotalVirtual", ctypes.c_ulonglong),
+                        ("ullAvailVirtual", ctypes.c_ulonglong),
+                        ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+
+        s = _S()
+        s.dwLength = ctypes.sizeof(_S)
+        ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(s))
+        return s.ullAvailPhys / (1024 ** 3)
+    except Exception:
+        return None
+
+
+def keiba_auto_alive():
+    """keiba_auto.py が生きているか。pidファイルだけでは判定しない。"""
+    pid_file = os.path.join(BASE_DIR, "keiba_auto.pid")
+    if not os.path.exists(pid_file):
+        return False
+    try:
+        pid = int(open(pid_file).read().strip())
+    except Exception:
+        return False
+    try:
+        r = subprocess.run(["tasklist", "/FI", f"PID eq {pid}"],
+                           capture_output=True, text=True, errors="ignore")
+        return str(pid) in (r.stdout or "")
+    except Exception:
+        return False
+
+
+def run_keiba_auto():
+    """keiba_auto.py をサブプロセスで起動（7分前の直前更新・メール送信）。
+
+    2026-08-08: 06:58に起動していたが、07:00の一括予想と model.pkl(数GB)の
+    読込がぶつかり、メモリ不足で起動直後に死んでいた（pidファイルだけ残り、
+    プロセスは存在しない状態）。出力を捨てていたため気づけなかった。
+      ・起動を一括予想の完了後に移す（同時にモデルを読ませない）
+      ・空きメモリが足りないときは起動を見送る
+      ・出力を keiba_auto_run.log/.err に残す
+    """
+    if keiba_auto_alive():
+        print("  keiba_auto.py は既に稼働中 → 起動しない")
+        return
+    free = _free_mem_gb()
+    if free is not None and free < 1.5:
+        print(f"  空きメモリ {free:.1f}GB → keiba_auto.py の起動を見送り"
+              f"（動作中の予想を巻き込まないため。次の点検で再試行）")
+        return
+    print(f"\n[{datetime.now().strftime('%H:%M')}] keiba_auto.py 起動"
+          f"（空きメモリ {free:.1f}GB）" if free is not None else "")
+    try:
+        # 出力を捨てると死因が分からなくなるのでファイルに残す
+        out = open(os.path.join(BASE_DIR, "keiba_auto_run.log"), "a",
+                   encoding="utf-8", errors="ignore")
+        err = open(os.path.join(BASE_DIR, "keiba_auto_run.err"), "a",
+                   encoding="utf-8", errors="ignore")
+        out.write(f"\n===== 起動 {datetime.now():%Y/%m/%d %H:%M:%S} =====\n")
+        out.flush()
         result = subprocess.Popen(
             [PYTHON, os.path.join(BASE_DIR, "keiba_auto.py")],
-            cwd=BASE_DIR,
+            cwd=BASE_DIR, stdout=out, stderr=err,
+            env={**os.environ, "PYTHONUTF8": "1"},
         )
         print(f"  keiba_auto.py 起動完了 (PID: {result.pid})")
-        # PIDを保存（停止時に使用）
-        pid_file = os.path.join(BASE_DIR, "keiba_auto.pid")
-        with open(pid_file, "w") as f:
+        with open(os.path.join(BASE_DIR, "keiba_auto.pid"), "w") as f:
             f.write(str(result.pid))
     except Exception as e:
         print(f"  keiba_auto.py 起動エラー: {e}")
+
+
+def ensure_keiba_auto():
+    """keiba_auto.py が落ちていたら復帰させる（15分おきの点検）。
+
+    起動直後に死んでも、次の点検で拾い直せるようにする。最終レースを
+    過ぎていれば何もしない。
+    """
+    if keiba_auto_alive():
+        return
+    try:
+        import today_results
+        times = today_results._race_times()
+    except Exception:
+        times = {}
+    if not times:
+        return                      # 非開催日、または発走時刻がまだ未登録
+    cur = datetime.now().hour * 60 + datetime.now().minute
+    if cur > max(times.values()):
+        return                      # 全レース終了後は復帰させない
+    print(f"[{datetime.now().strftime('%H:%M')}] keiba_auto.py が停止している"
+          f"→ 復帰を試みます")
+    run_keiba_auto()
 
 
 def stop_keiba_auto():
@@ -352,11 +443,15 @@ def main():
     schedule.every().day.at("07:00").do(run_morning_prediction)
     print("  [済] 朝7時の一括予想をスケジュール登録")
 
-    # keiba_auto.py の自動起動（6:58）・停止（21時）
-    # keiba_auto.pyは各レース7分前にメール送信するため早めに起動
-    schedule.every().day.at("06:58").do(run_keiba_auto)
+    # keiba_auto.py の停止（21時）。起動は run_morning_prediction の最後で行う。
+    #   2026-08-08: 06:58起動だと07:00の一括予想とモデル読込が重なり、
+    #   メモリ不足で起動直後に死んでいた。一括予想が終わってから起動する。
     schedule.every().day.at("21:00").do(stop_keiba_auto)
-    print("  [済] keiba_auto.py 自動起動(06:58)・停止(21:00)をスケジュール登録")
+    print("  [済] keiba_auto.py 停止(21:00)をスケジュール登録")
+
+    # keiba_auto.py の生存点検（15分おき）。落ちていたら復帰させる。
+    schedule.every(15).minutes.do(ensure_keiba_auto)
+    print("  [済] keiba_auto.py 生存点検(15分おき)をスケジュール登録")
 
     # 当日レースの個別予想スケジュールを設定
     now = datetime.now()

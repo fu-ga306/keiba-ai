@@ -165,7 +165,9 @@ def update_for_race(race_id, pred_df=None):
         _log(f"結果取得: {rid} ({len(d)}頭)")
     if not got:
         return
-    new = pd.concat([have] + got, ignore_index=True)
+    # 空のDataFrameを混ぜるとpandasが列の型を決められず警告を出すので除く
+    parts = ([have] if not have.empty else []) + got
+    new = pd.concat(parts, ignore_index=True)
     new = new.drop_duplicates(["race_id", "馬番"], keep="last")
     new.to_csv(OUT, index=False, encoding="utf-8-sig")
     _log(f"相乗り保存: {new['race_id'].nunique()}レース分")
@@ -260,7 +262,8 @@ def sweep():
             _log(f"結果取得: {rid} ({len(d)}頭)")
     if not got:
         return 0
-    new = pd.concat([have] + got, ignore_index=True)
+    parts = ([have] if not have.empty else []) + got
+    new = pd.concat(parts, ignore_index=True)
     new = new.drop_duplicates(["race_id", "馬番"], keep="last")
     new.to_csv(OUT, index=False, encoding="utf-8-sig")
     _log(f"後片付け保存: {new['race_id'].nunique()}レース分")
