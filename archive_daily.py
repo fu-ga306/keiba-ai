@@ -68,6 +68,18 @@ def build(date_str=None):
 
     # 日付は予想日時からではなく実行日から取る（予想日時は更新のたび変わる）
     d.insert(0, "日付", date_str or datetime.now().strftime("%Y-%m-%d"))
+
+    # どのモデルが出した予想かを残す（2026-08-09）。
+    #   モデルは毎週火曜に再学習されるので、半年貯めたデータは「少しずつ違う
+    #   モデルの出力」の寄せ集めになる。後から「この期間はモデルが変わった
+    #   直後だった」と切り分けられるよう、学習物の更新日を列に入れておく。
+    #   これが無いと、印の成績が変わった原因がモデル更新なのか偶然なのか
+    #   永久に分からない。
+    for col, fn in (("model版", "model.pkl"), ("MF版", "model_mf.pkl"),
+                    ("較正版", "mf_calibrator.pkl")):
+        fp = os.path.join(BASE_DIR, fn)
+        d[col] = (datetime.fromtimestamp(os.path.getmtime(fp)).strftime("%Y-%m-%d")
+                  if os.path.exists(fp) else "")
     d["着順"] = pd.to_numeric(d["着順"], errors="coerce")
     d["1着"] = (d["着順"] == 1).astype(int)
     d["2着内"] = (d["着順"] <= 2).astype(int)
