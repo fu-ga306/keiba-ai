@@ -112,10 +112,25 @@ def notify_dashboard():
 
 
 # ── Git自動プッシュ ───────────────────────────────────────────────────────
+def _git_env():
+    """認証プロンプトを一切出さない環境を作る（2026-08-09）。
+
+    credential.helper=manager は認証が切れるとGUIのダイアログを出し、
+    無人運用では誰も応答しないので git が永久に待つ。8/9のハングは
+    これが原因の可能性が高い。プロンプトを禁止しておけば、認証切れは
+    「待ち続ける」ではなく「即エラー」になり、次のジョブへ進める。
+    認証情報自体は Windows資格情報マネージャーに保存済みなので、
+    通常運転でプロンプトが必要になることはない。
+    """
+    return {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "never",
+            "GIT_ASKPASS": "", "SSH_ASKPASS": ""}
+
+
 def git_push(message: str):
     """today_predictions.csv と prediction_record_v2.csv をGitHubにプッシュ"""
     try:
         os.chdir(BASE_DIR)
+        _env = _git_env()
 
         # 変更があるファイルだけ追加
         files = ["today_predictions.csv", "prediction_record_v2.csv", "today_bets.csv",
@@ -125,12 +140,13 @@ def git_push(message: str):
             path = os.path.join(BASE_DIR, f)
             if os.path.exists(path):
                 subprocess.run(["git", "add", f], cwd=BASE_DIR, check=True,
-                               timeout=GIT_TIMEOUT)
+                               timeout=GIT_TIMEOUT, env=_env)
 
         # 変更がなければスキップ
         result = subprocess.run(
             ["git", "status", "--porcelain"],
-            cwd=BASE_DIR, capture_output=True, text=True, timeout=GIT_TIMEOUT
+            cwd=BASE_DIR, capture_output=True, text=True, timeout=GIT_TIMEOUT,
+            env=_env
         )
         if not result.stdout.strip():
             print("  [Git] 変更なし・スキップ")
@@ -138,11 +154,11 @@ def git_push(message: str):
 
         subprocess.run(
             ["git", "commit", "-m", message],
-            cwd=BASE_DIR, check=True, timeout=GIT_TIMEOUT
+            cwd=BASE_DIR, check=True, timeout=GIT_TIMEOUT, env=_env
         )
         subprocess.run(
             ["git", "push"],
-            cwd=BASE_DIR, check=True, timeout=GIT_TIMEOUT
+            cwd=BASE_DIR, check=True, timeout=GIT_TIMEOUT, env=_env
         )
         print(f"  [Git] プッシュ完了: {message}")
 
