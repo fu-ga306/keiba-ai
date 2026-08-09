@@ -33,9 +33,13 @@ def log(msg):
         f.write(line + "\n")
 
 
+STEP_RESULTS = []   # (ラベル, 成否, 所要秒) を貯めて最後にメールで知らせる
+
+
 def run_step(label, cmd, timeout=3600):
     """サブプロセスを実行してログに記録。失敗してもクラッシュしない。"""
     log(f"--- {label} 開始 ---")
+    _t0 = datetime.now()
     try:
         env = os.environ.copy()
         env["PYTHONUTF8"] = "1"  # Windows CP932 → UTF-8 強制（エンコードエラー防止）
@@ -56,9 +60,13 @@ def run_step(label, cmd, timeout=3600):
                     log(f"  ERR: {line}")
         else:
             log(f"--- {label} 完了 ---")
+        STEP_RESULTS.append((label, result.returncode == 0,
+                             int((datetime.now() - _t0).total_seconds())))
         return result.returncode == 0
     except subprocess.TimeoutExpired:
         log(f"  [タイムアウト] {label} が {timeout}秒 を超過しました")
+        STEP_RESULTS.append((label + "（時間切れ）", False,
+                             int((datetime.now() - _t0).total_seconds())))
         return False
     except Exception as e:
         import traceback
@@ -66,6 +74,8 @@ def run_step(label, cmd, timeout=3600):
         log(f"  [エラー] {label}: {e}")
         for line in tb.splitlines()[-10:]:
             log(f"  TB: {line}")
+        STEP_RESULTS.append((label + "（例外）", False,
+                             int((datetime.now() - _t0).total_seconds())))
         return False
 
 
@@ -254,6 +264,51 @@ def main():
     log("=" * 50)
     log(f"週次自動更新 完了  所要時間: {elapsed}")
     log("=" * 50)
+    _notify(elapsed)
+
+
+def _notify(elapsed):
+    """結果をメールで知らせる（2026-08-09追加）。
+
+    これまでは weekly_update_log.txt に書くだけだったので、8/3にStep3が
+    時間切れでMFモデルが更新されないまま終わっていたことに1週間気づけなかった。
+    無人運用では、失敗が届かないことが一番こわい。
+    """
+    ng = [l for l, ok, _ in STEP_RESULTS if not ok]
+    head = "✅週次更新 完了" if not ng else f"⚠週次更新 {len(ng)}件が失敗"
+    lines = [f"所要時間 {elapsed}", ""]
+    for l, ok, sec in STEP_RESULTS:
+        lines.append(f"  {'○' if ok else '×'} {l}  {sec // 60}分")
+    lines.append("")
+    lines.append("モデルファイルの更新日時:")
+    for f in ("model.pkl", "model_mf.pkl", "mf_calibrator.pkl", "race_features.csv"):
+        fp = os.path.join(BASE_DIR, f)
+        if os.path.exists(fp):
+            m = datetime.fromtimestamp(os.path.getmtime(fp))
+            age = (datetime.now() - m).days
+            lines.append(f"  {f}: {m:%m/%d %H:%M}" + (f"  ← {age}日前のまま" if age >= 6 else ""))
+        else:
+            lines.append(f"  {f}: 見つからない")
+    if ng:
+        lines += ["", "失敗したもの:"] + [f"  {l}" for l in ng]
+        lines += ["", "詳しくは weekly_update_log.txt を見てください。"]
+    body = chr(10).join(lines)
+    log(body)
+    try:
+        import smtplib
+        from email.mime.text import MIMEText
+        from dotenv import load_dotenv
+        load_dotenv(os.path.join(BASE_DIR, ".env"))
+        msg = MIMEText(body, "plain", "utf-8")
+        msg["Subject"] = f"{head}（{datetime.now():%m/%d}）"
+        msg["From"] = os.environ["GMAIL_ADDRESS"]
+        msg["To"] = os.environ["TO_ADDRESS"]
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as srv:
+            srv.login(os.environ["GMAIL_ADDRESS"], os.environ["GMAIL_APP_PASS"])
+            srv.send_message(msg)
+        log("  完了メールを送信しました")
+    except Exception as e:
+        log(f"  完了メールの送信に失敗: {e}")
 
 
 if __name__ == "__main__":

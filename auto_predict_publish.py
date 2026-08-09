@@ -143,14 +143,18 @@ def git_push(message: str):
                 subprocess.run(["git", "add", f], cwd=BASE_DIR, check=True,
                                timeout=GIT_TIMEOUT, env=_env)
 
-        # 変更がなければスキップ
+        # 変更がなければスキップ。
+        #   2026-08-09: ここは git status（リポジトリ全体）を見ていたため、
+        #   実験用スクリプトなど無関係な未追跡ファイルがあると「変更あり」と
+        #   誤判定し、対象ファイルに差分が無いのに commit を叩いて必ず失敗して
+        #   いた。ステージした分だけを見るように直す。
         result = subprocess.run(
-            ["git", "status", "--porcelain"],
+            ["git", "diff", "--cached", "--name-only"],
             cwd=BASE_DIR, capture_output=True, text=True, timeout=GIT_TIMEOUT,
             env=_env
         )
         if not result.stdout.strip():
-            print("  [Git] 変更なし・スキップ")
+            print("  [Git] 対象ファイルに変更なし・スキップ")
             return
 
         subprocess.run(
