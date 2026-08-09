@@ -109,26 +109,47 @@ def main():
         timeout=3600  # 60分
     )
 
+    # ── モデル固定モード（2026-08-09）──────────────────────────────────
+    #   FREEZE_MODEL というファイルを置くと、学習をやり直す工程(Step2/3/3.5/3.6)
+    #   を飛ばす。予想は今の model.pkl / model_mf.pkl / mf_calibrator.pkl で
+    #   出し続ける。
+    #
+    #   なぜ用意したか: 印の成績や評価の精度を数ヶ月かけて検証したいのに、
+    #   毎週モデルが変わると「成績が変わったのはモデル更新のせいか偶然か」を
+    #   切り分けられない。学習物を固定すれば、貯まったデータは全て同じモデルの
+    #   出力になり、そのまま統計にかけられる。
+    #
+    #   飛ばすのは学習だけで、Step0(結果の取得)とStep1(特徴量・各種集計の更新)は
+    #   続ける。新しいレース結果は貯まり続けるので、検証が終わってから
+    #   このファイルを消せば、その時点の全データで学習し直せる。
+    frozen = os.path.exists(os.path.join(BASE_DIR, "FREEZE_MODEL"))
+    if frozen:
+        log("[モデル固定] FREEZE_MODEL があるため Step2/3/3.5/3.6 を飛ばします")
+        log("            （予想は今の学習物のまま。結果の蓄積と特徴量更新は続行）")
+        STEP_RESULTS.append(("Step2〜3.6 学習（固定モードのため実施せず）", True, 0))
+
     # ── Step 2: 通常モデル再学習（本番モード=全データ学習 → model.pkl）───────
     #   2026-07-16: timeout 30分→4時間（7/13に30分超過で毎週失敗していたのを修正）。
     #   backtest資産(model_result*.csv)は本番モードでは更新されない（model.py backtestで別途）。
     log("[Step2] モデル再学習（通常モデル・全データ）")
-    run_step(
+    if not frozen:
+      run_step(
         "model.py",
         [PYTHON, os.path.join(BASE_DIR, "model.py")],
         timeout=14400  # 4時間
-    )
+      )
 
     # ── Step 3: MFモデル再学習（改善版v2・本番モード=全データ → model_mf.pkl）──
     #   2026-07-16: 旧market_free_model.py→train_mf_v2.py（バギング+LambdaRank版）に切替。
     log("[Step3] MFモデル再学習（train_mf_v2）")
-    run_step(
+    if not frozen:
+      run_step(
         "train_mf_v2.py",
         [PYTHON, os.path.join(BASE_DIR, "train_mf_v2.py")],
         # 2026-08-03に7200秒で足りずタイムアウトした（他の処理と並走していた影響もある）。
         # 翌日は開催がないので余裕を持たせる。
         timeout=21600  # 6時間
-    )
+      )
 
     # ── Step 3.5: 確率較正用のOOS出力を更新 ──────────────────────────────
     #   買い判定は「較正済み勝率 × 実オッズ」の期待値で行う（2026-08-04導入）。
@@ -139,7 +160,7 @@ def main():
     #   （≤前年学習/当年検証）でのみ model_mf_result.csv が更新される。
     #   本番モデル(model_mf.pkl)には触らない（出力は model_mf_bt.pkl）。
     log("[Step3.5] 較正用のOOS出力を更新（train_mf_v2 backtest）")
-    ok_bt = run_step(
+    ok_bt = False if frozen else run_step(
         "train_mf_v2.py backtest",
         [PYTHON, os.path.join(BASE_DIR, "train_mf_v2.py"), "backtest"],
         timeout=21600  # 6時間
@@ -155,6 +176,8 @@ def main():
                         [PYTHON, os.path.join(BASE_DIR, "build_calibrator.py")],
                         timeout=1800):
             log("  [警告] 較正器の再作成に失敗。古い較正器のまま動きます")
+    elif frozen:
+        log("[Step3.6] スキップ（モデル固定モード。較正器も今のまま使います）")
     else:
         log("[Step3.6] スキップ（Step3.5が失敗したため較正器は更新しない）")
         log("  [警告] 較正器が古いままです。期待値がずれる可能性があります")
