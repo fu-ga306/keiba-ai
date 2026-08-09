@@ -18,7 +18,7 @@ weekly_update.py
 import os
 import sys
 import subprocess
-from datetime import datetime
+from datetime import datetime, timedelta
 
 BASE_DIR = r"c:\Users\別府飛河\OneDrive\デスクトップ\keiba_ai"
 PYTHON   = r"C:/Users/別府飛河/AppData/Local/Microsoft/WindowsApps/python3.11.exe"
@@ -79,10 +79,34 @@ def run_step(label, cmd, timeout=3600):
         return False
 
 
+def _is_race_day():
+    """今日が開催日か。ファイルの鮮度だけで判断し、スクレイピングはしない。
+
+    週次は火曜に移したが、山の日などの祝日火曜には開催があり得る。
+    開催日に走らせると Step0 のスクレイピングが当日の予想・結果取得と
+    ぶつかり、ブロックを招く（2026-07-27に実際に400を食らっている）。
+    """
+    today = datetime.now().date()
+    for fn in ("today_race_times.json", "today_predictions.csv"):
+        p = os.path.join(BASE_DIR, fn)
+        if os.path.exists(p) and \
+                datetime.fromtimestamp(os.path.getmtime(p)).date() == today:
+            return True
+    return False
+
+
 def main():
     log("=" * 50)
     log("週次自動更新 開始")
     log("=" * 50)
+
+    # 開催日には走らせない（2026-08-09）。Step0は直近2週を取り直すので、
+    # 1週飛ばしてもデータは失われない。翌週の実行で追いつく。
+    if _is_race_day():
+        log("本日は開催日 → 週次更新を見送ります（来週に実施）")
+        STEP_RESULTS.append(("開催日のため見送り", True, 0))
+        _notify(timedelta(0))
+        return
 
     start = datetime.now()
 
