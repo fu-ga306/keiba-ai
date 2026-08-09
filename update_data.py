@@ -21,6 +21,7 @@ update_data.py
 """
 
 import os
+import re
 import sys
 import time
 import argparse
@@ -73,6 +74,42 @@ def make_driver():
 
 
 # ── Step1: 対象race_idを生成 ──────────────────────────────────────────────
+def _race_ids_of_dates(dates: list) -> list:
+    """各日のレース一覧ページから、実在する race_id だけを拾う。
+
+    一覧ページはJavaScriptで描画されるので requests では取れない。
+    keiba_auto.get_today_races と同じくブラウザで開く。ブラウザは1回だけ
+    起動して全日付を回す。
+    非開催日は0件になる。取得に失敗しても総当たりには戻さない
+    （総当たりはブロックの原因になるため）。
+    """
+    out = []
+    driver = None
+    try:
+        driver = make_driver()
+        for date in dates:
+            try:
+                driver.get(f"https://race.netkeiba.com/top/race_list.html"
+                           f"?kaisai_date={date}")
+                time.sleep(3)
+                ids = sorted(set(re.findall(r"race_id=(\d{12})",
+                                            driver.page_source)))
+                log(f"    {date}: {len(ids)}レース")
+                out.extend(ids)
+            except Exception as e:
+                log(f"    {date} の一覧取得に失敗（この日は飛ばします）: {str(e)[:60]}")
+            time.sleep(2.0)
+    except Exception as e:
+        log(f"  ブラウザを起動できません: {str(e)[:80]}")
+    finally:
+        if driver is not None:
+            try:
+                driver.quit()
+            except Exception:
+                pass
+    return out
+
+
 def get_target_race_ids(weeks: int) -> list:
     """
     直近N週分の開催日から対象race_idを生成する。
@@ -92,17 +129,19 @@ def get_target_race_ids(weeks: int) -> list:
     target_dates = sorted(set(target_dates))
     log(f"  対象日数: {len(target_dates)}日")
 
-    # 各日付のrace_idを生成
-    race_ids = []
-    for date in target_dates:
-        year = int(date[:4])
-        for jyo in JYO_CODES:
-            for kai in range(1, 6):
-                for nichi in range(1, 9):
-                    for race in range(1, 13):
-                        race_ids.append(
-                            f"{year}{jyo:02d}{kai:02d}{nichi:02d}{race:02d}"
-                        )
+    # 各日付の「レース一覧ページ」から実在するrace_idだけを取る（2026-08-09）。
+    #   以前は 場10 × 回5 × 日8 × R12 = 4,800通りを総当たりで生成していた。
+    #   実在するのは1日あたり36前後なので、97%が存在しないページへの
+    #   アクセスになる。しかも日付ごとに同じIDを作り直すため同一URLを
+    #   何度も叩いていた（2週指定で約9,000リクエスト）。
+    #   7/27にCloudFrontで400を食らった原因はここだった可能性が高い。
+    #   一覧ページを1日1回読めば、同じ結果が114リクエスト程度で済む。
+    race_ids = sorted(set(_race_ids_of_dates(target_dates)))
+    log(f"  実在レース: {len(race_ids)}件")
+    if not race_ids:
+        # 一覧が取れないまま総当たりに戻すとブロックを招くので、何もしない。
+        log("  一覧からrace_idを取得できませんでした → 今回の取得は見送ります")
+        return []
 
     # 既存データのrace_idと照合してスキップ対象を特定
     existing_ids = set()
