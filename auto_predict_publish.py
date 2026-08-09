@@ -40,6 +40,16 @@ PYTHON = r"C:/Users/別府飛河/AppData/Local/Microsoft/WindowsApps/python3.11.
 
 DISK_MIN_GB = 2.0   # この空き未満なら予想を中止してメール警告（満杯でサイレント停止を防ぐ）
 
+# 外部コマンドの上限時間（2026-08-09）。
+#   8/9の12:40、札幌7Rのジョブでスケジューラが固まり、以降の40分前ジョブが
+#   1本も動かなくなった。プロセスは生きたままCPUを消費しない状態で、
+#   相乗り取得も夜の後片付けも同じスレッドなので全て道連れになる。
+#   subprocess.run にタイムアウトが無く、gitやpredictが無限に待てたのが原因。
+#   ここで必ず上限を切り、1つのジョブの失敗が全体を止めないようにする。
+GIT_TIMEOUT = 120        # git add/status/commit/push
+PREDICT_TIMEOUT = 1500   # 1レースの予想（通常2〜3分）
+HEARTBEAT = os.path.join(BASE_DIR, "auto_predict_heartbeat.txt")
+
 
 # ── ディスク不足アラート ──────────────────────────────────────────────────
 def _send_alert(subject, body):
@@ -75,6 +85,21 @@ def check_disk_ok():
     return True
 
 
+# ── 心拍（スケジューラが動いていることの証跡）────────────────────────────
+def _beat():
+    """待機ループを1周するたびに時刻を書く。
+
+    プロセスが生きていてもジョブが進まない状態（2026-08-09に発生）は、
+    プロセス一覧を見ても分からない。このファイルが更新され続けているか
+    どうかで、スケジューラ本体が動いているかを外から確認できる。
+    """
+    try:
+        with open(HEARTBEAT, "w", encoding="utf-8") as f:
+            f.write(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    except Exception:
+        pass
+
+
 # ── ダッシュボード即時更新通知 ────────────────────────────────────────────
 def notify_dashboard():
     """Flaskダッシュボードのキャッシュをクリアして最新データを即時反映する"""
@@ -99,12 +124,13 @@ def git_push(message: str):
         for f in files:
             path = os.path.join(BASE_DIR, f)
             if os.path.exists(path):
-                subprocess.run(["git", "add", f], cwd=BASE_DIR, check=True)
+                subprocess.run(["git", "add", f], cwd=BASE_DIR, check=True,
+                               timeout=GIT_TIMEOUT)
 
         # 変更がなければスキップ
         result = subprocess.run(
             ["git", "status", "--porcelain"],
-            cwd=BASE_DIR, capture_output=True, text=True
+            cwd=BASE_DIR, capture_output=True, text=True, timeout=GIT_TIMEOUT
         )
         if not result.stdout.strip():
             print("  [Git] 変更なし・スキップ")
@@ -112,14 +138,16 @@ def git_push(message: str):
 
         subprocess.run(
             ["git", "commit", "-m", message],
-            cwd=BASE_DIR, check=True
+            cwd=BASE_DIR, check=True, timeout=GIT_TIMEOUT
         )
         subprocess.run(
             ["git", "push"],
-            cwd=BASE_DIR, check=True
+            cwd=BASE_DIR, check=True, timeout=GIT_TIMEOUT
         )
         print(f"  [Git] プッシュ完了: {message}")
 
+    except subprocess.TimeoutExpired:
+        print(f"  [Git] {GIT_TIMEOUT}秒を超えたため中断（スケジューラを止めない）")
     except subprocess.CalledProcessError as e:
         print(f"  [Git] エラー: {e}")
     except Exception as e:
@@ -209,12 +237,16 @@ def run_race_prediction(race_id: str, race_time: str):
             cwd=BASE_DIR,
             capture_output=False,
             text=True,
+            timeout=PREDICT_TIMEOUT,
         )
         if result.returncode == 0:
             print(f"  {jyo_name} {race_no}R 予想完了")
         else:
             print(f"  {jyo_name} {race_no}R 予想エラー")
             return
+    except subprocess.TimeoutExpired:
+        print(f"  {jyo_name} {race_no}R 予想が{PREDICT_TIMEOUT}秒を超えたため中断")
+        return
     except Exception as e:
         print(f"  予想実行エラー: {e}")
         return
@@ -483,6 +515,7 @@ def main():
 
     print(f"\n待機中... (Ctrl+Cで停止)\n")
     while True:
+        _beat()
         schedule.run_pending()
         time.sleep(10)
 
@@ -523,6 +556,7 @@ if __name__ == "__main__":
         n = setup_schedule()
         print(f"\n{n}レースをスケジュール登録。待機中...\n")
         while True:
+            _beat()
             schedule.run_pending()
             time.sleep(10)
     else:

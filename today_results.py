@@ -39,7 +39,10 @@ OUT = os.path.join(BASE_DIR, "today_results.csv")
 LOG = os.path.join(BASE_DIR, "today_results.log")
 TIMES = os.path.join(BASE_DIR, "today_race_times.json")   # 発走時刻（衝突判定用）
 SLEEP_SEC = 2.0          # 取得の間に必ず入れる待機
-MAX_PER_RUN = 2          # 相乗り時に取りに行く上限（取りこぼしは次のジョブが拾う）
+MAX_PER_RUN = 4          # 相乗り時に取りに行く上限（取りこぼしは次のジョブが拾う）
+                         # 2026-08-09: 2だと遅延から復帰できずダッシュボードが
+                         # 何レースも空欄のままになった。2秒あけて4件でも1ジョブ
+                         # あたり8秒。昼休みやジョブ停止のあとに追いつけるよう上げる。
 SWEEP_PER_RUN = 3        # 後片付け時の上限
 QUIET_MARGIN = 15        # 発走の前後この分数は取得しない
 SWEEP_FROM = (17, 0)     # 後片付けの開始
