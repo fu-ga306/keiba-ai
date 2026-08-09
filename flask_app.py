@@ -656,13 +656,20 @@ def race_detail(race_id):
         h["res_tan"] = r["tan"] if r else ""
         h["res_fuku"] = r["fuku"] if r else ""
 
-        # 評価グレード（2026-08-07）。複勝確率＝キャリブレーション済みの絶対値なので、
-        # レース内の相対順ではなく固定のしきい値で切る。頭数の少ないレースで
-        # 実力がないのにAが付く、といったことを防ぐ。
-        fp = pd.to_numeric(h.get("fuku_pct"), errors="coerce")
-        fp = float(fp) if pd.notna(fp) else 0.0
-        h["grade"] = ("S" if fp >= 50 else "A" if fp >= 40 else
-                      "B" if fp >= 30 else "C" if fp >= 20 else "D")
+        # 評価グレード（2026-08-09改定）。
+        #   当初は複勝確率だけで決めていたが、それだと「3着に来るだけの馬」と
+        #   「勝ち負けする馬」が同じ評価になる。勝率・連対率・複勝率を足した
+        #   合成スコアに変えた。これは1着3点・2着2点・3着1点としたときの
+        #   期待獲得点そのもの（P(1着)+P(2着内)+P(3着内)）で、
+        #   8/9実測では予測0.440に対し実測0.444とほぼ一致している。
+        #   3つとも較正済みの絶対値なので、レース内の相対順ではなく固定の
+        #   しきい値で切る。少頭数レースで実力のない馬にAが付くのを防ぐため。
+        _p = [pd.to_numeric(h.get(c), errors="coerce")
+              for c in ("勝ち確率", "連対確率", "複勝確率")]
+        score = float(sum(float(v) for v in _p if pd.notna(v)))
+        h["grade_score"] = round(score, 2)
+        h["grade"] = ("S" if score >= 1.05 else "A" if score >= 0.80 else
+                      "B" if score >= 0.58 else "C" if score >= 0.36 else "D")
         # 能力総合点＝6軸（レース内百分位0-100）の平均。オッズを一切見ない評価。
         vals = [pd.to_numeric(h.get(c), errors="coerce") for c, _ in ABILITY_AXES]
         vals = [float(v) for v in vals if pd.notna(v)]

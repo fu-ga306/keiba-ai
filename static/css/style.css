@@ -830,3 +830,6 @@ body {
             background:rgba(140,150,165,.25); vertical-align:middle; overflow:hidden; }
 .abil-bar i { display:block; height:100%; border-radius:4px;
               background:linear-gradient(90deg,#4a9eff,#8b5cf6); }
+
+/* 評価の内訳スコア（2026-08-09・勝率+連対率+複勝率の合計）*/
+.grade-score { display:block; font-size:.62rem; opacity:.55; line-height:1; margin-top:1px; }

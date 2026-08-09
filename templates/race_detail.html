@@ -69,7 +69,7 @@
           <th data-k="ban">馬番</th>
           <th>馬名</th>
           <th>シグナル</th>
-          <th data-k="grade" title="複勝確率による評価。S:50%以上 A:40%台 B:30%台 C:20%台 D:20%未満">評価</th>
+          <th data-k="grade" title="勝率＋連対率＋複勝率の合計（1着3点・2着2点・3着1点としたときの期待獲得点）。S:1.05以上 A:0.80以上 B:0.58以上 C:0.36以上 D:それ未満">評価</th>
           <th data-k="abil" title="能力6軸（勝負力・安定感・末脚・先行力・距離適性・実績）の平均。レース内100点満点・オッズは見ない">能力</th>
           <th data-k="airank" title="市場フリーモデルの3着内予測順">AI順位</th>
           <th data-k="gap" title="人気順位 − AI順位。正ならAIが市場より高く評価">乖離</th>
@@ -108,7 +108,9 @@
           <td class="center">{{ h.馬番 | int }}</td>
           <td class="horse-name-cell">{{ h.馬名 }}{% if h.buy_kinds %}<span class="buy-kind">{{ h.buy_kinds }}</span>{% endif %}</td>
           <td><span class="signal-badge signal-{{ h.signal_cls }}">{{ h.signal_label }}</span></td>
-          <td class="center"><span class="grade grade-{{ h.grade }}">{{ h.grade }}</span></td>
+          <td class="center"><span class="grade grade-{{ h.grade }}"
+              title="期待獲得点 {{ h.grade_score }}（勝率{{ h.win_pct }}%＋連対{{ h.ren_pct }}%＋複勝{{ h.fuku_pct }}%）">{{ h.grade }}</span>
+              <span class="grade-score">{{ h.grade_score }}</span></td>
           <td class="abil-cell">
             {%- if h.abil_avg is not none -%}
             <span class="abil-num">{{ "%.1f"|format(h.abil_avg) }}</span>
