@@ -135,7 +135,8 @@ def git_push(message: str):
         # 変更があるファイルだけ追加
         files = ["today_predictions.csv", "prediction_record_v2.csv", "today_bets.csv",
                  "odds_history.csv",   # オッズ変動特徴の蓄積データ（追記式・バックアップ用）
-                 "today_results.csv"]  # 同じ競馬場の終了レースの着順・払戻（2026-08-07）
+                 "today_results.csv",  # 同じ競馬場の終了レースの着順・払戻（2026-08-07）
+                 "history_marks.csv"]  # 印と着順の履歴・1行1頭（2026-08-09）
         for f in files:
             path = os.path.join(BASE_DIR, f)
             if os.path.exists(path):
@@ -526,6 +527,12 @@ def main():
     schedule.every(10).minutes.do(run_result_sweep)
     print("  [済] 結果の後片付け(17:00-20:40・10分おき)をスケジュール登録")
 
+    # その日の予想＋結果を1行1頭で履歴に積む（2026-08-09）。
+    #   today_*.csv は翌朝上書きされるため、印ごとの成績や評価グレードの精度を
+    #   後から検証できるのはこの履歴だけ。21:00の結果照合の後に実行する。
+    schedule.every().day.at("21:10").do(run_daily_archive)
+    print("  [済] 日次アーカイブ(21:10)をスケジュール登録")
+
     schedule.every().day.at("22:30").do(_nightly_exit)
     print("  [済] 日次終了(22:30)をスケジュール登録")
 
@@ -546,6 +553,18 @@ def run_result_sweep():
         return
     if n:
         git_push(f"当日結果を更新 {datetime.now().strftime('%H:%M')}")
+
+
+def run_daily_archive():
+    """その日の予想＋結果を history_marks.csv に積んでプッシュする。"""
+    try:
+        import archive_daily
+        n = archive_daily.archive()
+    except Exception as e:
+        print(f"  日次アーカイブに失敗（続行）: {e}")
+        return
+    if n:
+        git_push(f"履歴を蓄積 {datetime.now().strftime('%m/%d')}")
 
 
 def _nightly_exit():
