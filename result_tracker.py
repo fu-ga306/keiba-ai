@@ -232,6 +232,7 @@ def update_results(date_str=None):
 
     print(f"未更新 {len(target)}レース分の結果を取得中...")
 
+    _done = 0
     for idx, row in target.iterrows():
         race_id   = str(row["race_id"])
         result_df = get_race_result(race_id)
@@ -271,6 +272,16 @@ def update_results(date_str=None):
             f"▲{row['ana']}→{a_actual}着"
         )
         time.sleep(1)
+
+        # 途中で打ち切られても進捗を残す（2026-08-10）。
+        #   週次のStep4は300秒で打ち切られる設定で、未処理が280件たまっていた。
+        #   保存がループの外だけだったため、打ち切られると1件も保存されず、
+        #   翌週また同じ280件を取りに行く——という無限ループになっていた。
+        #   毎週280回のスクレイピングを繰り返す状態は、ブロックの原因にもなる。
+        _done += 1
+        if _done % 20 == 0:
+            df.to_csv(RECORD_FILE, index=False, encoding="utf-8-sig")
+            print(f"  （途中保存: {_done}/{len(target)}件）")
 
     df.to_csv(RECORD_FILE, index=False, encoding="utf-8-sig")
     print("\n記録更新完了 → " + RECORD_FILE)

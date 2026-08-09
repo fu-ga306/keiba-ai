@@ -211,7 +211,9 @@ def main():
     run_step(
         "result_tracker update",
         [PYTHON, os.path.join(BASE_DIR, "result_tracker.py"), "update"],
-        timeout=300
+        # 2026-08-10: 300秒では未処理280件を捌けず毎週打ち切られていた。
+        # 1件あたり約1.5秒（取得＋待機）なので、溜まった分を消化できる長さにする。
+        timeout=2400
     )
     run_step(
         "result_tracker summary",
