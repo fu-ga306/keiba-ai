@@ -11,7 +11,12 @@
   ① スケジューラの心拍  … auto_predict_heartbeat.txt が更新され続けているか
   ② keiba_auto の生死   … 開催時間帯に落ちていないか
   ③ 当日データの鮮度    … 開催日なのに予想が朝から更新されていないか
-  ④ ディスクの空き
+  ④ 結果取得の進み具合  … 終了後に today_results が揃っているか
+  ⑤ 蓄積の成否         … その日の分が history_marks.csv に積まれたか
+  ⑥ ディスクの空き
+
+  ④⑤は半年かけて印を検証するための生命線。予想さえ動いていれば従来の見張り番は
+  「正常」と報告し続けるので、蓄積だけが静かに止まる事故を防げなかった。
 
 できること
   ・心拍が止まっていればタスクを再起動する（8/9に手作業でやった復旧の自動化）
@@ -187,6 +192,58 @@ def check_freshness(times):
     return None
 
 
+def check_results(times):
+    """結果の取得が進んでいるか。開催日の夕方以降だけ見る。
+
+    半年かけて印を検証するのが目的なので、蓄積が止まることが最大の事故になる。
+    ところが従来の見張り番は予想(today_predictions)の鮮度しか見ておらず、
+    結果取得が壊れても「正常」と報告し続けていた（2026-08-10に判明）。
+    today_results が空だと archive_daily が何も残さず、half年後に分析する
+    データが存在しない、という事態になる。
+    """
+    if not times:
+        return None
+    cur = datetime.now().hour * 60 + datetime.now().minute
+    last = max(times.values())
+    if cur < last + 45:          # 最終レースの確定と後片付けを待つ
+        return None
+    p = os.path.join(BASE_DIR, "today_results.csv")
+    if not os.path.exists(p):
+        return "開催日なのに today_results.csv が無い（結果取得が動いていない）"
+    try:
+        import pandas as pd
+        d = pd.read_csv(p, dtype={"race_id": str})
+        got = d["race_id"].nunique() if "race_id" in d.columns else 0
+    except Exception as e:
+        return f"today_results.csv を読めない: {str(e)[:60]}"
+    if got == 0:
+        return "結果が1レースも取れていない"
+    if got < len(times) * 0.8:
+        return f"結果取得が {got}/{len(times)}レースで止まっている"
+    return None
+
+
+def check_archive(times):
+    """その日の分が history_marks.csv に積まれたか。21:30以降に見る。"""
+    if not times:
+        return None
+    cur = datetime.now().hour * 60 + datetime.now().minute
+    if not (21 * 60 + 30 <= cur <= 22 * 60 + 20):
+        return None
+    p = os.path.join(BASE_DIR, "history_marks.csv")
+    if not os.path.exists(p):
+        return "開催日なのに history_marks.csv が無い（蓄積が始まっていない）"
+    try:
+        import pandas as pd
+        d = pd.read_csv(p, usecols=["日付"], dtype=str)
+        today = datetime.now().strftime("%Y-%m-%d")
+        if today not in set(d["日付"].astype(str)):
+            return f"{today} 分が history_marks.csv に積まれていない（蓄積が止まる）"
+    except Exception as e:
+        return f"history_marks.csv を読めない: {str(e)[:60]}"
+    return None
+
+
 def check_disk():
     import shutil
     free = shutil.disk_usage(BASE_DIR).free / (1024 ** 3)
@@ -198,7 +255,10 @@ def check_disk():
 def main():
     dry = "--dry" in sys.argv
     h = datetime.now().hour
-    quiet = h >= QUIET_HOURS[0] or h < QUIET_HOURS[1]
+    # 22時以降は通報しないのが基本だが、蓄積の失敗だけは当日中に知りたいので
+    # 22:20までは通す（22:30に常駐が落ちるとその日の分は復旧できない）。
+    quiet = (h >= QUIET_HOURS[0] or h < QUIET_HOURS[1]) and not (
+        h == 22 and datetime.now().minute <= 20)
 
     race_day, times = _is_race_day()
     problems = []
@@ -207,6 +267,8 @@ def main():
         ("heartbeat", None if quiet else check_heartbeat(dry)),
         ("keiba_auto", check_keiba_auto(times, dry) if race_day else None),
         ("freshness", check_freshness(times) if race_day else None),
+        ("results", check_results(times) if race_day else None),
+        ("archive", check_archive(times) if race_day else None),
     ]:
         if res:
             problems.append((name, res))
