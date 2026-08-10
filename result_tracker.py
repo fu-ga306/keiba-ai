@@ -34,15 +34,30 @@ def _parse_result_table(soup, race_id):
     if not rows:
         return None
     df = pd.DataFrame(rows)
+    # 見出しから列名を取る（2026-08-10）。
+    #   結果ページには確定単勝オッズと確定人気も載っている。列名を決め打ちして
+    #   先頭8列しか名前を付けていなかったため、それらを捨てていた。
+    #   予想時のオッズしか記録が無いと、検証（確定オッズで判定）と実運用
+    #   （7分前のオッズで判定）のズレを測れない。追加のアクセスなしで拾える。
+    head = [th.get_text(strip=True) for th in table.find_all("tr")[0].find_all("th")]
     col_names = ["着順", "枠番", "馬番", "馬名", "性齢", "斤量", "騎手", "タイム"]
     n = df.shape[1]
-    df.columns = (
-        col_names[:n]
-        if n <= len(col_names)
-        else col_names + list(range(n - len(col_names)))
-    )
+    if len(head) == n and head[0].startswith("着"):
+        names, seen = [], {}
+        for h in head:                      # 同名列があっても壊れないようにする
+            h = {"枠": "枠番"}.get(h, h)
+            seen[h] = seen.get(h, 0) + 1
+            names.append(h if seen[h] == 1 else f"{h}_{seen[h]}")
+        df.columns = names
+    else:
+        df.columns = (col_names[:n] if n <= len(col_names)
+                      else col_names + list(range(n - len(col_names))))
     df["着順_num"] = pd.to_numeric(df["着順"], errors="coerce")
-    df["race_id"]  = race_id
+    if "単勝オッズ" in df.columns:
+        df["確定単勝オッズ"] = pd.to_numeric(df["単勝オッズ"], errors="coerce")
+    if "人気" in df.columns:
+        df["確定人気"] = pd.to_numeric(df["人気"], errors="coerce")
+    df["race_id"] = race_id
     return df
 
 

@@ -58,10 +58,19 @@ def build(date_str=None):
     res["着順"] = pd.to_numeric(res["着順"], errors="coerce")
 
     cols = [c for c in KEEP if c in pred.columns]
-    d = pred[cols].merge(
-        res[["race_id", "馬番", "着順", "単勝", "複勝"]],
-        on=["race_id", "馬番"], how="inner",
-    )
+    rcols = ["race_id", "馬番", "着順", "単勝", "複勝"] + \
+        [c for c in ("確定単勝オッズ", "確定人気") if c in res.columns]
+    d = pred[cols].merge(res[rcols], on=["race_id", "馬番"], how="inner")
+
+    # 予想時のオッズと確定オッズのズレを残す（2026-08-10）。
+    #   予想は7分前のオッズで買う馬を決めるが、検証(bet_cache)は確定オッズで
+    #   判定している。8/9の1着馬36頭では中央値−8.8%動いており、期待値も
+    #   同じだけずれる。どちらが正しいかを後から測れるようにしておく。
+    #   「直前に買われる馬」を特徴量にする道も、この記録が前提になる。
+    if "確定単勝オッズ" in d.columns:
+        rec = pd.to_numeric(d.get("単勝オッズ"), errors="coerce")
+        fin = pd.to_numeric(d["確定単勝オッズ"], errors="coerce")
+        d["オッズ変化率"] = ((fin - rec) / rec * 100).round(1)
     if d.empty:
         print("  突き合わせ0件→スキップ")
         return None

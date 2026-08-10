@@ -68,11 +68,13 @@ def _log(msg):
 
 def _load():
     if not os.path.exists(OUT):
-        return pd.DataFrame(columns=["race_id", "馬番", "馬名", "着順", "単勝", "複勝"])
+        return pd.DataFrame(columns=["race_id", "馬番", "馬名", "着順", "単勝", "複勝",
+                                     "確定単勝オッズ", "確定人気"])
     try:
         return pd.read_csv(OUT, dtype={"race_id": str, "馬番": str})
     except Exception:
-        return pd.DataFrame(columns=["race_id", "馬番", "馬名", "着順", "単勝", "複勝"])
+        return pd.DataFrame(columns=["race_id", "馬番", "馬名", "着順", "単勝", "複勝",
+                                     "確定単勝オッズ", "確定人気"])
 
 
 def _same_venue_before(race_id, bets_or_pred):
@@ -110,7 +112,15 @@ def fetch_one(rid):
     for c in ("馬番", "馬名", "着順_num"):
         if c not in df.columns:
             return None
-    df = df[["馬番", "馬名", "着順_num"]].rename(columns={"着順_num": "着順"})
+    # 確定オッズ・確定人気も一緒に残す（2026-08-10）。
+    #   予想時のオッズ（7分前）しか記録が無いと、検証と実運用のズレを測れない。
+    #   結果ページに載っているので追加のアクセスは要らない。
+    _extra = [c for c in ("確定単勝オッズ", "確定人気") if c in df.columns]
+    df = df[["馬番", "馬名", "着順_num"] + _extra].rename(
+        columns={"着順_num": "着順"})
+    for c in ("確定単勝オッズ", "確定人気"):
+        if c not in df.columns:
+            df[c] = pd.NA
     df["race_id"] = rid
     df["馬番"] = pd.to_numeric(df["馬番"], errors="coerce").astype("Int64").astype(str)
 
@@ -132,7 +142,8 @@ def fetch_one(rid):
         _log(f"払戻取得スキップ({rid}): {str(e)[:60]}")
     df["単勝"] = df["馬番"].map(lambda b: tan.get(str(b).lstrip("0") or "0"))
     df["複勝"] = df["馬番"].map(lambda b: fuku.get(str(b).lstrip("0") or "0"))
-    return df[["race_id", "馬番", "馬名", "着順", "単勝", "複勝"]]
+    return df[["race_id", "馬番", "馬名", "着順", "単勝", "複勝",
+               "確定単勝オッズ", "確定人気"]]
 
 
 def update_for_race(race_id, pred_df=None):
