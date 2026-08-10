@@ -69,6 +69,7 @@ cd "c:\Users\別府飛河\OneDrive\デスクトップ\keiba_ai"
 | ファイル | 何が分かるか |
 |---|---|
 | `auto_predict_heartbeat.txt` | スケジューラが生きているか（**中身が現在時刻に追随していれば正常**） |
+| `history_marks.csv` | 蓄積の本体。開催日ごとに約486行増える |
 | `today_results.log` | 結果取得の記録 |
 | `watchdog.log` | 見張り番の判定履歴 |
 | `weekly_update_log.txt` | 週次更新の詳細 |
@@ -163,8 +164,48 @@ schtasks /End /TN "競馬AI自動予想"
 
 閾値2GBを切ると自動でメール警告が来て、予想は中止されます。
 
-古いモデルのバックアップが約5GBあります（`model_mf_parts.bak_0731` /
-`model_mf_parts.verified_0801`）。**片方は保険として残し、片方だけ消す**のが安全です。
+2026-08-10に約7.3GBを整理済み（重複したモデルのバックアップを削除）。
+それでも足りない場合、消してよいのは次のものです。
+
+| 消せるもの | 理由 |
+|---|---|
+| `model_mf_bt.pkl`（もし再生成されていたら） | バックテスト用。出力の `model_mf_result.csv` さえあればよい |
+| `model_mf_backup.pkl`（同上） | 学習をやり直せば作り直される |
+| `race_features.csv` | 週次のStep1で作り直される（1.3GB） |
+
+> ⚠️ **`model_mf_parts/` と `model_mf_parts.verified_0801` は消さないこと。**
+> 前者は本番が読むモデル、後者は**唯一の復旧手段**です。
+
+### 症状：モデルが壊れた（予想が出ない・読み込みエラー）
+
+本番は `model_mf_parts/` を読みます。まず完全性を確認してください。
+
+```powershell
+python -c "import pickle,os; m=pickle.load(open('model_mf_parts/meta.pkl','rb')); fs=os.listdir('model_mf_parts'); print({t: (len([f for f in fs if f.startswith(t+'_')]), n) for t,n in m['counts'].items()})"
+```
+
+`win`/`place2`/`place3` がそれぞれ **(10, 10)** ならば完全です。
+数が合わない、または `meta.pkl` が読めない場合は保険から戻します。
+
+```powershell
+Rename-Item model_mf_parts model_mf_parts.broken
+Copy-Item -Recurse model_mf_parts.verified_0801 model_mf_parts
+```
+
+`model_mf_parts/` ごと失われた場合は、`model_mf.pkl`（フォールバック）が
+あれば自動的にそちらが使われるので、予想は止まりません。
+
+### 症状：PCを再起動した
+
+- **タスク**（自動予想・見張り番・週次更新・結果照合）は**自動で復帰**します
+- **ダッシュボード**はログオン時のスタートアップで起動します。
+  ログオンしていないと立ち上がりません（蓄積には影響しません）
+
+再起動後に確認するなら、心拍が動いているかだけ見れば十分です。
+
+```powershell
+Get-Content auto_predict_heartbeat.txt
+```
 
 ---
 
