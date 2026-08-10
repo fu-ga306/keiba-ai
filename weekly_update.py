@@ -329,13 +329,24 @@ def _notify(elapsed):
     for l, ok, sec in STEP_RESULTS:
         lines.append(f"  {'○' if ok else '×'} {l}  {sec // 60}分")
     lines.append("")
-    lines.append("モデルファイルの更新日時:")
+    # モデル固定モードでは学習物が古いのは意図どおりなので、警告にしない。
+    # 「6日前のまま」と出ると、固定していることを忘れた将来の自分が
+    # 障害と誤解する（2026-08-10の実メールで実際に紛らわしかった）。
+    frozen = os.path.exists(os.path.join(BASE_DIR, "FREEZE_MODEL"))
+    lines.append("モデルファイルの更新日時:"
+                 + ("（モデル固定中。学習物が古いのは意図どおり）" if frozen else ""))
     for f in ("model.pkl", "model_mf.pkl", "mf_calibrator.pkl", "race_features.csv"):
         fp = os.path.join(BASE_DIR, f)
         if os.path.exists(fp):
             m = datetime.fromtimestamp(os.path.getmtime(fp))
             age = (datetime.now() - m).days
-            lines.append(f"  {f}: {m:%m/%d %H:%M}" + (f"  ← {age}日前のまま" if age >= 6 else ""))
+            if f == "race_features.csv":
+                note = "  ← 今日更新" if age == 0 else f"  ← {age}日前（更新されていない）"
+            elif frozen:
+                note = "  （固定中）"
+            else:
+                note = f"  ← {age}日前のまま" if age >= 6 else ""
+            lines.append(f"  {f}: {m:%m/%d %H:%M}{note}")
         else:
             lines.append(f"  {f}: 見つからない")
     if ng:
