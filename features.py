@@ -1562,6 +1562,10 @@ def add_field_relative_features(df):
 # ※相対化を導入した2026-07-31の設計漏れ。REL_BASE_COLS からこれらを外し、
 #   代わりに生の列を FEATURE_COLS_MF へ入れるのが正しい形。
 RACE_CONST_COLS = [
+    # 馬場データ（2026-08-10追加）。クッション値・含水率はレース内で全馬同じ値なので、
+    # レース内偏差は必ず0、順位も意味を持たない。相対化の対象から外す。
+    "baba_cushion", "baba_moist_goal", "baba_moist_4c",
+    "baba_moist_diff", "baba_cushion_diff",
     "クラス_num", "コース先行勝率", "コース好走相対4角", "コース差し複勝率",
     "メンバークラス平均", "メンバー賞金平均", "メンバー過去勝率平均",
     "メンバー過去勝率最大", "レース番号", "先行圧", "出走頭数", "回り_num",
@@ -1934,11 +1938,73 @@ def _run_feature_pipeline(df, use_train_snapshot=False):
     df = add_field_relative_features(df)
     df = add_speed_index_features(df)      # 2026-08-03: 速度/上り指数の過去履歴
     df = add_chokyo_features(df)           # 2026-08-06: 坂路調教（レース日より前のみ）
+    df = add_baba_features(df)             # 2026-08-10: クッション値・含水率
     df = add_rotation_weight_features(df)  # 2026-07-31: 学習専用だったものを移設
     df = add_all_relative_features(df)     # 2026-07-31: 全特徴のレース内相対化
     if "距離" in df.columns:
         df["距離"] = pd.to_numeric(df["距離"], errors="coerce")
         df["距離"] = df["距離"].fillna(df["距離"].median())
+    return df
+
+
+BABA_COLS = ["baba_cushion", "baba_moist_goal", "baba_moist_4c",
+             "baba_moist_diff", "baba_cushion_diff"]
+
+
+def add_baba_features(df, base_dir=None):
+    """JRA公表のクッション値・含水率を付ける（2026-08-10）。
+
+    なぜ必要か
+      モデルが持つ馬場情報は「良/稍重/重/不良」の4段階だけだった。同じ「良」でも
+      クッション値7.5と10.5では走破時計が別物になる。JRAが2020年から公表している
+      数値で、2021年以降は欠損ゼロ。fetch_baba.py で取得済みだったが、
+      race_features.csv に結合されておらず、モデルは一度も見ていなかった。
+
+      これまで失敗した試み（速度指数・血統・Elo・調教）は全て「馬個体の過去成績の
+      加工」だった。クッション値はレース当日の環境そのもので、質的に異なる。
+
+    芝レースには芝の値、ダートレースにはダートの含水率を入れる（is_turf で選択）。
+    クッション値は芝のみ公表なのでダートはNaNのままにする。
+    """
+    base_dir = base_dir or os.path.dirname(os.path.abspath(__file__))
+    path = os.path.join(base_dir, "baba_data.csv")
+    if not os.path.exists(path) or "race_id" not in df.columns:
+        for c in BABA_COLS:
+            df[c] = np.nan
+        return df
+    try:
+        b = pd.read_csv(path)
+    except Exception:
+        for c in BABA_COLS:
+            df[c] = np.nan
+        return df
+
+    # kaisai_key = 年(4)+場(2)+回(2)+日目(2) は race_id の先頭10桁と同じ構造
+    b["_key"] = b["kaisai_key"].astype(str)
+    keep = ["_key", "芝クッション値", "前日_芝クッション値",
+            "芝含水率ゴール前", "芝含水率4C", "ダ含水率ゴール前", "ダ含水率4C",
+            "芝含水率ゴール前_前日差", "ダ含水率ゴール前_前日差"]
+    b = b[[c for c in keep if c in b.columns]].drop_duplicates("_key")
+
+    key = df["race_id"].astype(str).str[:10]
+    m = pd.DataFrame({"_key": key.values}).merge(b, on="_key", how="left")
+
+    turf = pd.to_numeric(df.get("is_turf"), errors="coerce").to_numpy()
+    is_turf = turf == 1
+
+    cush = pd.to_numeric(m.get("芝クッション値"), errors="coerce").to_numpy()
+    cush_prev = pd.to_numeric(m.get("前日_芝クッション値"), errors="coerce").to_numpy()
+    # クッション値は芝のみ公表。ダートに入れると意味のない値になるので除く。
+    df["baba_cushion"] = np.where(is_turf, cush, np.nan)
+    df["baba_cushion_diff"] = np.where(is_turf, cush - cush_prev, np.nan)
+
+    for out, tcol, dcol in (("baba_moist_goal", "芝含水率ゴール前", "ダ含水率ゴール前"),
+                            ("baba_moist_4c", "芝含水率4C", "ダ含水率4C"),
+                            ("baba_moist_diff", "芝含水率ゴール前_前日差",
+                             "ダ含水率ゴール前_前日差")):
+        t = pd.to_numeric(m.get(tcol), errors="coerce").to_numpy()
+        d = pd.to_numeric(m.get(dcol), errors="coerce").to_numpy()
+        df[out] = np.where(is_turf, t, d)
     return df
 
 
