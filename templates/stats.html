@@ -1,0 +1,176 @@
+{% extends "base.html" %}
+{% block title %}集計 — 競馬AI予想{% endblock %}
+{% block content %}
+
+<div class="page-header">
+  <h1 class="page-title">📈 集計</h1>
+  <span class="page-date">{{ first }} 〜 {{ last }}（{{ days }}日／{{ n_race }}レース／{{ "{:,}".format(n_horse) }}頭）</span>
+</div>
+
+{% if n_race < 100 %}
+<div class="stats-note warn">
+  まだ{{ n_race }}レースです。印の優劣を判断するには300レース前後（約1ヶ月）が要ります。
+  今の数字は参考値として見てください。
+</div>
+{% endif %}
+
+<!-- 印別 -->
+<section class="section-block">
+  <h2 class="section-title">🎯 印別の成績</h2>
+  <div class="table-scroll">
+    <table class="stats-table">
+      <thead><tr><th>印</th><th>頭数</th><th>勝率</th><th>連対率</th><th>複勝率</th><th></th><th>単回収</th></tr></thead>
+      <tbody>
+        {% for m in marks %}
+        <tr>
+          <td class="stats-mark">{{ m.mark }}</td>
+          <td class="num">{{ m.n }}</td>
+          <td class="num">{{ m.win }}%</td>
+          <td class="num">{{ m.ren }}%</td>
+          <td class="num strong">{{ m.fuku }}%</td>
+          <td class="barcell"><span class="bar"><i style="width:{{ m.fuku_w }}%"></i></span></td>
+          <td class="num {{ 'pos' if m.roi >= 100 else 'neg' }}">{{ m.roi }}%</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p class="stats-note">棒は複勝率。◎から×へ単調に下がっていれば印の序列は機能しています。</p>
+</section>
+
+<!-- 評価グレード -->
+{% if grades %}
+<section class="section-block">
+  <h2 class="section-title">🏅 評価グレード（予測と実測の一致）</h2>
+  <div class="calib">
+    {% for g in grades %}
+    <div class="calib-row">
+      <span class="grade grade-{{ g.g }}">{{ g.g }}</span>
+      <span class="calib-n">{{ "{:,}".format(g.n) }}頭</span>
+      <span class="bar wide">
+        <i style="width:{{ g.act_w }}%"></i>
+        <b style="left:{{ g.pred }}%" title="AIの予測 {{ g.pred }}%"></b>
+      </span>
+      <span class="calib-val">実測 <b>{{ g.act }}%</b> / 予測 {{ g.pred }}%</span>
+    </div>
+    {% endfor %}
+  </div>
+  <p class="stats-note">
+    棒が実測の複勝率、縦線がAIの予測。<b>両者が重なっていれば確率は正しい</b>という読み方をします。
+    S→Dへ単調に下がることも確認してください。
+  </p>
+</section>
+{% endif %}
+
+<!-- 人気帯別 -->
+<section class="section-block">
+  <h2 class="section-title">💹 人気帯別</h2>
+  <div class="table-scroll">
+    <table class="stats-table">
+      <thead><tr><th>人気</th><th>頭数</th><th>勝率</th><th>複勝率</th><th></th></tr></thead>
+      <tbody>
+        {% for p in pops %}
+        <tr>
+          <td>{{ p.lbl }}</td>
+          <td class="num">{{ "{:,}".format(p.n) }}</td>
+          <td class="num">{{ p.win }}%</td>
+          <td class="num strong">{{ p.fuku }}%</td>
+          <td class="barcell"><span class="bar"><i style="width:{{ p.fuku_w }}%"></i></span></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- 収支の推移 -->
+{% if cum %}
+<section class="section-block">
+  <h2 class="section-title">💰 買い目の累積回収率</h2>
+  {% set last_roi = cum[-1].roi %}
+  <div class="stats-kpi">
+    <div class="kpi"><span class="kpi-label">累積回収率</span>
+      <span class="kpi-value {{ 'pos' if last_roi >= 100 else 'neg' }}">{{ last_roi }}%</span></div>
+    <div class="kpi"><span class="kpi-label">累積収支</span>
+      <span class="kpi-value {{ 'pos' if cum[-1].pl >= 0 else 'neg' }}">{{ "{:+,}".format(cum[-1].pl) }}円</span></div>
+    <div class="kpi"><span class="kpi-label">記録日数</span>
+      <span class="kpi-value">{{ cum|length }}日</span></div>
+  </div>
+
+  {# 折れ線。外部ライブラリを使わずSVGで描く #}
+  {% set W = 100 %}{% set H = 40 %}
+  {% set vals = cum | map(attribute='roi') | list %}
+  {% set vmax = (vals | max) %}{% set vmin = (vals | min) %}
+  {% set span = (vmax - vmin) if (vmax - vmin) > 1 else 1 %}
+  <div class="chart-wrap">
+    <svg class="linechart" viewBox="0 0 {{ W }} {{ H }}" preserveAspectRatio="none">
+      {# 100%の基準線 #}
+      {% if vmin <= 100 <= vmax %}
+      {% set y100 = H - (100 - vmin) / span * H %}
+      <line x1="0" y1="{{ y100 }}" x2="{{ W }}" y2="{{ y100 }}" class="ref100"/>
+      {% endif %}
+      <polyline class="line" points="
+        {%- for v in vals -%}
+        {{ loop.index0 / ((vals|length - 1) if vals|length > 1 else 1) * W }},{{ H - (v - vmin) / span * H }}
+        {% endfor -%}"/>
+    </svg>
+    <div class="chart-axis"><span>{{ cum[0].date }}</span><span>{{ cum[-1].date }}</span></div>
+    <div class="chart-range">縦軸 {{ vmin }}% 〜 {{ vmax }}%（横線が100%）</div>
+  </div>
+
+  <div class="table-scroll">
+    <table class="stats-table">
+      <thead><tr><th>日付</th><th>点数</th><th>的中</th><th>購入額</th><th>収支</th><th>回収率</th></tr></thead>
+      <tbody>
+        {% for b in bets %}
+        <tr>
+          <td>{{ b.date }}</td>
+          <td class="num">{{ b.n }}</td>
+          <td class="num">{{ b.hit }}</td>
+          <td class="num">{{ "{:,}".format(b.amt) }}円</td>
+          <td class="num {{ 'pos' if b.pl >= 0 else 'neg' }}">{{ "{:+,}".format(b.pl) }}</td>
+          <td class="num {{ 'pos' if b.roi >= 100 else 'neg' }}">{{ b.roi }}%</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p class="stats-note">
+    的中率8.5%の戦略なので<b>半分の月は負けます</b>。1ヶ月の回収率の中央値は94.6%と見積もっています。
+    短い期間の上下で判断しないでください。
+  </p>
+</section>
+{% endif %}
+
+<!-- オッズの動き -->
+{% if drift %}
+<section class="section-block">
+  <h2 class="section-title">📉 オッズの動き（予想時 → 確定）</h2>
+  <div class="stats-kpi">
+    <div class="kpi"><span class="kpi-label">全馬の変化 中央値</span>
+      <span class="kpi-value">{{ drift.med }}%</span></div>
+    {% if drift.win_med is not none %}
+    <div class="kpi"><span class="kpi-label">1着馬の変化 中央値</span>
+      <span class="kpi-value neg">{{ drift.win_med }}%</span></div>
+    {% endif %}
+    <div class="kpi"><span class="kpi-label">対象</span>
+      <span class="kpi-value">{{ "{:,}".format(drift.n) }}頭</span></div>
+  </div>
+  <div class="calib">
+    {% for x in drift.dist %}
+    <div class="calib-row">
+      <span class="calib-n wide-lbl">{{ x.lbl }}</span>
+      <span class="bar wide"><i style="width:{{ x.pct_w }}%"></i></span>
+      <span class="calib-val">{{ x.pct }}%（{{ "{:,}".format(x.n) }}頭）</span>
+    </div>
+    {% endfor %}
+  </div>
+  <p class="stats-note">
+    買うのは発走7分前のオッズですが、実際の払戻は確定オッズで決まります。
+    <b>勝つ馬ほど直前に買われて下がる</b>ため、ここがマイナスに寄るほど
+    検証の数字より実際の期待値は低くなります。
+  </p>
+</section>
+{% endif %}
+
+{% endblock %}

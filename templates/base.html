@@ -22,6 +22,9 @@
         <a href="{{ url_for('results') }}" class="nav-link {% if request.endpoint == 'results' %}active{% endif %}">
           <span class="nav-icon">📊</span><span class="nav-label">成績</span>
         </a>
+        <a href="{{ url_for('stats') }}" class="nav-link {% if request.endpoint == 'stats' %}active{% endif %}">
+          <span class="nav-icon">📈</span><span class="nav-label">集計</span>
+        </a>
       </nav>
     </div>
   </header>

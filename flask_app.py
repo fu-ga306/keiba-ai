@@ -7,6 +7,7 @@ import time
 from functools import lru_cache
 from io import StringIO
 
+import numpy as np
 import pandas as pd
 import requests
 from flask import Flask, render_template, redirect, url_for, request, jsonify
@@ -725,6 +726,133 @@ def results():
 
     records = df.tail(50).iloc[::-1].to_dict("records")
     return render_template("results.html", records=records, summary=summary)
+
+
+def _stats_bar(rows, key, maxv=None):
+    """棒グラフ用に幅(%)を付ける。値が全て0でも落ちないようにする。"""
+    vals = [r[key] for r in rows if r[key] is not None]
+    m = maxv or (max(vals) if vals else 0)
+    for r in rows:
+        r[key + "_w"] = round((r[key] / m * 100), 1) if (m and r[key]) else 0
+    return rows
+
+
+@app.route("/stats")
+def stats():
+    """蓄積データの集計。history_marks.csv（1行1頭）を土台にする。
+
+    このファイルは開催日ごとに追記されるので、日が経つほど精度が上がる。
+    まだ数日分しか無い時期は「参考値」と分かるように件数を必ず添える。
+    """
+    path = os.path.join(BASE_DIR, "history_marks.csv")
+    if not os.path.exists(path):
+        return render_template("error.html",
+                               msg="まだ蓄積データがありません（開催日の21:10に作られます）")
+    try:
+        d = pd.read_csv(path, dtype={"race_id": str}, low_memory=False)
+    except Exception as e:
+        return render_template("error.html", msg=f"蓄積データを読めません: {e}")
+    if d.empty:
+        return render_template("error.html", msg="蓄積データが空です")
+
+    n_race = d.groupby(["日付", "race_id"]).ngroups
+    days = sorted(d["日付"].astype(str).unique())
+
+    # ── 印別 ──────────────────────────────────────────────
+    marks = []
+    for m in ("◎", "○", "▲", "△", "×"):
+        s = d[d["推奨ランク"] == m]
+        if not len(s):
+            continue
+        tan = pd.to_numeric(s.loc[s["1着"] == 1, "単勝"], errors="coerce").fillna(0).sum()
+        marks.append({"mark": m, "n": len(s),
+                      "win": round(s["1着"].mean() * 100, 1),
+                      "ren": round(s["2着内"].mean() * 100, 1),
+                      "fuku": round(s["3着内"].mean() * 100, 1),
+                      "roi": round(tan / (len(s) * 100) * 100, 1) if len(s) else 0})
+    _stats_bar(marks, "fuku", 100)
+
+    # ── 評価グレード別（予測と実測の突き合わせ）──────────────
+    grades = []
+    if {"勝ち確率", "連対確率", "複勝確率"} <= set(d.columns):
+        sc = (pd.to_numeric(d["勝ち確率"], errors="coerce")
+              + pd.to_numeric(d["連対確率"], errors="coerce")
+              + pd.to_numeric(d["複勝確率"], errors="coerce"))
+        d["_score"] = sc
+        d["_grade"] = np.select([sc >= 1.05, sc >= 0.80, sc >= 0.58, sc >= 0.36],
+                                ["S", "A", "B", "C"], "D")
+        for g in "SABCD":
+            s = d[d["_grade"] == g]
+            if not len(s):
+                continue
+            grades.append({"g": g, "n": len(s),
+                           "act": round(s["3着内"].mean() * 100, 1),
+                           "pred": round(pd.to_numeric(s["複勝確率"],
+                                                       errors="coerce").mean() * 100, 1),
+                           "win": round(s["1着"].mean() * 100, 1)})
+        _stats_bar(grades, "act", 100)
+
+    # ── 人気帯別 ──────────────────────────────────────────
+    pops, pv = [], pd.to_numeric(d.get("人気"), errors="coerce")
+    for lo, hi, lbl in [(1, 1, "1番人気"), (2, 3, "2-3"), (4, 5, "4-5"),
+                        (6, 7, "6-7"), (8, 10, "8-10"), (11, 99, "11番人気〜")]:
+        s = d[(pv >= lo) & (pv <= hi)]
+        if not len(s):
+            continue
+        pops.append({"lbl": lbl, "n": len(s),
+                     "win": round(s["1着"].mean() * 100, 1),
+                     "fuku": round(s["3着内"].mean() * 100, 1)})
+    _stats_bar(pops, "fuku", 100)
+
+    # ── 買い目の収支（bets_result_log.csv）──────────────────
+    bets, cum = [], []
+    bp = os.path.join(BASE_DIR, "bets_result_log.csv")
+    if os.path.exists(bp):
+        try:
+            b = pd.read_csv(bp)
+            dc = next((c for c in b.columns if "日" in c), None)
+            tot = b[b["買い方"].astype(str).str.contains("合計")] if "買い方" in b else b
+            if dc and len(tot):
+                tot = tot.sort_values(dc)
+                run_in = run_out = 0.0
+                for _, r in tot.iterrows():
+                    run_in += float(r.get("購入額", 0) or 0)
+                    run_out += float(r.get("購入額", 0) or 0) + float(r.get("収支", 0) or 0)
+                    cum.append({"date": str(r[dc])[-5:],
+                                "roi": round(run_out / run_in * 100, 1) if run_in else 0,
+                                "pl": int(run_out - run_in)})
+                for _, r in tot.tail(12).iterrows():
+                    bets.append({"date": str(r[dc])[-5:],
+                                 "n": int(r.get("点数", 0) or 0),
+                                 "hit": int(r.get("的中数", 0) or 0),
+                                 "amt": int(r.get("購入額", 0) or 0),
+                                 "pl": int(r.get("収支", 0) or 0),
+                                 "roi": round(float(r.get("回収率", 0) or 0), 1)})
+        except Exception:
+            pass
+
+    # ── オッズの動き（予想時 → 確定）────────────────────────
+    drift = None
+    if "オッズ変化率" in d.columns:
+        v = pd.to_numeric(d["オッズ変化率"], errors="coerce").dropna()
+        if len(v):
+            w = pd.to_numeric(d.loc[d["1着"] == 1, "オッズ変化率"], errors="coerce").dropna()
+            bins = [(-999, -20, "−20%超 下落"), (-20, -5, "−20〜−5%"),
+                    (-5, 5, "ほぼ変わらず"), (5, 20, "+5〜20%"), (20, 999, "+20%超 上昇")]
+            dist = []
+            for lo, hi, lbl in bins:
+                s = v[(v >= lo) & (v < hi)]
+                dist.append({"lbl": lbl, "n": len(s),
+                             "pct": round(len(s) / len(v) * 100, 1)})
+            _stats_bar(dist, "pct")
+            drift = {"n": len(v), "med": round(v.median(), 1),
+                     "win_med": round(w.median(), 1) if len(w) else None,
+                     "dist": dist}
+
+    return render_template("stats.html", n_race=n_race, n_horse=len(d),
+                           days=len(days), first=days[0], last=days[-1],
+                           marks=marks, grades=grades, pops=pops,
+                           bets=list(reversed(bets)), cum=cum, drift=drift)
 
 
 @app.route("/api/refresh")
