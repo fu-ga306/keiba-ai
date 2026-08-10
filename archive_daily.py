@@ -39,12 +39,33 @@ KEEP = [
 ]
 
 
+def _is_today(path):
+    """そのファイルが今日書かれたものか。"""
+    try:
+        return datetime.fromtimestamp(os.path.getmtime(path)).date() == \
+            datetime.now().date()
+    except Exception:
+        return False
+
+
 def build(date_str=None):
     """今日の予想と結果を突き合わせた1行1頭のDataFrameを返す。"""
     p = os.path.join(BASE_DIR, "today_predictions.csv")
     r = os.path.join(BASE_DIR, "today_results.csv")
     if not (os.path.exists(p) and os.path.exists(r)):
         print("  予想または結果のファイルが無い→スキップ")
+        return None
+
+    # 非開催日には積まない（2026-08-10追加）。
+    #   このジョブは毎日21:10に無条件で動く。today_*.csv は開催日にしか
+    #   書き換わらないので、ガードが無いと前回の開催日のデータを
+    #   「今日の分」として毎晩積み直してしまう。半年で同じレースが数十回
+    #   重複し、蓄積データが分析に使えなくなる。
+    #   （同じ性質の事故が analyze_accuracy で実際に起きている: 8/2の結果が
+    #     8/3・8/4にも記録された。日付ガードで直した経緯がある）
+    #   date_str を明示したとき（過去分の再作成）はこの判定を通さない。
+    if date_str is None and not (_is_today(p) and _is_today(r)):
+        print("  当日のデータではない（非開催日）→スキップ")
         return None
 
     pred = pd.read_csv(p, dtype={"race_id": str})

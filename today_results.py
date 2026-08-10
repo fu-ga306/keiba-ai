@@ -189,8 +189,21 @@ def update_for_race(race_id, pred_df=None):
 
 # ── B) 後片付け（レース終了後に残りを回収） ──────────────────────────────
 def _race_times():
-    """{race_id: 発走の分(0-1439)}。setup_schedule が書き出す。"""
+    """{race_id: 発走の分(0-1439)}。setup_schedule が書き出す。
+
+    今日書かれたものでなければ空を返す（2026-08-10追加）。
+    このファイルは開催日にしか更新されないので、非開催日には前回の開催日の
+    時刻が残る。鮮度を見ないと sweep が「前回のレースがまだ取れていない」と
+    判断して取りに行きうる。取得済みなら実害は出ないが、today_results.csv が
+    何かの拍子に消えていると、非開催日に過去レースを取りに行くことになる。
+    """
     if not os.path.exists(TIMES):
+        return {}
+    try:
+        if datetime.fromtimestamp(os.path.getmtime(TIMES)).date() != \
+                datetime.now().date():
+            return {}
+    except Exception:
         return {}
     try:
         with open(TIMES, encoding="utf-8") as f:
