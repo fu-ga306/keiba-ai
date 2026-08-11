@@ -13,7 +13,8 @@
   ③ 当日データの鮮度    … 開催日なのに予想が朝から更新されていないか
   ④ 結果取得の進み具合  … 終了後に today_results が揃っているか
   ⑤ 蓄積の成否         … その日の分が history_marks.csv に積まれたか
-  ⑥ ディスクの空き
+  ⑥ オッズ記録         … odds_history に今日の分と時間軸(分前)が入ったか
+  ⑦ ディスクの空き
 
   ④⑤は半年かけて印を検証するための生命線。予想さえ動いていれば従来の見張り番は
   「正常」と報告し続けるので、蓄積だけが静かに止まる事故を防げなかった。
@@ -223,6 +224,37 @@ def check_results(times):
     return None
 
 
+def check_odds_history(times):
+    """オッズ記録が今日の分も貯まっているか。開催日の夕方以降に見る。
+
+    1年後にオッズ変動を特徴量にするための唯一の材料。記録が止まっても
+    予想は動き続けるので、見張っていないと沈黙したまま欠落する（2026-08-11追加）。
+    発走時刻・分前が入っているかも確認する。ここが空だと時間軸が作れず、
+    貯まっていても使い物にならない。
+    """
+    if not times:
+        return None
+    cur = datetime.now().hour * 60 + datetime.now().minute
+    if cur < max(times.values()) + 45:
+        return None
+    p = os.path.join(BASE_DIR, "odds_history.csv")
+    if not os.path.exists(p):
+        return "開催日なのに odds_history.csv が無い"
+    try:
+        import pandas as pd
+        d = pd.read_csv(p, dtype={"race_id": str})
+        today = set(times.keys())
+        got = set(d["race_id"].astype(str)) & today
+        if len(got) < len(today) * 0.8:
+            return f"オッズ記録が {len(got)}/{len(today)}レースしかない"
+        s = d[d["race_id"].astype(str).isin(today)]
+        if "分前" not in s.columns or s["分前"].astype(str).str.strip().eq("").mean() > 0.5:
+            return "オッズ記録に発走時刻・分前が入っていない（時間軸が作れない）"
+    except Exception as e:
+        return f"odds_history.csv を読めない: {str(e)[:60]}"
+    return None
+
+
 def check_archive(times):
     """その日の分が history_marks.csv に積まれたか。21:30以降に見る。"""
     if not times:
@@ -269,6 +301,7 @@ def main():
         ("freshness", check_freshness(times) if race_day else None),
         ("results", check_results(times) if race_day else None),
         ("archive", check_archive(times) if race_day else None),
+        ("odds_history", check_odds_history(times) if race_day else None),
     ]:
         if res:
             problems.append((name, res))

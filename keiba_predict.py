@@ -75,7 +75,42 @@ def record_odds_snapshot(pdf, race_id):
             return  # オッズ未取得なら記録しない（NaN行で汚さない）
         snap = pdf[cols].copy()
         snap.insert(0, "race_id", str(race_id))
-        snap["記録時刻"] = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
+        now = datetime.now()
+        snap["記録時刻"] = now.strftime("%Y/%m/%d %H:%M:%S")
+
+        # 発走時刻と「何分前か」を一緒に残す（2026-08-11追加）。
+        #   これが無いと、後から「発走30分前→10分前で何%動いたか」を計算できない。
+        #   発走時刻は today_race_times.json にあるが毎朝上書きされるため、
+        #   ここで各行に埋め込んでおかないと時間軸の原点が永久に失われる。
+        #   1年後にオッズ変動を特徴量にするとき、これが無いと下落スピードを作れない。
+        mins = post = ""
+        try:
+            import json
+            _p = os.path.join(BASE_DIR, "today_race_times.json")
+            if os.path.exists(_p):
+                with open(_p, encoding="utf-8") as f:
+                    _t = json.load(f)
+                v = _t.get(str(race_id))
+                if v is not None:
+                    post = f"{int(v) // 60:02d}:{int(v) % 60:02d}"
+                    mins = int(v) - (now.hour * 60 + now.minute)
+        except Exception:
+            pass
+        snap["発走時刻"] = post
+        snap["分前"] = mins
+        # どのジョブが記録したか。朝・40分前・7分前で性質が違うため区別する。
+        # 分前が負（＝発走後）や不明のときは「不明」にする。誤ったラベルを
+        # 付けると、後の分析で時間軸を取り違える。
+        if mins == "":
+            snap["ジョブ"] = "不明"
+        elif mins < 0:
+            snap["ジョブ"] = "発走後"
+        elif mins > 60:
+            snap["ジョブ"] = "朝"
+        elif mins > 20:
+            snap["ジョブ"] = "40分前"
+        else:
+            snap["ジョブ"] = "直前"
         path = os.path.join(BASE_DIR, "odds_history.csv")
         snap.to_csv(path, mode="a", header=not os.path.exists(path),
                     index=False, encoding="utf-8-sig")
