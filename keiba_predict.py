@@ -236,6 +236,60 @@ def _calibrate(values, target: str):
         return values
 
 
+# ── 2次元較正（購入判定専用）──────────────────────────────────────────────
+#   なぜ必要か（2026-08-12）
+#     5年 walk-forward OOF 207,518頭で、EVと実払戻の順位相関が5年とも負だった。
+#     EVが高い馬ほど損をする。EV = p × オッズ なので、オッズが大きい側でpが
+#     過大だとEVは二重に膨らみ、そこだけを選ぶと誤差の上側の裾を集めてしまう。
+#     本番ルール該当馬は 予測18.0% / 実勝率6.8%、実効EV 0.95で赤字が確定していた。
+#     上の1次元Isotonicは全馬まとめた較正なのでこれを直せない。
+#
+#   ⚠ この値を印・★・順位・S〜D評価に使ってはいけない。
+#     市場に約9〜33倍の重みが付くため、MF順位が人気順のコピーになる
+#     （順位相関0.9924）。5年で★が4,507頭→19頭に消え、市場フリーという
+#     設計そのものが壊れる。用途は「購入判定と実効EVの表示」だけ。
+_CALIB2D = None
+_CALIB2D_LOADED = False
+
+
+def _calibrate2d(model_p, odds):
+    """市場確率を織り込んだ勝率を返す。較正器もオッズも無ければ None。
+
+    model_p はレース内で正規化済みのMF勝率、odds は単勝オッズ。
+    戻り値もレース内で正規化して返す。
+    """
+    global _CALIB2D, _CALIB2D_LOADED
+    if not _CALIB2D_LOADED:
+        _CALIB2D_LOADED = True
+        try:
+            import pickle
+            with open(os.path.join(BASE_DIR, "mf_calib2d.pkl"), "rb") as fh:
+                _CALIB2D = pickle.load(fh)
+            print("  2次元較正器を読込（{}〜{} / {:,}頭）".format(
+                _CALIB2D["years"][0], _CALIB2D["years"][-1], _CALIB2D["n"]))
+        except FileNotFoundError:
+            print("  2次元較正器なし（実効EVは出しません。build_calib2d.pyで作成できます）")
+        except Exception as e:
+            print(f"  2次元較正器の読込に失敗（実効EVは出しません）: {e}")
+    if not _CALIB2D:
+        return None
+    try:
+        p = np.clip(np.asarray(model_p, dtype=float), 1e-6, 1 - 1e-6)
+        o = np.asarray(odds, dtype=float)
+        if not np.isfinite(o).all() or (o <= 1).any():
+            return None            # オッズ未取得。市場確率が作れないので出さない
+        m = (1.0 / o) / (1.0 / o).sum()
+        m = np.clip(m, 1e-6, 1 - 1e-6)
+        lp, lm = np.log(p / (1 - p)), np.log(m / (1 - m))
+        c, b = _CALIB2D["coef"], _CALIB2D["intercept"]
+        z = b + c[0] * lp + c[1] * lm + c[2] * lp * lm
+        q = 1.0 / (1.0 + np.exp(-z))
+        return q / q.sum() if q.sum() > 0 else None
+    except Exception as e:
+        print(f"  2次元較正の適用に失敗（実効EVは出しません）: {e}")
+        return None
+
+
 def kelly_fraction(win_prob: float, odds: float, fraction: float = 0.25) -> float:
     if odds <= 1 or win_prob <= 0:
         return 0.0
@@ -687,10 +741,17 @@ def build_report(pdf, race_id, jyo_name, race_no,
             f"  勝率{wp*100:.1f}%  EV{_ev(ev)}"
             f"  総合{score:.0f}点"
         )
+        # 実効EV＝市場を織り込んだ期待値。上のEVは市場フリーの見立てなので、
+        # 両方を並べる。差が大きいほど市場と割れている＝危ない、と読む。
+        _ev2 = pd.to_numeric(row.get("実効EV"), errors="coerce")
+        if pd.notna(_ev2):
+            _judge = "買い" if _ev2 >= EV_MIN_TOP else "見送り"
+            lines.append(f"  │           実効EV {_ev2:.2f}（市場織込）→ {_judge}")
         if tag_s:
             lines.append(f"  │           {tag_s}")
         if i == 0:
             lines.append("  │  [見方] ★=市場より高評価。★◎は複勝、★○は単勝を買う")
+            lines.append("  │         実効EV=市場を織り込んだ期待値。1.0未満は買うと損")
         if i < 4:
             lines.append("  ├─────────────────────────────────────────────────────────┤")
     lines.append("  └─────────────────────────────────────────────────────────┘")
@@ -1155,6 +1216,16 @@ def predict_race_pdf(race_id: str, *, history_df: pd.DataFrame, models_pack: dic
             pdf["MF勝ち確率"] = mf_raw / mf_raw.sum() if mf_raw.sum() > 0 else np.ones(len(mf_raw)) / len(mf_raw)
             # EV を MF勝ち確率ベースで上書き（通常モデルの暫定値を置き換え）
             pdf["単勝期待値"] = pdf["MF勝ち確率"] * pdf["単勝オッズ"] - 1
+            # 2次元較正（購入判定専用の別列）。印・★・順位・評価には使わない。
+            #   単勝期待値は「市場フリーの見立て」、実効EVは「市場を織り込んだ値」。
+            #   両方を出して並べる。差が大きいほど市場と割れている＝危ない。
+            pdf["較正後勝率"] = np.nan
+            pdf["実効EV"] = np.nan
+            _q2 = _calibrate2d(pdf["MF勝ち確率"].to_numpy(),
+                               pd.to_numeric(pdf["単勝オッズ"], errors="coerce").to_numpy())
+            if _q2 is not None:
+                pdf["較正後勝率"] = _q2
+                pdf["実効EV"] = _q2 * pd.to_numeric(pdf["単勝オッズ"], errors="coerce")
             print("  市場フリー予測成功")
         except Exception as e:
             print(f"  市場フリー予測エラー（スキップ）: {e}")
@@ -1494,6 +1565,7 @@ def predict_race_pdf(race_id: str, *, history_df: pd.DataFrame, models_pack: dic
             "馬体重", "体重増減",
             "勝ち確率", "連対確率", "複勝確率", "3着内確率",
             "単勝期待値", "推奨賭け率",
+            "較正後勝率", "実効EV",   # 2026-08-12: 市場を織り込んだ購入判定用の値
             "乖離スコア", "MF予測順位", "MF勝ち確率", "MF複勝率", "MF複勝順位",
             "該当戦略", "推奨ランク", "総合スコア", "券種推奨", "妙味軸",
             "妙味", "乖離",   # 2026-07-31: ★判定と市場との評価差（メール/ダッシュボード用）
@@ -1768,8 +1840,18 @@ def _race_bet_plan(pdf):
         _mr = pd.to_numeric(pdf.get("MF複勝順位"), errors="coerce")
         _gap = pd.to_numeric(pdf["乖離"], errors="coerce")
         _od = pd.to_numeric(pdf["単勝オッズ"], errors="coerce")
-        # 単勝期待値は「確率×オッズ−1」で保持しているのでEVに戻す
-        _ev = pd.to_numeric(pdf["単勝期待値"], errors="coerce") + 1.0
+        # 判定は2次元較正した実効EVで行う（2026-08-12）。
+        #   従来はMF勝ち確率×オッズで判定していたが、5年OOF 207,518頭で
+        #   EVと実払戻の順位相関が5年とも負だった（EVが高い馬ほど損をする）。
+        #   本番ルール該当馬の実効EVは0.95で、赤字が構造的に確定していた。
+        #   閾値(1.7/2.2)は意図的に据え置く。較正が正しければ該当馬は出なくなり、
+        #   出た場合は真の異常値（バグか歴史的なオッズの歪み）として検知できる。
+        #   実効EVが作れない＝オッズ未取得なので、その場合は買わない。
+        if "実効EV" in pdf.columns and pdf["実効EV"].notna().any():
+            _ev = pd.to_numeric(pdf["実効EV"], errors="coerce")
+        else:
+            plan.update({"指数": 30, "理由": "実効EV未算出（オッズ未取得）のため見送り"})
+            return plan
         _hit = ((_gap >= EV_GAP_MIN) & (_od <= EV_ODDS_MAX) &
                 (((_mr == 1) & (_ev >= EV_MIN_TOP)) |
                  (_mr.between(2, 5) & (_ev >= EV_MIN_SUB))))
