@@ -128,7 +128,11 @@ def evaluate(te, pay, turf=None):
 
 def main():
     print("特徴量を読み込み中...", flush=True)
-    df = pd.read_csv(os.path.join(BASE_DIR, "race_features.csv"), low_memory=False)
+    # race_id は必ず文字列で読む（2026-08-11）。
+    #   dtype指定を忘れると int64 になり、払戻表（文字列キー）と一致せず
+    #   「的中0本」という無言の失敗になる。実際に一度これで結果が全滅した。
+    df = pd.read_csv(os.path.join(BASE_DIR, "race_features.csv"), low_memory=False,
+                     dtype={"race_id": str})
     df = add_race_rank_features(df)
     df["年"] = df["race_id"].astype(str).str[:4].astype(int)
     cols = [c for c in FEATURE_COLS_MF if c in df.columns]
