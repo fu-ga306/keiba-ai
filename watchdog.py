@@ -265,14 +265,52 @@ def check_archive(times):
     p = os.path.join(BASE_DIR, "history_marks.csv")
     if not os.path.exists(p):
         return "開催日なのに history_marks.csv が無い（蓄積が始まっていない）"
+
+    def _retry():
+        """積まれていなければ自分で積み直す（2026-08-11追加）。
+        通報だけだと人が動くまで欠落したままになる。22:30に常駐が落ちると
+        その日の分は永久に失われるので、検知した時点で自動でやり直す。"""
+        try:
+            sys.path.insert(0, BASE_DIR)
+            import importlib
+            import archive_daily
+            importlib.reload(archive_daily)
+            n = archive_daily.archive()
+            log(f"  日次アーカイブを自動で再実行 → {n}レース")
+            return bool(n)
+        except Exception as e:
+            log(f"  日次アーカイブの再実行に失敗: {str(e)[:70]}")
+            return False
     try:
         import pandas as pd
         d = pd.read_csv(p, usecols=["日付"], dtype=str)
         today = datetime.now().strftime("%Y-%m-%d")
         if today not in set(d["日付"].astype(str)):
-            return f"{today} 分が history_marks.csv に積まれていない（蓄積が止まる）"
+            if _retry():                      # 自力で直せたら通報しない
+                return None
+            return f"{today} 分が history_marks.csv に積まれていない（自動再実行も失敗）"
     except Exception as e:
         return f"history_marks.csv を読めない: {str(e)[:60]}"
+    return None
+
+
+def check_fallback():
+    """MFが読めず通常モデルに落ちた形跡がないか（2026-08-11追加）。
+
+    フォールバックしても予想は出てしまうので、黙って劣化する。
+    半年間これが立たなければ通常モデル(511MB)を撤去できる。
+    """
+    p = os.path.join(BASE_DIR, "fallback_triggered.flag")
+    if not os.path.exists(p):
+        return None
+    try:
+        lines = [l for l in open(p, encoding="utf-8") if l.strip()]
+        today = datetime.now().strftime("%Y-%m-%d")
+        hit = [l for l in lines if l.startswith(today)]
+        if hit:
+            return f"MFモデルが読めず通常モデルに落ちている: {hit[-1].strip()[:80]}"
+    except Exception:
+        pass
     return None
 
 
@@ -302,6 +340,7 @@ def main():
         ("results", check_results(times) if race_day else None),
         ("archive", check_archive(times) if race_day else None),
         ("odds_history", check_odds_history(times) if race_day else None),
+        ("fallback", check_fallback()),
     ]:
         if res:
             problems.append((name, res))

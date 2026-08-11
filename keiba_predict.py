@@ -65,6 +65,24 @@ def read_pred_csv(path, **kw):
     return df
 
 
+def _mark_fallback(reason):
+    """MFが読めず通常モデルに落ちたことを記録する（2026-08-11追加）。
+
+    通常モデル(model.pkl・511MB)は現在フォールバック専用で、印にも買い判定にも
+    使われていない。半年間このフラグが一度も立たなければ撤去できる、という
+    判断材料にする。同時に、MFが壊れていることに気づく手段でもある
+    （フォールバックしても予想自体は出てしまうので、黙って劣化する）。
+    """
+    try:
+        with open(os.path.join(BASE_DIR, "fallback_triggered.flag"), "a",
+                  encoding="utf-8") as f:
+            f.write("{}\t{}\n".format(
+                datetime.now().strftime("%Y-%m-%d %H:%M:%S"), reason))
+        print(f"  ⚠ 通常モデルにフォールバックしました: {reason}")
+    except Exception:
+        pass
+
+
 def record_odds_snapshot(pdf, race_id):
     """予想実行の都度、現時点のオッズ/人気を odds_history.csv に追記（重複除去せず時系列蓄積）。
     朝・発走40分前・直前の各実行で自然に貯まり、後日「オッズ変動（金の流れ）」特徴の材料になる。
@@ -2191,8 +2209,10 @@ def predict_race(race_id: str, send_mail: bool = True):
         except Exception as e:
             print(f"  市場フリーモデルスキップ: {e}")
             models_pack["mf"] = None
+            _mark_fallback(f"MFの読込に失敗: {str(e)[:120]}")
     else:
         models_pack["mf"] = None
+        _mark_fallback("model_mf_parts/ も model_mf.pkl も見つからない")
 
     # ── 履歴データ読み込み
     print("履歴データ読み込み中...")

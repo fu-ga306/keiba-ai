@@ -1143,6 +1143,15 @@ def run_single_race(race_id, history_df, models_pack):
     try:
         from keiba_predict import predict_race_pdf
         pdf = predict_race_pdf(race_id, history_df=history_df, models_pack=models_pack)
+        # 複勝オッズについて（2026-08-11調査）
+        #   odds_history に「複勝オッズ_min」の列を用意したが、実際には1行も
+        #   入っていなかった。理由は取得と記録の担当がずれているため。
+        #     取得: keiba_auto の build_race_card 系（b2ページを取りに行く）
+        #     記録: keiba_predict.record_odds_snapshot（pdf にある列しか見ない）
+        #   7分前ジョブ(run_single_race)は複勝オッズを取得していないので、
+        #   ここで載せるには**追加のスクレイピングが必要**になる。
+        #   IP負荷を増やさない方針を優先し、複勝オッズの記録は見送る。
+        #   単複の乖離を見たくなったら、JV-Link(fuku_odds.csv)から後付けする。
     except Exception as e:
         import traceback
         print(f"  予測エラー: {e}")
