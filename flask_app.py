@@ -177,9 +177,11 @@ def enrich_group(group: pd.DataFrame) -> list[dict]:
         sig_label, sig_cls = SIGNAL_MAP.get(rank, ("穴・ヒモ", "yosomi"))
         d["signal_label"] = sig_label
         d["signal_cls"] = sig_cls
-        # ★＝市場より高く評価している馬（乖離+3以上・20倍以下）。買いの対象。
-        # 2026-07-31: 3年OOSで ★の◎○▲ は単勝97.3%／★なしの◎は83.1%。
-        d["is_star"] = str(d.get("妙味", "")) == "★"
+        # 2026-08-13: ★表示を廃止。乖離が大きいほどモデルが外すと検証で判明した
+        # （実勝率/予測の比は 乖離0未満1.40 / 3-6で0.43 / 6以上で0.27）。
+        # 較正を正すと差自体が消えるので、★は実体ではなく較正の歪みの裏返しだった。
+        # 列は蓄積の連続性のため残すが、画面では強調しない。
+        d["is_star"] = False
         _gap = pd.to_numeric(d.get("乖離"), errors="coerce")
         d["gap"] = f"{_gap:+.0f}" if pd.notna(_gap) else ""
         d["gap_val"] = float(_gap) if pd.notna(_gap) else -99

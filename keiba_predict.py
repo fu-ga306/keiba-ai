@@ -560,7 +560,7 @@ def build_report(pdf, race_id, jyo_name, race_no,
 
     lines += rec_block(
         "AI予想 印（◎○▲△×）", "[AI]", top5_ai,
-        "市場フリーモデルの3着内予測順。★=市場より高評価(乖離+3以上/20倍以下)＝買い対象。"
+        "市場フリーモデルの3着内予測順。乖離=人気順位との差（参考値・買いには使わない）。"
     )
     lines += rec_block(
         "安定高評価 TOP5", "[安定]", top5_ev,
@@ -731,8 +731,9 @@ def build_report(pdf, race_id, jyo_name, race_no,
         pop_s  = f"{int(pop)}人気" if pd.notna(pop) else "-"
         tag_s  = " / ".join(tag)
 
-        # ★＝市場より高く評価している馬（乖離+3以上・20倍以下）。買いの対象。
-        _star = "★" if str(row.get("妙味", "")) == "★" else "　"
+        # 2026-08-13: ★表示を廃止（乖離が大きいほど外すと検証で判明したため）。
+        # 乖離の数値だけは市場との評価差を見る参考として残す。
+        _star = "　"
         _gap = pd.to_numeric(row.get("乖離"), errors="coerce")
         _gap_s = f" 乖離{_gap:+.0f}" if pd.notna(_gap) and abs(_gap) >= 1 else ""
         lines.append(
@@ -750,48 +751,49 @@ def build_report(pdf, race_id, jyo_name, race_no,
         if tag_s:
             lines.append(f"  │           {tag_s}")
         if i == 0:
-            lines.append("  │  [見方] ★=市場より高評価。★◎は複勝、★○は単勝を買う")
+            lines.append("  │  [見方] 乖離=人気順位−モデル複勝順位。市場との評価差（参考）")
             lines.append("  │         実効EV=市場を織り込んだ期待値。1.0未満は買うと損")
         if i < 4:
             lines.append("  ├─────────────────────────────────────────────────────────┤")
     lines.append("  └─────────────────────────────────────────────────────────┘")
     lines.append("")
     # 検証要約（2026-07-31改訂・市場フリーMF＋妙味方式・2023-2025の3年OOS）
-    lines.append("  [検証] 市場フリーMF＋妙味★方式（2023-2025の3年・実払戻）")
-    lines.append("  ◎複勝率 62.4/64.4/62.8%（3年平均63%）・1-3着カバー 2.06-2.10頭")
-    lines.append("  ★◎の複勝112.9% / ★○の単勝100.3% ・ 年約700点")
-    lines.append("  ※★▲は3年とも劣る(88.4%・2024は69.7%)ため買わない")
-    lines.append("  【鉄則】★◎は複勝、★○は単勝。★無しは見送り(全体の66%)")
+    lines.append("  [検証] 複勝方式（2021-2025の5年OOS・実払戻）")
+    lines.append("  1900m以上×MF複勝1位×20倍以下×4番人気以下 → 複勝1点")
+    lines.append("  230点・的中103本(44.8%)・回収率105.2%・95%区間[89.8,120.7]")
+    lines.append("  ※下限が100%を割っており、黒字が確定したわけではない")
     lines.append("")
 
-    # ── 購入する馬（★の◎○▲）──────────────────────────────────────
-    # 2026-07-31: 旧「券種推奨（3モデル判定）」は主モデル基準で軸を選んでおり、
-    #   印(市場フリーMF)と別の馬を「軸◎」として出す不整合があった（デモで発覚）。
-    #   実際に買う馬＝★の付いた◎○▲ をそのまま出す形に置き換え。
-    _buy = pdf[(pdf.get("妙味", pd.Series("", index=pdf.index)) == "★")
-               & (pdf["印"].isin(MYOMI_MARKS))] if "印" in pdf.columns \
-        else pdf.iloc[0:0]
+    # ── 購入する馬（複勝方式）────────────────────────────────────────
+    # 2026-08-13: ★方式・EV方式を廃止し、複勝方式に一本化。
+    #   ★（乖離+3以上）は検証で否定された。乖離が大きいほどモデルの予測が外れ、
+    #   実勝率/予測の比は 乖離0未満1.40 / 3-6で0.43 / 6以上で0.27。
+    #   さらに2次元較正で正しく較正すると差自体が消えた（全帯0.99〜1.11）。
+    #   ★の優位は実体ではなく、較正の歪みの裏返しだった。
+    _dist_v = pd.to_numeric(pdf.get("距離"), errors="coerce")
+    _dist_v = float(_dist_v.dropna().iloc[0]) if _dist_v.notna().any() else np.nan
+    _buy = pdf[(pd.to_numeric(pdf.get("MF複勝順位"), errors="coerce") == 1)
+               & (pd.to_numeric(pdf.get("単勝オッズ"), errors="coerce") <= FUKU_ODDS_MAX)
+               & (pd.to_numeric(pdf.get("人気"), errors="coerce") >= FUKU_POP_MIN)] \
+        if pd.notna(_dist_v) and _dist_v >= FUKU_DIST_MIN else pdf.iloc[0:0]
     lines.append(header("[購入する馬]", "─"))
     if len(_buy) == 0:
-        n_star = int((pdf.get("妙味", pd.Series("", index=pdf.index)) == "★").sum())
-        lines.append(f"  見送り（★の◎○▲なし。★は{n_star}頭）")
-        lines.append("  ※市場と評価が割れた馬がいないレースは買わない。全体の約66%が見送り。")
+        if pd.notna(_dist_v) and _dist_v < FUKU_DIST_MIN:
+            lines.append(f"  見送り（{int(_dist_v)}m。複勝方式は{FUKU_DIST_MIN}m以上が対象）")
+        else:
+            lines.append("  見送り（MF複勝1位が20倍以下かつ4番人気以下に該当せず）")
+        lines.append("  ※該当は年46点程度（週1点弱）。ほとんどのレースは見送りになる。")
     else:
-        lines.append("  ★＝市場より高く評価（乖離+3以上・20倍以下）。")
-        lines.append("  印ごとに券種を変える：★◎は複勝（3年112.9%）／★○は単勝（100.3%）。")
-        lines.append("")
         for _, row in _buy.iterrows():
-            odds = row.get("単勝オッズ", np.nan)
-            pop = row.get("人気", np.nan)
-            gap = pd.to_numeric(row.get("乖離"), errors="coerce")
-            kinds = "・".join(MYOMI_BETS.get(row["印"], ()))
+            odds = pd.to_numeric(row.get("単勝オッズ"), errors="coerce")
+            pop = pd.to_numeric(row.get("人気"), errors="coerce")
             lines.append(
-                f"  ★{row['印']} 馬番{int(row['馬番']):>2} {str(row['馬名']):<12} "
+                f"  複勝 馬番{int(row['馬番']):>2} {str(row['馬名']):<12} "
                 f"{(f'{odds:.1f}倍' if pd.notna(odds) else '未確定'):>7} "
-                f"{(f'{int(pop)}人気' if pd.notna(pop) else '-'):>5} "
-                f"乖離{gap:+.0f}")
-            lines.append(f"           → {kinds}　"
-                         f"勝率{row['勝ち確率']*100:4.1f}% 複勝率{row['複勝確率']*100:4.1f}%")
+                f"{(f'{int(pop)}人気' if pd.notna(pop) else '-'):>5}"
+                f"  {FUKU_STAKE:,}円")
+            lines.append(f"           勝率{row['勝ち確率']*100:4.1f}% "
+                         f"複勝率{row['複勝確率']*100:4.1f}%")
         lines.append("")
     lines.append("")
 
