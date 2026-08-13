@@ -119,6 +119,9 @@ def record_odds_snapshot(pdf, race_id):
         # どのジョブが記録したか。朝・40分前・7分前で性質が違うため区別する。
         # 分前が負（＝発走後）や不明のときは「不明」にする。誤ったラベルを
         # 付けると、後の分析で時間軸を取り違える。
+        # 2026-08-14: 「締切前」を追加。7分前と締切直前を区別できないと、
+        # 「投票を遅らせればスリッページがどれだけ縮むか」が測れない。
+        # EV方式は確定オッズ基準119.6% / 7分前88.4%で、差の原因は賭ける時刻。
         if mins == "":
             snap["ジョブ"] = "不明"
         elif mins < 0:
@@ -127,8 +130,10 @@ def record_odds_snapshot(pdf, race_id):
             snap["ジョブ"] = "朝"
         elif mins > 20:
             snap["ジョブ"] = "40分前"
-        else:
+        elif mins > 4:
             snap["ジョブ"] = "直前"
+        else:
+            snap["ジョブ"] = "締切前"
         path = os.path.join(BASE_DIR, "odds_history.csv")
         snap.to_csv(path, mode="a", header=not os.path.exists(path),
                     index=False, encoding="utf-8-sig")
@@ -1747,6 +1752,12 @@ MYOMI_RATIO_MIN = 2.5             # ratio方式のときの閾値（要・本番
 #     p=0.0725は有意水準に届いていない。証明には約17年かかる。
 #     「否定されずに残った唯一の候補」という位置づけ。
 USE_FUKU_BETTING = True           # False で従来のEV方式(A案)に戻す
+# 併用モード（2026-08-14）: 複勝方式とEV方式を同時に走らせ、実測を並行して集める。
+#   EV方式は確定オッズ基準119.6% / 7分前88.4%。差の原因は賭ける時刻であって
+#   モデルではない。締切に近づけるほど縮むので、1分前オッズを半年貯めてから
+#   「投票を遅らせる価値があるか」を検証する。それまでは両方の実測を取る。
+#   ⚠ EV方式は5年OOFでEVと実払戻の順位相関が負（実効EV 0.95）。赤字の可能性が高い。
+USE_DUAL_BETTING = True
 FUKU_DIST_MIN = 1900              # 距離の下限（m）。1800にすると崩れる
 FUKU_ODDS_MAX = 20.0              # 単勝オッズの上限
 FUKU_POP_MIN = 4                  # 人気の下限（4番人気以下＝妙味のある側）
@@ -1871,61 +1882,72 @@ def _race_bet_plan(pdf):
         _mr = pd.to_numeric(pdf.get("MF複勝順位"), errors="coerce")
         _od = pd.to_numeric(pdf.get("単勝オッズ"), errors="coerce")
         _pop = pd.to_numeric(pdf.get("人気"), errors="coerce")
-        if _dist.notna().any() and _mr.notna().any():
-            if float(_dist.dropna().iloc[0]) < FUKU_DIST_MIN:
-                plan.update({"指数": 30,
-                             "理由": f"距離{FUKU_DIST_MIN}m未満（複勝方式の対象外）"})
-                return plan
+        # 距離が対象外・該当馬なしのときは複勝を見送るが、併用モードでは
+        # EV方式の判定まで進む（EV方式に距離の縛りは無いため）。
+        _skip = None
+        if not (_dist.notna().any() and _mr.notna().any()):
+            _skip = "距離またはモデル順位が取れず複勝方式は判定不可"
+        elif float(_dist.dropna().iloc[0]) < FUKU_DIST_MIN:
+            _skip = f"距離{FUKU_DIST_MIN}m未満（複勝方式の対象外）"
+        if _skip is None:
             _hit = ((_mr == 1) & (_od <= FUKU_ODDS_MAX) & (_pop >= FUKU_POP_MIN))
             tgt = pdf[_hit.fillna(False)]
             if tgt.empty:
-                plan.update({"指数": 35,
-                             "理由": "MF複勝1位が20倍以下かつ4番人気以下に該当せず"})
+                _skip = "MF複勝1位が20倍以下かつ4番人気以下に該当せず"
+        if _skip is not None:
+            plan.update({"指数": 35, "理由": _skip})
+            if not USE_DUAL_BETTING:
                 return plan
+        else:
             row = tgt.iloc[0]
             plan.update({"判定": "買い", "指数": 72, "サイズ": "標準",
                          "理由": (f"複勝方式（{int(_dist.dropna().iloc[0])}m・"
                                 f"{row['馬名']} {int(row['人気'])}番人気 "
                                 f"{float(row['単勝オッズ']):.1f}倍）"),
                          "menu": [("複勝", "複勝方式", 105)],
-                         "ev_picks": [row["馬番"]]})
-            return plan
+                         "fuku_picks": [row["馬番"]]})
+            # 併用モード（2026-08-14）: EV方式も同時に記録する。
+            #   EV方式は確定オッズ基準で119.6%だが、7分前で選ぶと88.4%に落ちる。
+            #   この差は「賭ける時刻」の問題で、締切に近づけるほど縮む。
+            #   1分前オッズを貯めて半年後に検証するため、それまで両方を走らせて
+            #   実測を並行して集める。どちらが勝つかはデータに決めさせる。
+            if not USE_DUAL_BETTING:
+                return plan
 
-    # ── 較正済み期待値方式（A案・USE_FUKU_BETTING=False のとき）────────────
-    #   ⚠ 2026-08-13に既定から外した。スリッページ(-28.7pt)とオプティマイザの
-    #     呪い(実効EV 0.95)が未解決で、独立年2026でも98.7%だったため。
-    #   条件: 乖離≥3・20倍以下・モデル1位はEV≥1.7 / 2〜5位はEV≥2.2
+    # ── 較正済み期待値方式（A案）──────────────────────────────────────
+    #   条件: 乖離≥3・20倍以下・モデル複勝1位はEV≥1.7 / 2〜5位はEV≥2.2
+    #   買い方: 該当馬のうち期待値が最大の1頭を単勝＋馬単。
+    #
+    #   ⚠ 判定に使うのは較正前のEV（＝バックテスト119.6%と同じ定義）。
+    #     2次元較正した実効EVで判定すると該当が5年で0頭になり、実測が貯まらない。
+    #     実効EVは併記して記録し、半年後に「どちらの判定が正しかったか」を見る。
+    #
+    #   ⚠ この方式は7分前で選ぶと88.4%（確定オッズ基準119.6%から-28.7pt）。
+    #     差の原因は賭ける時刻で、締切に近づけるほど縮む。1分前オッズを
+    #     半年貯めてから、投票時刻を早める価値があるかを検証する。
     if USE_EV_BETTING and "乖離" in pdf.columns and "単勝期待値" in pdf.columns:
         _mr = pd.to_numeric(pdf.get("MF複勝順位"), errors="coerce")
         _gap = pd.to_numeric(pdf["乖離"], errors="coerce")
         _od = pd.to_numeric(pdf["単勝オッズ"], errors="coerce")
-        # 判定は2次元較正した実効EVで行う（2026-08-12）。
-        #   従来はMF勝ち確率×オッズで判定していたが、5年OOF 207,518頭で
-        #   EVと実払戻の順位相関が5年とも負だった（EVが高い馬ほど損をする）。
-        #   本番ルール該当馬の実効EVは0.95で、赤字が構造的に確定していた。
-        #   閾値(1.7/2.2)は意図的に据え置く。較正が正しければ該当馬は出なくなり、
-        #   出た場合は真の異常値（バグか歴史的なオッズの歪み）として検知できる。
-        #   実効EVが作れない＝オッズ未取得なので、その場合は買わない。
-        if "実効EV" in pdf.columns and pdf["実効EV"].notna().any():
-            _ev = pd.to_numeric(pdf["実効EV"], errors="coerce")
-        else:
-            plan.update({"指数": 30, "理由": "実効EV未算出（オッズ未取得）のため見送り"})
-            return plan
+        _ev = pd.to_numeric(pdf["単勝期待値"], errors="coerce") + 1.0
         _hit = ((_gap >= EV_GAP_MIN) & (_od <= EV_ODDS_MAX) &
                 (((_mr == 1) & (_ev >= EV_MIN_TOP)) |
                  (_mr.between(2, 5) & (_ev >= EV_MIN_SUB))))
         tgt = pdf[_hit.fillna(False)]
         if tgt.empty:
-            plan.update({"指数": 40, "理由": "期待値の条件を満たす馬なし"})
+            if not plan.get("menu"):
+                plan.update({"指数": 40, "理由": "期待値の条件を満たす馬なし"})
             return plan
         best = tgt.assign(_ev=_ev[tgt.index]).nlargest(EV_MAX_PICKS, "_ev")
         ev_max = float(_ev[best.index].max())
-        plan.update({"判定": "買い",
-                     "指数": 70 + min(30, int((ev_max - EV_MIN_TOP) * 20)),
-                     "サイズ": "標準",
-                     "理由": f"期待値{ev_max:.2f}（候補{len(tgt)}頭から1頭）",
-                     "menu": [("単勝", "EV単勝", 113)],
-                     "ev_picks": best["馬番"].tolist()})
+        _why = f"期待値{ev_max:.2f}（候補{len(tgt)}頭から1頭）"
+        plan["判定"] = "買い"
+        plan["サイズ"] = "標準"
+        plan["指数"] = max(plan.get("指数", 0),
+                          70 + min(30, int((ev_max - EV_MIN_TOP) * 20)))
+        plan["理由"] = f"{plan['理由']} ＋ {_why}" if plan.get("menu") else _why
+        plan["menu"] = list(plan.get("menu", [])) + [("単勝", "EV単勝", 113)]
+        plan["ev_picks"] = best["馬番"].tolist()
         return plan
 
     # ── 妙味方式（2026-07-31・USE_EV_BETTING=False のとき）──────────────
@@ -2085,21 +2107,21 @@ def _build_bet_rows(pdf, race_id):
     # 複勝方式は1頭を複勝で1点だけ買う（2026-08-13）。
     # 馬単の相手取りはしない。A案で相手を広げたのは単勝の的中率を補うためで、
     # 複勝は元々44.8%当たるので薄める意味がない。
-    if plan.get("ev_picks") and any(m[1] == "複勝方式" for m in plan.get("menu", [])):
-        rows = []
-        for no in plan["ev_picks"]:
-            try:
-                n = int(pd.to_numeric(no, errors="coerce"))
-            except (TypeError, ValueError):
-                continue
-            rows.append({"race_id": race_id, "券種": "複勝", "買い方": "複勝方式",
-                         "組み合わせ": str(n), "BT回収率": 105,
-                         "判定": plan["判定"], "サイズ": plan["サイズ"],
-                         "金額": FUKU_STAKE})
-        return rows
+    _fuku_rows = []
+    for no in plan.get("fuku_picks", []):
+        try:
+            n = int(pd.to_numeric(no, errors="coerce"))
+        except (TypeError, ValueError):
+            continue
+        _fuku_rows.append({"race_id": race_id, "券種": "複勝", "買い方": "複勝方式",
+                           "組み合わせ": str(n), "BT回収率": 105,
+                           "判定": plan["判定"], "サイズ": plan["サイズ"],
+                           "金額": FUKU_STAKE})
+    if _fuku_rows and not plan.get("ev_picks"):
+        return _fuku_rows
 
     if plan.get("ev_picks"):
-        rows = []
+        rows = list(_fuku_rows)
         for no in plan["ev_picks"]:
             try:
                 n = int(pd.to_numeric(no, errors="coerce"))
@@ -2316,7 +2338,14 @@ def _build_bet_rows(pdf, race_id):
 
 
 # ── メイン ────────────────────────────────────────────────────────────────
-def predict_race(race_id: str, send_mail: bool = True):
+def predict_race(race_id: str, send_mail: bool = True, odds_only: bool = False):
+    """odds_only=True なら締切直前のオッズだけ記録して抜ける（2026-08-14）。
+
+    予想・メール・買い目保存・プッシュは一切しない。狙いは
+    「7分前と締切直前でオッズがどれだけ動くか」の実測を貯めること。
+    その差がEV方式の 119.6% → 88.4% を生んでいるので、
+    投票を遅らせる価値があるかを半年後に判定する材料になる。
+    """
     race_id = str(race_id).strip()
     if len(race_id) != 12 or not race_id.isdigit():
         print("エラー: race_id は12桁の数字で指定してください（例: 202606050811）")
@@ -2381,6 +2410,12 @@ def predict_race(race_id: str, send_mail: bool = True):
     if pdf is None:
         return
 
+    # 締切直前ジョブはここで終わる。オッズは predict_race_pdf の中で
+    # record_odds_snapshot により既に記録済みなので、追加の処理は要らない。
+    if odds_only:
+        print(f"  [オッズのみ] {race_id} を記録して終了（予想・買い目は出さない）")
+        return pdf
+
     # ── 詳細レポート生成・表示・送信
     jyo_name = pdf.attrs["jyo_name"]
     race_no  = pdf.attrs["race_no"]
@@ -2424,4 +2459,6 @@ if __name__ == "__main__":
         # 個別レース予想（auto_predict_publish.py の発走40分前実行から呼び出される）
         # 引数に "nomail" があればメール送信しない（40分前ジョブが指定・手動実行は送る）。
         race_id = sys.argv[1] if len(sys.argv) > 1 else TARGET_RACE_ID
-        predict_race(race_id, send_mail=("nomail" not in sys.argv))
+        # "oddsonly" は締切直前ジョブ（オッズだけ記録して予想は出さない）
+        predict_race(race_id, send_mail=("nomail" not in sys.argv),
+                     odds_only=("oddsonly" in sys.argv))

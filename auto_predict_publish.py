@@ -240,6 +240,40 @@ def run_morning_prediction():
 
 
 # ── 個別レース予想（各レース40分前実行） ──────────────────────────────────
+# 締切の何分前にオッズだけ記録するか（2026-08-14）。
+#   1分前は通信遅延で発走後になりかねないので2分前にする。
+ODDS_SNAP_MIN = 2
+
+
+def run_odds_snapshot(race_id: str, race_time: str):
+    """締切直前のオッズだけを記録する（予想・メール・プッシュはしない）。
+
+    なぜ必要か
+      バックテストは確定オッズで買い目を決めるが、実運用は7分前で決める。
+      この差だけでEV方式は 119.6% → 88.4%（-28.7pt）に落ちる。
+      原因はモデルではなく「賭ける時刻」なので、締切に近づけるほど縮むはず。
+      しかし締切直前のオッズを一度も記録していないため、縮み具合が測れない。
+      半年貯めてから「投票を遅らせる価値があるか」を判定する。
+
+    アクセスは1レースにつき1回だけ増える。予想処理は走らせない。
+    """
+    jyo_cd = int(str(race_id)[4:6])
+    race_no = int(str(race_id)[10:12])
+    jyo_name = JYO_NAMES.get(jyo_cd, str(jyo_cd))
+    now = datetime.now().strftime("%H:%M")
+    print(f"[{now}] {jyo_name} {race_no}R オッズ記録のみ（発走: {race_time}）")
+    try:
+        subprocess.run(
+            [PYTHON, os.path.join(BASE_DIR, "keiba_predict.py"), race_id,
+             "nomail", "oddsonly"],
+            cwd=BASE_DIR, capture_output=False, text=True, timeout=300,
+        )
+    except subprocess.TimeoutExpired:
+        print(f"  ⚠ {jyo_name} {race_no}R のオッズ記録がタイムアウト（予想には影響なし）")
+    except Exception as e:
+        print(f"  ⚠ オッズ記録に失敗（予想には影響なし）: {e}")
+
+
 def run_race_prediction(race_id: str, race_time: str):
     """個別レースの予想を実行してGitHubにプッシュ"""
     jyo_cd   = int(str(race_id)[4:6])
@@ -338,6 +372,24 @@ def setup_schedule():
             race_id=race_id,
             race_time=race_time,
         ).tag("race")
+
+        # 締切直前のオッズを記録する（2026-08-14追加）。
+        #   なぜ必要か: バックテストは確定オッズで買い目を決めるが、実運用は
+        #   7分前で決める。この差だけでEV方式は119.6%→88.4%に落ちる。
+        #   差の原因は「賭ける時刻」なので、締切に近づけるほど縮むはず。
+        #   しかし1分前のオッズを一度も記録していないため、縮み具合が測れない。
+        #   予想は出さず、オッズだけを1回取る（アクセスは1レース1回だけ増える）。
+        m2 = int(time_match.group(2)) - ODDS_SNAP_MIN
+        h2 = h if m2 >= 0 else h  # 下で補正
+        h2 = int(time_match.group(1))
+        if m2 < 0:
+            m2 += 60
+            h2 -= 1
+        snap_dt = now.replace(hour=h2, minute=m2, second=0, microsecond=0)
+        if snap_dt > now:
+            schedule.every().day.at(f"{h2:02d}:{m2:02d}").do(
+                run_odds_snapshot, race_id=race_id, race_time=race_time,
+            ).tag("race")
 
         jyo_cd   = int(str(race_id)[4:6])
         race_no  = int(str(race_id)[10:12])

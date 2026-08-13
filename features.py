@@ -594,7 +594,12 @@ def add_race_relative_features(df):
 def add_jockey_trainer_features(df):
     """騎手・調教師・馬主の累積勝率を特徴量として追加（リーク防止：その時点までのデータのみ）。
     生の累積勝率に加え、ベイズスムージング版（少数サンプルを事前平均へ収縮）も付与する。"""
-    df = df.sort_values(["race_id"]).reset_index(drop=True)
+    # 2026-08-14: race_id順は時系列ではない（競馬場コードが先に効くため、
+    # 札幌7月が東京1月より前に並ぶ）。騎手・調教師・馬主の累積勝率は
+    # 「その時点までの実績」でなければならないので実開催日順に直した。
+    # 馬の過去成績は既に _race_dt 順（sort_by_horse_time）だったが、ここが漏れていた。
+    df = attach_race_date(df) if "_race_dt" not in df.columns else df
+    df = df.sort_values(["_race_dt", "race_id"], na_position="last").reset_index(drop=True)
 
     # ベイズスムージング設定（少数出走のカテゴリを全体平均へ収縮）
     K_SMOOTH   = 20      # 収縮強度（この出走数で事前:実測=1:1）
@@ -682,7 +687,7 @@ def add_jockey_trainer_features(df):
     jockey_jyo_stats = {}   # {(騎手, 競馬場cd): {runs, wins}}
     jockey_jyo_winrate = []
 
-    df2 = df.sort_values("race_id").reset_index(drop=True)
+    df2 = df.sort_values(["_race_dt", "race_id"], na_position="last").reset_index(drop=True)
     for _, row in df2.iterrows():
         jockey  = row["騎手"]
         jyo_cd  = str(row["race_id"])[4:6]
@@ -707,7 +712,7 @@ def add_jockey_trainer_features(df):
     # ── 騎手の直近トレンド（「今乗れている騎手」を捉える） ──────────────
     # 直近30走の勝率・複勝率を追跡（通算とは別に「最近の調子」を見る）
     from collections import deque
-    df3 = df.sort_values("race_id").reset_index(drop=True)
+    df3 = df.sort_values(["_race_dt", "race_id"], na_position="last").reset_index(drop=True)
     jockey_recent = {}  # {騎手: deque(maxlen=30) of (win, top3)}
     recent_win  = []
     recent_fuku = []
@@ -841,9 +846,14 @@ def add_extra_advanced_features(df):
         df["_距離帯"] = (pd.to_numeric(df["距離"], errors="coerce") / 400).round()
         df["_fuku3"] = (df["着順_num"] <= 3).astype(float)
         _keys = ["競馬場cd", "_track", "_距離帯", "_脚質bin"]
+        _dt = (df[["race_id", "_race_dt"]].drop_duplicates("race_id")
+               if "_race_dt" in df.columns else None)
         _t = (df.dropna(subset=["_脚質bin", "_距離帯"])
-                .groupby(_keys + ["race_id"])["_fuku3"].agg(["sum", "count"]).reset_index()
-                .sort_values("race_id"))
+                .groupby(_keys + ["race_id"])["_fuku3"].agg(["sum", "count"]).reset_index())
+        # race_id順は時系列でないので実開催日で並べる（2026-08-14）
+        _t = (_t.merge(_dt, on="race_id", how="left")
+                .sort_values(["_race_dt", "race_id"], na_position="last")
+              if _dt is not None else _t.sort_values("race_id"))
         _gk = _t.groupby(_keys)
         _t["_cs"] = _gk["sum"].cumsum() - _t["sum"]      # 自レースを除いた過去合計
         _t["_cc"] = _gk["count"].cumsum() - _t["count"]
@@ -854,7 +864,10 @@ def add_extra_advanced_features(df):
         # コース全体の集計が組めない)はCSVから補完する(course_bias.csvと同じ流儀)。
         _bias_csv = os.path.join(os.path.dirname(os.path.abspath(__file__)), "course_style_bias.csv")
         if len(df) > 100000:
-            _latest = _t.sort_values("race_id").groupby(_keys).tail(1).copy()
+            # 「最新の累積値」も実開催日順で取る（2026-08-14）
+            _latest = (_t.sort_values(["_race_dt", "race_id"], na_position="last")
+                       if "_race_dt" in _t.columns else _t.sort_values("race_id")) \
+                .groupby(_keys).tail(1).copy()
             _tot_c = _latest["_cc"] + _latest["count"]
             _latest["コース脚質バイアス"] = np.where(
                 _tot_c >= 30, (_latest["_cs"] + _latest["sum"]) / _tot_c, np.nan)
