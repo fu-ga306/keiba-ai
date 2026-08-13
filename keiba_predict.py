@@ -1723,6 +1723,33 @@ MYOMI_RATIO_MIN = 2.5             # ratio方式のときの閾値（要・本番
 #     ・較正をオッズ帯別/頭数別に分けるのも悪化（サンプルが減り較正自体が不安定になる）
 #     ・複勝・ワイド・馬連・馬単・3連複は22通り試して全滅。事前オッズが無い券種は
 #       期待値を計算できず、単勝オッズからの推定では新しい情報が増えないため。
+# ── 複勝方式（2026-08-13・既定）──────────────────────────────────────────
+#   なぜこれにしたか
+#     2,027構成を5つの独立した設計思想で総当たりし、生き残った唯一の構成。
+#     従来のEV方式(A案)は紙で117.0%だったが、次の2つが未解決だった。
+#       ① スリッページ: 確定オッズで選んだ数字。7分前で選び直すと88.4%（-28.7pt）
+#          オッズ変動で直せないか検証したが、この帯では相関-0.13で先読み不能だった
+#       ② オプティマイザの呪い: EVと実払戻の順位相関が5年とも負。実効EV 0.95
+#     C案はどちらも回避する。選択条件の大半（距離・モデル順位・人気）がオッズに
+#     依存せず、複勝は配当が着順で決まるため変動の影響が小さい。
+#
+#   検証（bet_cache 2021-2025・207,518頭・walk-forward OOS）
+#     230点（年46点）・的中103本(44.8%)・複勝ROI 105.2%・95%区間[89.8, 120.7]
+#     スリッページ模擬: 110.2% → 107.6%（-2.6pt）95%[102.7, 111.5]
+#     順列検定: 単体 p=0.0000 / 探索81構成を織り込んだfamily-wise p=0.0725
+#
+#   1900mに断層がある（1800m以下にすると的中率44.8%→36.0%・ROI 105.2%→84.8%）。
+#   滑らかに劣化せず崩れるので、ただの絞り込みではなく実体があると判断した。
+#
+#   ⚠ 黒字が確定したわけではない。下限89.8%で5年中2年は赤字（最悪年66%）。
+#     p=0.0725は有意水準に届いていない。証明には約17年かかる。
+#     「否定されずに残った唯一の候補」という位置づけ。
+USE_FUKU_BETTING = True           # False で従来のEV方式(A案)に戻す
+FUKU_DIST_MIN = 1900              # 距離の下限（m）。1800にすると崩れる
+FUKU_ODDS_MAX = 20.0              # 単勝オッズの上限
+FUKU_POP_MIN = 4                  # 人気の下限（4番人気以下＝妙味のある側）
+FUKU_STAKE = 1000                 # 複勝1点あたりの金額（円）
+
 USE_EV_BETTING = True             # False で従来の★方式に戻す
 EV_GAP_MIN = 3.0                  # 乖離（人気順位 − モデル複勝順位）の下限
 EV_ODDS_MAX = 20.0                # 単勝オッズの上限
@@ -1832,10 +1859,40 @@ def _race_bet_plan(pdf):
         if "クラス_num" in pdf.columns else np.nan
     cls = float(cls_v) if pd.notna(cls_v) else np.nan
 
-    # ── 較正済み期待値方式（2026-08-04・既定）──────────────────────────
-    #   3年OOS検証で確定した唯一の黒字構成。設定値の根拠は EV_* 定数のコメント参照。
+    # ── 複勝方式（2026-08-13・既定）────────────────────────────────────
+    #   条件: 距離1900m以上・MF複勝1位・20倍以下・4番人気以下 → 複勝1点
+    #   該当は年46点程度（週1点弱）。根拠は FUKU_* 定数のコメント参照。
+    #   オッズに依存する条件が「20倍以下」だけなので、7分前に判定しても
+    #   選ぶ馬がほぼ変わらない（模擬では124点中123点が同一）。
+    if USE_FUKU_BETTING:
+        _dist = pd.to_numeric(pdf.get("距離"), errors="coerce")
+        _mr = pd.to_numeric(pdf.get("MF複勝順位"), errors="coerce")
+        _od = pd.to_numeric(pdf.get("単勝オッズ"), errors="coerce")
+        _pop = pd.to_numeric(pdf.get("人気"), errors="coerce")
+        if _dist.notna().any() and _mr.notna().any():
+            if float(_dist.dropna().iloc[0]) < FUKU_DIST_MIN:
+                plan.update({"指数": 30,
+                             "理由": f"距離{FUKU_DIST_MIN}m未満（複勝方式の対象外）"})
+                return plan
+            _hit = ((_mr == 1) & (_od <= FUKU_ODDS_MAX) & (_pop >= FUKU_POP_MIN))
+            tgt = pdf[_hit.fillna(False)]
+            if tgt.empty:
+                plan.update({"指数": 35,
+                             "理由": "MF複勝1位が20倍以下かつ4番人気以下に該当せず"})
+                return plan
+            row = tgt.iloc[0]
+            plan.update({"判定": "買い", "指数": 72, "サイズ": "標準",
+                         "理由": (f"複勝方式（{int(_dist.dropna().iloc[0])}m・"
+                                f"{row['馬名']} {int(row['人気'])}番人気 "
+                                f"{float(row['単勝オッズ']):.1f}倍）"),
+                         "menu": [("複勝", "複勝方式", 105)],
+                         "ev_picks": [row["馬番"]]})
+            return plan
+
+    # ── 較正済み期待値方式（A案・USE_FUKU_BETTING=False のとき）────────────
+    #   ⚠ 2026-08-13に既定から外した。スリッページ(-28.7pt)とオプティマイザの
+    #     呪い(実効EV 0.95)が未解決で、独立年2026でも98.7%だったため。
     #   条件: 乖離≥3・20倍以下・モデル1位はEV≥1.7 / 2〜5位はEV≥2.2
-    #   買い方: 該当馬のうち期待値が最大の1頭を単勝で1点。
     if USE_EV_BETTING and "乖離" in pdf.columns and "単勝期待値" in pdf.columns:
         _mr = pd.to_numeric(pdf.get("MF複勝順位"), errors="coerce")
         _gap = pd.to_numeric(pdf["乖離"], errors="coerce")
@@ -2023,6 +2080,22 @@ def _build_bet_rows(pdf, race_id):
 
     # 期待値方式は買う馬が確定しているので、印の展開を通さず直接1点を組む
     # （2026-08-04）。印は表示用に残るが、買い目とは切り離す。
+    # 複勝方式は1頭を複勝で1点だけ買う（2026-08-13）。
+    # 馬単の相手取りはしない。A案で相手を広げたのは単勝の的中率を補うためで、
+    # 複勝は元々44.8%当たるので薄める意味がない。
+    if plan.get("ev_picks") and any(m[1] == "複勝方式" for m in plan.get("menu", [])):
+        rows = []
+        for no in plan["ev_picks"]:
+            try:
+                n = int(pd.to_numeric(no, errors="coerce"))
+            except (TypeError, ValueError):
+                continue
+            rows.append({"race_id": race_id, "券種": "複勝", "買い方": "複勝方式",
+                         "組み合わせ": str(n), "BT回収率": 105,
+                         "判定": plan["判定"], "サイズ": plan["サイズ"],
+                         "金額": FUKU_STAKE})
+        return rows
+
     if plan.get("ev_picks"):
         rows = []
         for no in plan["ev_picks"]:
