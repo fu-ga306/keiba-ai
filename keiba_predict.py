@@ -1113,13 +1113,27 @@ def predict_race_pdf(race_id: str, *, history_df: pd.DataFrame, models_pack: dic
     place3_models = place3_info["models"]   if place3_info else None
     place3_cols   = place3_info["use_cols"] if place3_info else None
     place3_weights = place3_info.get("weights") if place3_info else None
-    mf_models     = mf_info["models"]       if mf_info else None
-    mf_cols       = mf_info["use_cols"]     if mf_info else None
+    # ── 距離で2モデルを切り替える（2026-08-14）────────────────────────
+    #   長距離(>=dist_split)は全特徴、短距離は騎手厩舎31列を除いたモデルを使う。
+    #   クリーンデータのwalk-forward検証で5条件すべて改善（全体で1.6倍）。
+    #   騎手の勝率は「どの馬に乗るか」で決まる面が大きく、その情報は既にオッズに
+    #   入っている。市場を条件に入れると短距離では残りがノイズになる。
+    #   ⚠ 旧モデル（models_short を持たない pkl）でも落ちないよう、
+    #     無ければ従来どおり単一モデルを使う。
+    def _mf_pick(info, dist):
+        """レースの距離に応じて (models, use_cols) を返す。距離不明なら全特徴。"""
+        if not info:
+            return None, None
+        split, short = info.get("dist_split"), info.get("models_short")
+        if split is None or not short or dist is None:
+            return info.get("models"), info.get("use_cols")
+        if float(dist) < float(split):
+            return short, info.get("use_cols_short", info.get("use_cols"))
+        return info.get("models"), info.get("use_cols")
+
     mf_weights    = mf_info.get("weights")  if mf_info else None
     # MF複勝(place3)モデル: place系買い目の妙軸に使う（勝率軸より馬券内率・ROIが高い）
     mf_p3_info    = mf_info.get("place3") if mf_info else None
-    mf_p3_models  = mf_p3_info["models"]   if mf_p3_info else None
-    mf_p3_cols    = mf_p3_info["use_cols"] if mf_p3_info else None
     mf_p3_weights = mf_p3_info.get("weights") if mf_p3_info else None
     is_multi = place2_models is not None and place3_models is not None
 
@@ -1193,6 +1207,17 @@ def predict_race_pdf(race_id: str, *, history_df: pd.DataFrame, models_pack: dic
     pdf["3着内確率"] = place3
     pdf["連対順位"]  = pd.Series(place2, index=pdf.index).rank(ascending=False)
     pdf["複勝順位"]  = pd.Series(place3, index=pdf.index).rank(ascending=False)
+
+    # 距離が確定したのでMFモデルを選ぶ（長距離=全特徴 / 短距離=騎手厩舎を除外）
+    _dist_v = pd.to_numeric(pdf.get("距離"), errors="coerce")
+    _dist_v = float(_dist_v.dropna().iloc[0]) if _dist_v.notna().any() else None
+    mf_models, mf_cols = _mf_pick(mf_info, _dist_v)
+    mf_p3_models, mf_p3_cols = _mf_pick(mf_p3_info, _dist_v)
+    if mf_info and mf_info.get("models_short"):
+        _sp = mf_info.get("dist_split")
+        _side = "短距離(騎手厩舎なし)" if (_dist_v is not None and _dist_v < float(_sp)) \
+            else "長距離(全特徴)"
+        print(f"  MFモデル: {_side} を使用（{_dist_v}m / 閾値{_sp}m・{len(mf_cols or [])}列）")
 
     pdf["単勝期待値"]    = pdf["勝ち確率"] * pdf["単勝オッズ"] - 1  # MFモデル取得後に上書き
     pdf["推奨賭け率"]    = pdf.apply(lambda r: kelly_fraction(r["勝ち確率"], r["単勝オッズ"]), axis=1)
@@ -1772,7 +1797,20 @@ FUKU_ODDS_MAX = 20.0              # 単勝オッズの上限
 FUKU_POP_MIN = 4                  # 人気の下限（4番人気以下＝妙味のある側）
 FUKU_STAKE = 1000                 # 複勝1点あたりの金額（円）
 
-USE_EV_BETTING = True             # False で従来の★方式に戻す
+# 2026-08-14: 停止した。クリーンデータでスリッページを実測した結果による。
+#   確定オッズで選ぶ  109.8%（928レース・的中73本）
+#   7分前で選び直す   約82.8%（-27.0pt）
+#   リーク修正前の -28.7pt とほぼ同じ幅で落ちた。
+#
+#   原因は実測したドリフトの構造。7分前→確定の中央倍率は
+#     1番人気 0.846 / 2-3番 0.858 / 4-5番 1.013 / 6-7番 1.230 / 8番以下 1.907
+#   EV方式は「20倍以下」を条件にするが、7分前に20倍だった人気薄は確定では38倍。
+#   バックテストが条件を満たすと判定した馬は、7分前には条件を満たしていない。
+#
+#   これでクリーンデータにおいて100%を超える買い方は1つも残っていない。
+#   締切2分前のオッズを半年貯めてから、投票時刻を遅らせれば回復するかを検証する。
+#   それまでは購入せず、予想と記録だけを続ける。
+USE_EV_BETTING = False            # True でEV方式を再開（実運用82.8%・非推奨）
 EV_GAP_MIN = 3.0                  # 乖離（人気順位 − モデル複勝順位）の下限
 EV_ODDS_MAX = 20.0                # 単勝オッズの上限
 EV_MIN_TOP = 1.7                  # モデル複勝1位に要求する期待値

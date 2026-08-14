@@ -180,6 +180,47 @@ if os.path.exists(_V2_FLAG):
             "features.py の RACE_CONST_COLS / RAW_ADOPT_COLS / SPEED_HIST_COLS を確認してください。")
     FEATURE_COLS_MF = FEATURE_COLS_MF_V2
 
+# ── 距離で2モデルに分ける（2026-08-14）────────────────────────────────
+#   なぜ分けるか
+#     騎手・調教師・馬主の特徴31列を抜くと、市場を条件に入れたΔR²が上がる。
+#     さらに距離で切って別モデルにすると、もう一段上がる。
+#     walk-forward（学習=検証年より前）でクリーンデータ 322,205頭を検証:
+#
+#       条件          A 現行(全特徴)  B 全体で除外  C 距離切替
+#       全体            +0.00039     +0.00054    +0.00062  ← C
+#       長距離1900+     +0.00041     +0.00076    +0.00079  ← C
+#       短距離-1400     +0.00033     +0.00051    +0.00062  ← C
+#       道悪            +0.00123     +0.00139    +0.00158  ← C
+#       多頭数16+       +0.00028     +0.00049    +0.00051  ← C
+#
+#     5条件すべてでCが最良。全体で 1.6倍 になる。
+#
+#   なぜ騎手厩舎が害になるか（解釈）
+#     騎手の勝率は「どの馬に乗るか」で決まる面が大きく、その情報は既にオッズに
+#     入っている。市場を条件に入れると、残るのはノイズだけになる。
+#
+#   ⚠ 回収率が上がる保証はない。必要量(Benter 0.0178)の1/29が1/19になるだけ。
+#   ⚠ この定数を変えたら必ずMFの再学習が要る。use_cols が合わないと予測が落ちる。
+MF_DIST_SPLIT = 1900          # この距離以上は全特徴、未満は騎手厩舎を除外
+_JOCKEY_PAT = r"騎手|調教師|馬主"
+
+
+def mf_cols_for(distance=None):
+    """距離に応じた特徴量リストを返す。距離不明なら安全側で全特徴。"""
+    import re as _re
+    if distance is None:
+        return list(FEATURE_COLS_MF)
+    try:
+        d = float(distance)
+    except (TypeError, ValueError):
+        return list(FEATURE_COLS_MF)
+    if d >= MF_DIST_SPLIT:
+        return list(FEATURE_COLS_MF)
+    return [c for c in FEATURE_COLS_MF if not _re.search(_JOCKEY_PAT, c)]
+
+
+FEATURE_COLS_MF_SHORT = mf_cols_for(0)      # 短距離側（騎手厩舎を除外）
+
 LGB_PARAMS = {
     "objective":         "binary",
     "metric":            "binary_logloss",

@@ -119,15 +119,37 @@ def main():
     else:
         tr = df.copy(); te = df[df["年"] == df["年"].max()].copy()
         print(f"[本番モード] 全期間〜{df['年'].max()}で学習（テスト表示はin-sample参考値）", flush=True)
+    # ── 距離で2モデルに分ける（2026-08-14）──────────────────────────
+    #   長距離(>=MF_DIST_SPLIT): 全特徴 / 短距離: 騎手厩舎31列を除外
+    #   クリーンデータのwalk-forward検証で5条件すべて改善（全体1.6倍）。
+    #   根拠と数値は market_free_model.MF_DIST_SPLIT のコメント参照。
+    from market_free_model import MF_DIST_SPLIT, mf_cols_for
     use = [c for c in FEATURE_COLS_MF if c in tr.columns]
-    print(f"train {len(tr)} / test {len(te)} / feat {len(use)}  LGBseeds={SEEDS_LGB} tw={TIME_WEIGHT_MAX}", flush=True)
+    use_short = [c for c in mf_cols_for(0) if c in tr.columns]
+    print(f"train {len(tr)} / test {len(te)}  LGBseeds={SEEDS_LGB} tw={TIME_WEIGHT_MAX}", flush=True)
+    print(f"  長距離({MF_DIST_SPLIT}m以上) {len(use)}列 / 短距離 {len(use_short)}列"
+          f"（騎手厩舎 -{len(use)-len(use_short)}）", flush=True)
+    if "距離" not in tr.columns:
+        raise RuntimeError("距離列が無いため距離分割ができません。race_features.csv を確認してください。")
+    tr_lo, tr_hi = tr[tr["距離"] < MF_DIST_SPLIT], tr[tr["距離"] >= MF_DIST_SPLIT]
+    te_lo, te_hi = te[te["距離"] < MF_DIST_SPLIT], te[te["距離"] >= MF_DIST_SPLIT]
+    print(f"  学習 短{len(tr_lo):,} / 長{len(tr_hi):,}   検証 短{len(te_lo):,} / 長{len(te_hi):,}",
+          flush=True)
+
     result = {}; out = te[["race_id", "馬名", "着順_num"]].copy()
     if "単勝オッズ" in te.columns: out["単勝オッズ"] = te["単勝オッズ"].values
     if "人気" in te.columns: out["人気"] = te["人気"].values
     for t in ["win", "place2", "place3"]:
-        models, score = _train_one(tr, te, use, t)
-        result[t] = {"models": models, "use_cols": use}
-        out[{"win": "MF勝率", "place2": "MF連対率", "place3": "MF複勝率"}[t]] = score
+        m_hi, s_hi = _train_one(tr_hi, te_hi, use, t)
+        m_lo, s_lo = _train_one(tr_lo, te_lo, use_short, t)
+        result[t] = {"models": m_hi, "use_cols": use,
+                     "models_short": m_lo, "use_cols_short": use_short,
+                     "dist_split": MF_DIST_SPLIT}
+        # 検証行のスコアを距離ごとに埋め戻す
+        score = pd.Series(np.nan, index=te.index)
+        score.loc[te_hi.index] = s_hi
+        score.loc[te_lo.index] = s_lo
+        out[{"win": "MF勝率", "place2": "MF連対率", "place3": "MF複勝率"}[t]] = score.values
     for c, r in [("MF勝率", "MF勝率順位"), ("MF連対率", "MF連対順位"), ("MF複勝率", "MF複勝順位")]:
         out[r] = out.groupby("race_id")[c].rank(ascending=False)
     if bt_mode:
@@ -136,7 +158,9 @@ def main():
         print("saved -> model_mf_result.csv", flush=True)
 
     save = {"win": result["win"], "place2": result["place2"], "place3": result["place3"],
-            "models": result["win"]["models"], "use_cols": use, "format": "multi_v1"}
+            "models": result["win"]["models"], "use_cols": use,
+            "dist_split": MF_DIST_SPLIT, "use_cols_short": use_short,
+            "format": "multi_v1"}
     if bt_mode:
         with open("model_mf_bt.pkl", "wb") as f:
             pickle.dump(save, f)
