@@ -379,12 +379,11 @@ def setup_schedule():
         #   差の原因は「賭ける時刻」なので、締切に近づけるほど縮むはず。
         #   しかし1分前のオッズを一度も記録していないため、縮み具合が測れない。
         #   予想は出さず、オッズだけを1回取る（アクセスは1レース1回だけ増える）。
-        m2 = int(time_match.group(2)) - ODDS_SNAP_MIN
-        h2 = h if m2 >= 0 else h  # 下で補正
         h2 = int(time_match.group(1))
+        m2 = int(time_match.group(2)) - ODDS_SNAP_MIN
         if m2 < 0:
             m2 += 60
-            h2 -= 1
+            h2 = (h2 - 1) % 24
         snap_dt = now.replace(hour=h2, minute=m2, second=0, microsecond=0)
         if snap_dt > now:
             schedule.every().day.at(f"{h2:02d}:{m2:02d}").do(
