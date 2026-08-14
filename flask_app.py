@@ -464,16 +464,14 @@ def build_race_card(jyo, race_no, group: pd.DataFrame, bets_df: pd.DataFrame = N
     are_tan_lbl, are_tan_cls = are_label(are_tan)
     are_ren_lbl, are_ren_cls = are_label(are_ren)
 
-    # 激熱バッジ
+    # 激熱バッジは廃止（2026-08-14）。
+    #   根拠にしていた2つの指標が、どちらも検証で否定されたため。
+    #     EV>=1.2      : EVと実払戻の順位相関は5年OOFすべて負。実効EVは0.95
+    #     MF上位×人気薄 : 順列検定で否定（探索を織り込んだ family-wise p=0.598）
+    #   さらにこれらの根拠値は時系列リーク混入前のバックテストで、
+    #   クリーンデータでは100%を超える構成が1つも残っていない。
+    #   購入判定を全停止したのに画面だけが「買え」と言い続ける状態も避ける。
     hot_badges = []
-    for _, r in sorted_g.head(3).iterrows():
-        ev = float(r.get("単勝期待値", 0) or 0)
-        mf_rank = r.get("MF予測順位", None)
-        pop = r.get("人気", None)
-        if ev >= 1.2:
-            hot_badges.append({"label": f"EV{ev:.1f}", "cls": "badge-ev"})
-        if pd.notna(mf_rank) and pd.notna(pop) and int(mf_rank) <= 2 and int(pop) >= 4:
-            hot_badges.append({"label": "MF穴", "cls": "badge-ana"})
 
     # レース推奨レベルとスコアを算出
     rec_level, rec_cls, race_score = calc_rec_level(group, are_tan, are_ren, bet_recs)

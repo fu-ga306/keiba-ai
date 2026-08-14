@@ -15,10 +15,12 @@
 </div>
 {% else %}
 
-{# ── 今日の推奨レース（🔥勝負/✅買い・買い目つき） ────────────── #}
+{# ── 注目レース（2026-08-14: 購入停止に伴い「推奨」を「注目」に変更） ──
+   買い目を出さなくなったので「推奨」は実態と合わない。モデルの確信が高い
+   レースを見どころとして並べるだけの位置づけにする。 #}
 {% if highlights %}
 <section class="highlight-section">
-  <h2 class="highlight-title">🔥 今日の推奨レース</h2>
+  <h2 class="highlight-title">👀 今日の注目レース<span class="highlight-note">（予想のみ・馬券の推奨ではありません）</span></h2>
   <div class="highlight-list">
     {% for c in highlights %}
     <a href="{{ url_for('race_detail', race_id=c.race_id) }}" class="highlight-card-link">
