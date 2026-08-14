@@ -166,18 +166,33 @@ def main():
             pickle.dump(save, f)
         print("saved -> model_mf_bt.pkl (backtest用・本番には使われない)", flush=True)
     else:
-        # ── デプロイ: 現行 model_mf.pkl をバックアップして上書き ──
+        # ── デプロイ順序（2026-08-14に修正）──────────────────────────
+        #   本番が読むのは model_mf_parts/ なので、そちらを先に確実に書く。
+        #   以前は先に model_mf.pkl を上書きしており、距離2モデル化でサイズが倍増して
+        #   pickle.dump が bad allocation で落ちたとき、本番pklが途中まで書かれた
+        #   壊れた状態で残った（2026-08-14に実際に発生し EOFError で読めなくなった）。
+        #   分割保存はモデル1個ずつ書くのでピークRAMが小さく、落ちにくい。
+        from mf_model_io import save_mf_split
+        d = save_mf_split(save, ".")
+        print(f"deployed -> {d}/ (分割保存・逐次読込用・本番はこちらを読む)", flush=True)
+
+        # 一括pklは旧経路のフォールバック。巨大なので失敗しうるが、
+        # ここで落ちても本番(parts)は既に更新済みなので警告に留める。
+        # 書き込みは tmp → 差し替えにして、途中で落ちても既存を壊さない。
         if os.path.exists("model_mf.pkl"):
             shutil.copy("model_mf.pkl", "model_mf_backup.pkl")
             print("backup -> model_mf_backup.pkl", flush=True)
-        with open("model_mf.pkl", "wb") as f:
-            pickle.dump(save, f)
-        print("deployed -> model_mf.pkl (全データ学習・本番)", flush=True)
-        # ── 分割保存(2026-07-27〜): 一括pickle.loadのピークRAMクラッシュ対策。
-        #    読込側(keiba_auto/keiba_predict)は model_mf_parts/ を優先し逐次読込する。
-        from mf_model_io import save_mf_split
-        d = save_mf_split(save, ".")
-        print(f"deployed -> {d}/ (分割保存・逐次読込用)", flush=True)
+        try:
+            with open("model_mf.pkl.tmp", "wb") as f:
+                pickle.dump(save, f, protocol=pickle.HIGHEST_PROTOCOL)
+            os.replace("model_mf.pkl.tmp", "model_mf.pkl")
+            print("deployed -> model_mf.pkl (全データ学習・フォールバック用)", flush=True)
+        except Exception as e:
+            for _p in ("model_mf.pkl.tmp",):
+                if os.path.exists(_p):
+                    os.remove(_p)
+            print(f"  ⚠ model_mf.pkl の一括保存に失敗（{type(e).__name__}: {e}）。"
+                  f"本番は {d}/ を読むので影響なし。既存pklはそのまま維持。", flush=True)
 
 if __name__ == "__main__":
     main()

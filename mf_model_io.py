@@ -25,12 +25,21 @@ def save_mf_split(save: dict, base_dir: str = "."):
     if os.path.exists(tmp):
         shutil.rmtree(tmp)
     os.makedirs(tmp)
-    meta = {"format": "multi_v2_split", "use_cols": save["use_cols"], "counts": {}}
+    # 2026-08-14: 距離2モデル構成に対応。長距離(全特徴)と短距離(騎手厩舎なし)の
+    #   両方を保存する。dist_split が無い旧形式の save でもそのまま動く。
+    meta = {"format": "multi_v2_split", "use_cols": save["use_cols"], "counts": {},
+            "dist_split": save.get("dist_split"),
+            "use_cols_short": save.get("use_cols_short"), "counts_short": {}}
     for t in TARGETS:
         models = save[t]["models"]
         meta["counts"][t] = len(models)
         for i, m in enumerate(models):
             with open(os.path.join(tmp, f"{t}_{i:02d}.pkl"), "wb") as f:
+                pickle.dump(m, f, protocol=pickle.HIGHEST_PROTOCOL)
+        short = save[t].get("models_short") or []
+        meta["counts_short"][t] = len(short)
+        for i, m in enumerate(short):
+            with open(os.path.join(tmp, f"{t}_short_{i:02d}.pkl"), "wb") as f:
                 pickle.dump(m, f, protocol=pickle.HIGHEST_PROTOCOL)
     with open(os.path.join(tmp, "meta.pkl"), "wb") as f:
         pickle.dump(meta, f, protocol=pickle.HIGHEST_PROTOCOL)
@@ -64,14 +73,25 @@ def load_mf(base_dir: str = "."):
     if os.path.exists(meta_path):
         with open(meta_path, "rb") as f:
             meta = pickle.load(f)
-        out = {"format": "multi_v1", "use_cols": meta["use_cols"]}
+        out = {"format": "multi_v1", "use_cols": meta["use_cols"],
+               "dist_split": meta.get("dist_split"),
+               "use_cols_short": meta.get("use_cols_short")}
+        cs = meta.get("counts_short") or {}
         for t in TARGETS:
             models = []
             for i in range(meta["counts"][t]):
                 with open(os.path.join(parts, f"{t}_{i:02d}.pkl"), "rb") as f:
                     models.append(pickle.load(f))
                 gc.collect()  # 1個ごとに一時バッファを回収して読込ピークを抑える
-            out[t] = {"models": models, "use_cols": meta["use_cols"]}
+            short = []
+            for i in range(cs.get(t, 0)):
+                with open(os.path.join(parts, f"{t}_short_{i:02d}.pkl"), "rb") as f:
+                    short.append(pickle.load(f))
+                gc.collect()
+            out[t] = {"models": models, "use_cols": meta["use_cols"],
+                      "models_short": short,
+                      "use_cols_short": meta.get("use_cols_short"),
+                      "dist_split": meta.get("dist_split")}
         out["models"] = out["win"]["models"]  # 旧コード互換(win別名)
         return out
     # フォールバック: 従来の単一pickle(一括load・高ピーク)
