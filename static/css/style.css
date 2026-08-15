@@ -830,6 +830,19 @@ body {
 .grade-A { color:#ff8c42; }
 .grade-B { color:#ffc233; }
 .grade-C { color:#4a9eff; }
+/* 穴注目バッジ（2026-08-15）。10-12番人気でモデル複勝5位以内の馬に付く。
+   出現は1レース0.1頭程度なので、目立つが多用されない配色にする。 */
+.badge-ana-mark {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  background: #fce7f3;
+  color: #86198f;
+  border: 1px solid #d946ef;
+}
 .grade-D { color:#8b95a5; }
 .abil-cell { white-space:nowrap; min-width:96px; }
 .abil-num { display:inline-block; width:2.6em; text-align:right; font-weight:700; font-size:.86rem; }

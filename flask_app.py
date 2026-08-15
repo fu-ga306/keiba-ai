@@ -15,6 +15,41 @@ from flask import Flask, render_template, redirect, url_for, request, jsonify
 app = Flask(__name__)
 app.config["TEMPLATES_AUTO_RELOAD"] = True
 
+# ── 評価グレードのしきい値（2026-08-15・実績基準に改定）────────────────
+#   旧しきい値（S≥1.05 / A≥0.80 / B≥0.58 / C≥0.36）は合成スコアの切りの良い
+#   数字で決めており、実績と対応していなかった。クリーンデータ5年OOS
+#   207,518頭で測ると S の馬券内率は 59.7% しかなく、**1番人気(64.7%)に負けていた**。
+#   しかもSが1レースに1.29頭出るので「S=鉄板」の語感と実態が合っていない。
+#
+#   そこで「その評価が実際に何%馬券内に来るか」からしきい値を引き直した。
+#
+#     評価  しきい値      馬券内率   勝率    1R当り   出現するレース
+#     S     ≥1.344        70.0%   35.6%   0.51頭      42.3%
+#     A     ≥0.748        45.6%   17.2%   2.31頭      94.4%
+#     B     ≥0.225        21.1%    5.9%   6.35頭      99.8%
+#     C     それ未満        5.4%    1.0%   4.69頭      97.9%
+#
+#   Sは1番人気(64.7%)を上回り、6割のレースでは出ない。出たときに意味を持つ。
+#   ⚠ しきい値を変えたら、この表も実測で更新すること（勝手にずれる数字ではない）。
+GRADE_TH = [("S", 1.344), ("A", 0.748), ("B", 0.225)]
+
+
+def grade_of(score):
+    """合成スコア（勝率＋連対率＋複勝率）を評価に変換する。"""
+    if score is None or not np.isfinite(score):
+        return "C"
+    for g, th in GRADE_TH:
+        if score >= th:
+            return g
+    return "C"
+
+
+# 穴注目（2026-08-15追加）。10-12番人気でモデル複勝5位以内の馬。
+#   5年OOSで勝率2.49%（同帯全体1.25%の2.00倍）・単勝ROI 99.0%。
+#   13番人気以下は230頭で1着ゼロだったので対象外にしている。
+#   「めったに出ないが、出たら本命級の価値」という位置づけ。
+ANA_POP_MIN, ANA_POP_MAX, ANA_MF_MAX = 10, 12, 5
+
 GITHUB_RAW = "https://raw.githubusercontent.com/fu-ga306/keiba-ai/main"
 TODAY_PRED_URL = f"{GITHUB_RAW}/today_predictions.csv"
 RECORD_URL = f"{GITHUB_RAW}/prediction_record_v2.csv"
@@ -657,6 +692,7 @@ def race_detail(race_id):
         h["res_tan"] = r["tan"] if r else ""
         h["res_fuku"] = r["fuku"] if r else ""
 
+        # しきい値は GRADE_TH（実績基準）。算出根拠はそちらのコメント参照。
         # 評価グレード（2026-08-09改定）。
         #   当初は複勝確率だけで決めていたが、それだと「3着に来るだけの馬」と
         #   「勝ち負けする馬」が同じ評価になる。勝率・連対率・複勝率を足した
@@ -669,8 +705,13 @@ def race_detail(race_id):
               for c in ("勝ち確率", "連対確率", "複勝確率")]
         score = float(sum(float(v) for v in _p if pd.notna(v)))
         h["grade_score"] = round(score, 2)
-        h["grade"] = ("S" if score >= 1.05 else "A" if score >= 0.80 else
-                      "B" if score >= 0.58 else "C" if score >= 0.36 else "D")
+        h["grade"] = grade_of(score)
+        # 穴注目（根拠は ANA_POP_MIN 付近のコメント）。人気薄でモデルだけが推す馬。
+        _pop = pd.to_numeric(h.get("人気"), errors="coerce")
+        _mfr = pd.to_numeric(h.get("MF複勝順位"), errors="coerce")
+        h["is_ana"] = bool(
+            pd.notna(_pop) and pd.notna(_mfr)
+            and ANA_POP_MIN <= _pop <= ANA_POP_MAX and _mfr <= ANA_MF_MAX)
         # 能力総合点＝6軸（レース内百分位0-100）の平均。オッズを一切見ない評価。
         vals = [pd.to_numeric(h.get(c), errors="coerce") for c, _ in ABILITY_AXES]
         vals = [float(v) for v in vals if pd.notna(v)]
@@ -779,9 +820,9 @@ def stats():
               + pd.to_numeric(d["連対確率"], errors="coerce")
               + pd.to_numeric(d["複勝確率"], errors="coerce"))
         d["_score"] = sc
-        d["_grade"] = np.select([sc >= 1.05, sc >= 0.80, sc >= 0.58, sc >= 0.36],
-                                ["S", "A", "B", "C"], "D")
-        for g in "SABCD":
+        d["_grade"] = np.select([sc >= th for _, th in GRADE_TH],
+                                [g for g, _ in GRADE_TH], "C")
+        for g in "SABC":
             s = d[d["_grade"] == g]
             if not len(s):
                 continue
