@@ -69,7 +69,7 @@
           <th data-k="ban">馬番</th>
           <th>馬名</th>
           <th>シグナル</th>
-          <th data-k="grade" title="勝率＋連対率＋複勝率の合計（1着3点・2着2点・3着1点としたときの期待獲得点）。S:1.05以上 A:0.80以上 B:0.58以上 C:0.36以上 D:それ未満">評価</th>
+          <th data-k="grade" title="5年OOSの実測で「実際に何%馬券内に来るか」で切った評価。S:76% / A:52% / B:23% / D:5%。Dは19回に1回しか来ない＝買わない判定">評価</th>
           <th data-k="abil" title="能力6軸（勝負力・安定感・末脚・先行力・距離適性・実績）の平均。レース内100点満点・オッズは見ない">能力</th>
           <th data-k="airank" title="市場フリーモデルの3着内予測順">AI順位</th>
           <th data-k="gap" title="人気順位 − AI順位。正ならAIが市場より高く評価">乖離</th>
@@ -91,7 +91,7 @@
             data-win="{{ h.win_pct }}" data-ren="{{ h.ren_pct }}"
             data-fuku="{{ h.fuku_pct }}" data-ev="{{ h.ev_val }}"
             data-res="{{ h.res_pos or 99 }}"
-            data-grade="{{ {'S':1,'A':2,'B':3,'C':4,'D':5}.get(h.grade, 9) }}"
+            data-grade="{{ {'S':1,'A':2,'B':3,'D':4}.get(h.grade, 9) }}"
             data-abil="{{ h.abil_avg if h.abil_avg is not none else -1 }}">
           {% if has_result %}
           <td class="res-cell center{% if h.res_pos and h.res_pos <= 3 %} res-medal res-{{ h.res_pos }}{% endif %}">
@@ -109,7 +109,7 @@
           <td class="horse-name-cell">{{ h.馬名 }}{% if h.buy_kinds %}<span class="buy-kind">{{ h.buy_kinds }}</span>{% endif %}</td>
           <td><span class="signal-badge signal-{{ h.signal_cls }}">{{ h.signal_label }}</span></td>
           <td class="center"><span class="grade grade-{{ h.grade }}"
-              title="5年OOSの実績で切った評価。馬券内率は S:70% / A:49% / B:35% / C:24% / D:9%。1レースあたり S:0.5頭 A:1.5頭 B:2頭 C:2頭 D:8頭。Dは買わない判定。期待獲得点 {{ h.grade_score }}＝勝率{{ h.win_pct }}%＋連対{{ h.ren_pct }}%＋複勝{{ h.fuku_pct }}%">{{ h.grade }}</span>
+              title="5年OOSの実測で切った評価。実際の馬券内率は S:76% / A:52% / B:23% / D:5%。Dは19回に1回しか来ない＝買わない判定。期待獲得点 {{ h.grade_score }}＝勝率{{ h.win_pct }}%＋連対{{ h.ren_pct }}%＋複勝{{ h.fuku_pct }}%">{{ h.grade }}</span>
               <span class="grade-score">{{ h.grade_score }}</span>
               {% if h.is_ana %}<span class="badge-ana-mark"
                 title="穴注目: 10-12番人気でモデル複勝5位以内。5年OOSで勝率2.00倍（2.49% vs 1.25%）">穴</span>{% endif %}</td>
