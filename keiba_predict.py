@@ -88,10 +88,15 @@ def record_odds_snapshot(pdf, race_id):
     朝・発走40分前・直前の各実行で自然に貯まり、後日「オッズ変動（金の流れ）」特徴の材料になる。
     新規スクレイピングはせず既に取得済みのpdfのオッズを使う（IP負荷ゼロ）。記録失敗で予想は止めない。"""
     try:
-        cols = [c for c in ("馬番", "馬名", "単勝オッズ", "人気", "複勝オッズ_min") if c in pdf.columns]
-        if "単勝オッズ" not in cols or pdf["単勝オッズ"].isna().all():
+        # ⚠ 2026-08-15: 列を「あるものだけ」で組むと、複勝オッズ_minが取れない日に
+        #   列数が9になり、既存の10列ヘッダとずれて全行が読めなくなった
+        #   （記録時刻が複勝オッズ_minの位置に入り、pandasが解釈を誤る）。
+        #   追記型のCSVなので、列は毎回同じ数・同じ順で書かなければならない。
+        #   無い列は NaN で埋めて、必ず固定の並びにする。
+        FIXED = ("馬番", "馬名", "単勝オッズ", "人気", "複勝オッズ_min")
+        if "単勝オッズ" not in pdf.columns or pdf["単勝オッズ"].isna().all():
             return  # オッズ未取得なら記録しない（NaN行で汚さない）
-        snap = pdf[cols].copy()
+        snap = pdf.reindex(columns=list(FIXED)).copy()
         snap.insert(0, "race_id", str(race_id))
         now = datetime.now()
         snap["記録時刻"] = now.strftime("%Y/%m/%d %H:%M:%S")

@@ -86,6 +86,37 @@ def check_disk_ok():
 
 
 # ── 心拍（スケジューラが動いていることの証跡）────────────────────────────
+def _run_with_beat(cmd, timeout, interval=20):
+    """長い子プロセスを、心拍を打ちながら待つ（2026-08-15追加）。
+
+    なぜ必要か
+      朝の一括予想は36レースで20分前後かかる。従来は subprocess.run で
+      待つ間、待機ループが止まるので心拍も止まっていた。見張り番は8分で
+      ハングとみなして再起動するため、正常な予想が途中で殺されていた
+      （2026-08-15に発生。札幌8Rまでで中断し、新潟・中京の24レースが未予想）。
+
+    心拍を打ち続けるので「動いている長い処理」と「本当のハング」を区別できる。
+    timeout を超えたら kill するので、本当に固まった場合は従来どおり止まる。
+    戻り値は subprocess.run と同じく returncode を持つオブジェクト。
+    """
+    import subprocess as _sp
+    p = _sp.Popen(cmd, cwd=BASE_DIR, text=True)
+    waited = 0
+    while True:
+        try:
+            p.wait(timeout=interval)
+            break
+        except _sp.TimeoutExpired:
+            _beat()                     # ← 生きていることを外に伝える
+            waited += interval
+            if waited >= timeout:
+                p.kill()
+                p.wait()
+                raise _sp.TimeoutExpired(cmd, timeout)
+    _beat()
+    return p
+
+
 def _beat():
     """待機ループを1周するたびに時刻を書く。
 
@@ -204,12 +235,15 @@ def run_morning_prediction():
             os.remove(_p)
 
     # keiba_predict.py の today モードを実行
+    #   ⚠ 2026-08-15: ここは36レースで20分前後かかる。従来は subprocess.run で
+    #     待つ間、待機ループが回らず心拍が止まっていた。見張り番は8分止まったら
+    #     ハングとみなして再起動するので、正常に動いている朝の予想が
+    #     途中（札幌8R時点）で強制終了された。
+    #     長い処理の間も心拍を打ち続けるようにして誤検知を防ぐ。
     try:
-        result = subprocess.run(
+        result = _run_with_beat(
             [PYTHON, os.path.join(BASE_DIR, "keiba_predict.py"), "today"],
-            cwd=BASE_DIR,
-            capture_output=False,  # ターミナルに出力
-            text=True,
+            timeout=PREDICT_TIMEOUT * 3,   # 36レース分。1レースあたりの想定×余裕
         )
         if result.returncode == 0:
             print(f"\n[{datetime.now().strftime('%H:%M')}] 朝の一括予想完了")
