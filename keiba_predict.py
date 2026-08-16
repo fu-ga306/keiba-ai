@@ -1610,6 +1610,10 @@ def predict_race_pdf(race_id: str, *, history_df: pd.DataFrame, models_pack: dic
             "単勝期待値", "推奨賭け率",
             "較正後勝率", "実効EV",   # 2026-08-12: 市場を織り込んだ購入判定用の値
             "乖離スコア", "MF予測順位", "MF勝ち確率", "MF複勝率", "MF複勝順位",
+            # 買い目の根拠になる順位（2026-08-16追加）。荒れR馬単裏方式は
+            # MF勝率順位で軸と相手を決めるのに、この2列を保存していなかったため
+            # 「なぜその買い目になったか」をあとから確かめられなかった。
+            "MF勝率順位", "MF連対順位", "クラス_num",
             "該当戦略", "推奨ランク", "総合スコア", "券種推奨", "妙味軸",
             "妙味", "乖離",   # 2026-07-31: ★判定と市場との評価差（メール/ダッシュボード用）
             "買い指数", "購入推奨", "想定単回収", "買いサイズ",
@@ -2012,11 +2016,24 @@ def _race_bet_plan(pdf):
     #   根拠と検証値は ARE_* 定数のコメント参照。オッズ条件を付けないので
     #   7分前に判定しても選ぶ馬が変わらない（スリッページ影響 0.0pt）。
     if USE_ARE_UMATAN:
-        _mr = pd.to_numeric(pdf.get("MF複勝順位"), errors="coerce")
-        _rank = {"win": pd.to_numeric(pdf.get("MF勝率順位"), errors="coerce"),
-                 "ren": pd.to_numeric(pdf.get("MF連対順位"), errors="coerce")}
-        _pop = pd.to_numeric(pdf.get("人気"), errors="coerce")
-        _cls = pd.to_numeric(pdf.get("クラス_num"), errors="coerce")
+        def _num(col):
+            """列が無くても必ず Series を返す。
+
+            pdf.get(欠けた列) は None を返し、pd.to_numeric(None) はスカラーの
+            nan になる。そのまま .notna() を呼ぶと AttributeError で買い目生成
+            そのものが落ちる（2026-08-16に発見。クラス_num を持たない pdf で
+            全レース買えなくなっていた）。列の欠落で買えなくなるのは事故なので、
+            欠けていれば「条件を判定できない」＝全欠損として扱う。
+            """
+            v = pdf.get(col)
+            if v is None:
+                return pd.Series(np.nan, index=pdf.index, dtype="float64")
+            return pd.to_numeric(v, errors="coerce")
+
+        _mr = _num("MF複勝順位")
+        _rank = {"win": _num("MF勝率順位"), "ren": _num("MF連対順位")}
+        _pop = _num("人気")
+        _cls = _num("クラス_num")
         _fav = _mr[_pop == 1]
         _favv = float(_fav.iloc[0]) if len(_fav) and pd.notna(_fav.iloc[0]) else np.nan
         _clsv = float(_cls.dropna().iloc[0]) if _cls.notna().any() else np.nan
