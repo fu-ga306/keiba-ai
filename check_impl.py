@@ -28,6 +28,11 @@ import keiba_predict as K
 YEARS = [2021, 2022, 2023, 2024, 2025]
 RECENT = [2024, 2025]
 
+# harness.py で測った値。本番がこれと一致しなければ実装がズレている。
+# 買い方を変えたら、この表もいっしょに更新すること。
+EXPECT = {"name": "荒れR勝率1位x2 馬単裏 1-10倍",
+          "点数": 1525, "的中": 52, "5年": 110.0, "直近2年": 103.0}
+
 
 def log(m):
     print(m, flush=True)
@@ -86,9 +91,12 @@ def main():
     log(f"  直近2年 的中{rh:>4}  回収率 {rr/rc*100:6.1f}%")
     log("  年別: " + "  ".join(
         f"{y}:{acc[y][1]/acc[y][0]*100:.1f}%" if acc[y][0] else f"{y}:--" for y in YEARS))
-    log("\n=== 検証スクリプト(portfolio_fix.py)の値 ===")
-    log("  A構成: 点数1,735 的中54  5年100.2%  直近2年101.8%（1レース1.0点）")
-    ok = abs(tr / tc * 100 - 100.2) < 1.0 and abs(int(tc / 100) - 1735) <= 5
+    log("\n=== 検証(harness.py / gradient.py)で測った値 ===")
+    log(f"  {EXPECT['name']}: 点数{EXPECT['点数']:,} 的中{EXPECT['的中']}"
+        f"  5年{EXPECT['5年']}%  直近2年{EXPECT['直近2年']}%")
+    ok = (abs(tr / tc * 100 - EXPECT["5年"]) < 1.0
+          and abs(int(tc / 100) - EXPECT["点数"]) <= 5
+          and th == EXPECT["的中"])
     log(f"\n  {'✅ 一致。実装は検証どおり' if ok else '⚠ 一致しない。実装を見直すこと'}")
 
 
