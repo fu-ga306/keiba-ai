@@ -1310,6 +1310,12 @@ def predict_race_pdf(race_id: str, *, history_df: pd.DataFrame, models_pack: dic
             pdf["連対確率"] = np.maximum(pdf["連対確率"], pdf["勝ち確率"])
             pdf["複勝確率"] = np.maximum(pdf["複勝確率"], pdf["連対確率"])
             pdf["3着内確率"] = pdf["複勝確率"]
+            # 順位もMF基準で作り直す（2026-08-16）。
+            #   確率だけMFに差し替えて順位を主モデルのまま残すと、両者が食い違う。
+            #   荒れR馬単裏方式は「MF連対順位」で軸と相手を決めるので、ここが要る。
+            pdf["MF連対順位"] = pdf["連対確率"].rank(ascending=False, method="first")
+            pdf["MF勝率順位"] = pdf["勝ち確率"].rank(ascending=False, method="first")
+            pdf["連対順位"] = pdf["MF連対順位"]
             pdf["単勝期待値"] = pdf["勝ち確率"] * pdf["単勝オッズ"] - 1
             pdf["複勝期待値"] = pdf["複勝確率"] * (pdf["単勝オッズ"] / 3.5).clip(1.1, 8.0) - 1
             # 実オッズがあるならそちらで複勝EVを取り直す（確率を差し替えたので再計算）
@@ -1790,6 +1796,33 @@ MYOMI_RATIO_MIN = 2.5             # ratio方式のときの閾値（要・本番
 #       1900mの「断層」も消えた（1800mとの差 20.4pt → 4.7pt）
 #   「2,027構成で唯一生き残った」という評価自体が汚染データ上のものだった。
 #   クリーンデータでの再探索でも、的中100本以上で100%を超えた構成はゼロ。
+# ── 荒れR馬単裏方式（2026-08-16採用）────────────────────────────────
+#   条件: 1番人気のMF複勝順位が4位以下のレース（＝モデルが1番人気を信用していない）
+#         連対順位1位を軸にし、連対順位4位以内の各馬から軸へ流す（馬単の裏）
+#   買い方: 馬単 1点500円 × 相手の数（通常3点）
+#
+#   なぜ「裏」か
+#     荒れRでは1番人気が崩れやすく、モデルの本命は勝ち切れないが2着には来る。
+#     軸を2着に置く形（相手→軸）がその構造に合う。従来は表しか試していなかった。
+#
+#   検証（bet_cache 2021-2025・walk-forward OOS）
+#     5年通算 112.6% / 5年中4年で100%超
+#     直近2年 115.6%（2024・2025とも100%超）・的中46本
+#     スリッページ模擬 115.6%（影響 0.0pt）
+#       ※オッズ条件を付けないので、7分前で判定しても選ぶ馬が変わらない。
+#         過去の候補が -20〜-27pt 落ちたのはオッズ帯を狭く切っていたため。
+#
+#   ⚠ 順列検定は通っていない（15,876構成から選んだ扱いで p=0.9067）。
+#     過去データでは「探索が広いほど翌年に崩れる」ことも実測されている
+#     （2,509構成から選ぶと 120.2% → 49.7%）。
+#     したがってこれは**前向き検証**であって、黒字が確認された構成ではない。
+#     実運用の成績を貯めて、半年後に判定する。
+USE_ARE_UMATAN = True             # 荒れR馬単裏方式
+ARE_FAV_MR_MIN = 4                # 1番人気のMF複勝順位がこれ以上なら「荒れR」
+ARE_AX_RANK = 1                   # 軸にする連対順位
+ARE_MATE_RANK = 4                 # 相手にする連対順位の上限
+ARE_STAKE = 500                   # 馬単1点あたりの金額（円）
+
 USE_FUKU_BETTING = False          # True で複勝方式を再開（非推奨）
 # 併用モード（2026-08-14）: 複勝方式とEV方式を同時に走らせ、実測を並行して集める。
 #   EV方式は確定オッズ基準119.6% / 7分前88.4%。差の原因は賭ける時刻であって
@@ -1819,7 +1852,9 @@ FUKU_STAKE = 1000                 # 複勝1点あたりの金額（円）
 #   「締切に近づけて投票すれば回復するか」を半年後に判定する材料を集める。
 #   紙(109.8%)と実運用(82.8%)の差が本当に賭ける時刻で説明できるのかは、
 #   実際に買った記録と締切2分前オッズを突き合わせないと確かめられない。
-USE_EV_BETTING = True             # 実運用の期待値は82.8%。データ収集のため稼働
+#   2026-08-16: 荒れR馬単裏方式の採用に伴い停止した。両方走らせると同じレースで
+#   重複購入になり、どちらの成績かも切り分けられなくなる。前向き検証を濁さない。
+USE_EV_BETTING = False            # 実運用の期待値は82.8%。荒れR方式に置き換え
 EV_GAP_MIN = 3.0                  # 乖離（人気順位 − モデル複勝順位）の下限
 EV_ODDS_MAX = 20.0                # 単勝オッズの上限
 EV_MIN_TOP = 1.7                  # モデル複勝1位に要求する期待値
@@ -1924,6 +1959,35 @@ def _race_bet_plan(pdf):
     「負けの大きいレースを買わない」施策。全体78.0%→92.1%＝損失を22%→8%に圧縮する。
     """
     plan = {"判定": "見送り", "指数": 25, "サイズ": "-", "理由": "", "menu": []}
+
+    # ── 荒れR馬単裏方式（2026-08-16・既定）──────────────────────────
+    #   1番人気をモデルが信用していないレースで、モデルの連対1位を「2着」に置く。
+    #   根拠と検証値は ARE_* 定数のコメント参照。オッズ条件を付けないので
+    #   7分前に判定しても選ぶ馬が変わらない（スリッページ影響 0.0pt）。
+    if USE_ARE_UMATAN:
+        _mr = pd.to_numeric(pdf.get("MF複勝順位"), errors="coerce")
+        _r2 = pd.to_numeric(pdf.get("MF連対順位"), errors="coerce")
+        _pop = pd.to_numeric(pdf.get("人気"), errors="coerce")
+        _fav = _mr[_pop == 1]
+        if _r2.notna().any() and len(_fav) and pd.notna(_fav.iloc[0]):
+            if float(_fav.iloc[0]) < ARE_FAV_MR_MIN:
+                plan.update({"指数": 30,
+                             "理由": (f"1番人気のモデル評価{int(_fav.iloc[0])}位"
+                                    f"（{ARE_FAV_MR_MIN}位以下でないため対象外）")})
+                return plan
+            ax = pdf[_r2 == ARE_AX_RANK]
+            mates = pdf[(_r2 <= ARE_MATE_RANK) & (_r2 != ARE_AX_RANK)]
+            if ax.empty or mates.empty:
+                plan.update({"指数": 35, "理由": "連対順位が取れず対象外"})
+                return plan
+            a = ax.iloc[0]
+            plan.update({"判定": "買い", "指数": 74, "サイズ": "標準",
+                         "理由": (f"荒れR馬単裏（1番人気=モデル{int(_fav.iloc[0])}位・"
+                                f"軸{a['馬名']}を2着）"),
+                         "menu": [("馬単", "荒れR馬単裏", 113)],
+                         "are_ax": a["馬番"],
+                         "are_mates": mates["馬番"].tolist()})
+            return plan
     cls_v = pd.to_numeric(pdf["クラス_num"].iloc[0], errors="coerce") \
         if "クラス_num" in pdf.columns else np.nan
     cls = float(cls_v) if pd.notna(cls_v) else np.nan
@@ -2160,6 +2224,25 @@ def _build_bet_rows(pdf, race_id):
 
     # 期待値方式は買う馬が確定しているので、印の展開を通さず直接1点を組む
     # （2026-08-04）。印は表示用に残るが、買い目とは切り離す。
+    # 荒れR馬単裏（2026-08-16）: 相手→軸の順で買う。軸は2着に来ることを狙う。
+    if plan.get("are_ax") is not None and plan.get("are_mates"):
+        rows = []
+        try:
+            a = int(pd.to_numeric(plan["are_ax"], errors="coerce"))
+        except (TypeError, ValueError):
+            a = None
+        if a is not None:
+            for m in plan["are_mates"]:
+                try:
+                    b = int(pd.to_numeric(m, errors="coerce"))
+                except (TypeError, ValueError):
+                    continue
+                rows.append({"race_id": race_id, "券種": "馬単", "買い方": "荒れR馬単裏",
+                             "組み合わせ": f"{b}-{a}", "BT回収率": 113,
+                             "判定": plan["判定"], "サイズ": plan["サイズ"],
+                             "金額": ARE_STAKE})
+        return rows
+
     # 複勝方式は1頭を複勝で1点だけ買う（2026-08-13）。
     # 馬単の相手取りはしない。A案で相手を広げたのは単勝の的中率を補うためで、
     # 複勝は元々44.8%当たるので薄める意味がない。
