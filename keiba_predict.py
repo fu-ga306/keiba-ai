@@ -1821,6 +1821,21 @@ USE_ARE_UMATAN = True             # 荒れR方式（下の ARE_PLANS をまと�
 ARE_FAV_MR_MIN = 4                # 1番人気のMF複勝順位がこれ以上なら「荒れR」
 ARE_STAKE = 500                   # 1点あたりの金額（円）
 
+# ⚠ 2026-08-16に2つの誤りを見つけたので記録する。
+#   ① verify34.py の集計が誤っており、A構成を149.2%と報告していた。
+#      5年分で正しく組み直すと 5年100.2% / 直近2年101.8% だった。
+#      この誤った値をもとに7構成を採用してしまった。
+#   ② 構成名の「1-20倍」は**軸のオッズ条件**なのに、実装で落としていた。
+#      条件を外すと別の買い方になる（A構成は101.8%→96.5%に変わる）。
+#
+#   正しい軸の選び方（portfolio_fix.py で検証したものと同じ）:
+#     軸   = 指定順位以内 かつ 単勝オッズが[下限,上限)の馬。その中で順位最小の1頭
+#     相手 = 指定順位以内の馬（軸を除く）。相手にオッズ条件は付けない
+#
+#   採用は A構成のみ。7構成のうち5年通算と直近2年の両方で100%を超えたのが
+#   これだけだったため（B は直近104.0%だが5年94.9%）。組み合わせても改善せず、
+#   最良の BG でも直近99.5%だった。
+
 # ── 採用する構成（2026-08-16）─────────────────────────────────────
 #   verify34 でスリッページを通過した31件のうち、**影響が±3pt以内**の
 #   7種類だけを採る。影響が大きいもの（-18〜-45pt）は狭いオッズ帯で切って
@@ -1842,14 +1857,9 @@ ARE_STAKE = 500                   # 1点あたりの金額（円）
 #
 #   ⚠ 6種類が同じ「荒れR」を買うので、1レースで複数の構成が同時に成立する。
 #     組み合わせが重複したぶんは _build_bet_rows で1点にまとめる。
+#   (名前, 券種, 基準, 軸順位, 相手順位, オッズ下限, オッズ上限, レース条件)
 ARE_PLANS = [
-    ("荒れR勝率1位x2 馬単裏", "馬単裏", "win", 1, 2, "are"),
-    ("クラス4+勝率1位x2 馬単裏", "馬単裏", "win", 1, 2, "cls4"),
-    ("荒れR勝率1位x2 馬連", "馬連", "win", 1, 2, "are"),
-    ("荒れR連対1位x4 馬単裏", "馬単裏", "ren", 1, 4, "are"),
-    ("荒れR勝率1位x3 馬単裏", "馬単裏", "win", 1, 3, "are"),
-    ("荒れR連対1位x5 馬単裏", "馬単裏", "ren", 1, 5, "are"),
-    ("荒れR勝率1位x4 馬単表", "馬単表", "win", 1, 4, "are"),
+    ("荒れR勝率1位x2 馬単裏", "馬単裏", "win", 1, 2, 1.0, 20.0, "are"),
 ]
 
 USE_FUKU_BETTING = False          # True で複勝方式を再開（非推奨）
@@ -2005,8 +2015,9 @@ def _race_bet_plan(pdf):
         _is_are = pd.notna(_favv) and _favv >= ARE_FAV_MR_MIN
         _is_cls4 = pd.notna(_clsv) and _clsv >= 4
 
+        _od = pd.to_numeric(pdf.get("単勝オッズ"), errors="coerce")
         picks, names = [], []
-        for nm, kind, bas, axr, mtr, cond in ARE_PLANS:
+        for nm, kind, bas, axr, mtr, olo, ohi, cond in ARE_PLANS:
             if cond == "are" and not _is_are:
                 continue
             if cond == "cls4" and not _is_cls4:
@@ -2014,9 +2025,15 @@ def _race_bet_plan(pdf):
             r = _rank.get(bas)
             if r is None or not r.notna().any():
                 continue
-            ax = pdf[r == axr]
-            mates = pdf[(r <= mtr) & (r != axr)]
-            if ax.empty or mates.empty:
+            # 軸は「順位≦axr かつ オッズが[olo,ohi)」。その中で順位が最小の1頭。
+            # このオッズ条件を落とすと検証と別の買い方になる（2026-08-16の反省）。
+            _axm = (r <= axr) & (_od >= olo) & (_od < ohi)
+            ax = pdf[_axm.fillna(False)]
+            if ax.empty:
+                continue
+            ax = ax.loc[[r[ax.index].idxmin()]]
+            mates = pdf[(r <= mtr) & (pdf["馬番"] != ax.iloc[0]["馬番"])]
+            if mates.empty:
                 continue
             picks.append({"名前": nm, "券種": kind,
                           "軸": ax.iloc[0]["馬番"],
@@ -2289,12 +2306,15 @@ def _build_bet_rows(pdf, race_id):
                     b = int(pd.to_numeric(m, errors="coerce"))
                 except (TypeError, ValueError):
                     continue
+                # 馬番は2桁ゼロ埋め。jv_payouts の組み合わせが "09-14" 形式なので、
+                # ここを揃えないと1桁馬番の買い目が照合できず的中が消える
+                # （2026-08-16に発生。的中54本が11本に見えていた）。
                 if p["券種"] == "馬単裏":
-                    kind, combo = "馬単", f"{b}-{a}"
+                    kind, combo = "馬単", f"{b:02d}-{a:02d}"
                 elif p["券種"] == "馬単表":
-                    kind, combo = "馬単", f"{a}-{b}"
+                    kind, combo = "馬単", f"{a:02d}-{b:02d}"
                 else:
-                    kind, combo = "馬連", f"{min(a,b)}-{max(a,b)}"
+                    kind, combo = "馬連", f"{min(a,b):02d}-{max(a,b):02d}"
                 key = (kind, combo)
                 seen.setdefault(key, []).append(p["名前"])
         rows = []
