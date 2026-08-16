@@ -3,6 +3,7 @@ Flask Dashboard - 競馬AI予想サイト
 GitHub の today_predictions.csv / prediction_record_v2.csv を読み込んで表示する。
 """
 import os
+import pickle
 import time
 from functools import lru_cache
 from io import StringIO
@@ -44,12 +45,94 @@ app.config["TEMPLATES_AUTO_RELOAD"] = True
 #   Sは馬券内率75.8%で1番人気(64.7%)を大きく上回る。1レースに0.23頭しか出ない。
 #   Dは8.9%＝11回に1回。明確に「来ない馬」として買わない判定に使う。
 #   ⚠ しきい値を変えたら、この表も実測で更新すること。
-GRADE_TH = [("S", 1.555), ("A", 0.821), ("B", 0.395)]
+#
+# ── 2026-08-16 改定：市場（オッズ）を評価に入れた ────────────────────
+#   上の表は「モデルだけ」で決めていたときのもの。モデルは市場をわざと見ない
+#   設計だが、市場の重みはモデルの8〜9倍ある。市場を無視して評価を切ると、
+#   市場が「来る」と言っている馬を取りこぼす。
+#
+#   複勝確率と勝率を、市場とモデルの2次元ロジスティックで出し直し、
+#       score = P(3着以内) + P(1着)      （0〜2の範囲）
+#   として固定しきい値で切る。固定なのは、少頭数レースで実力のない馬に
+#   Sが付くのを防ぐため。較正器は grade_calib.pkl（build_grade.py で作成）。
+#
+#   walk-forward 5年OOS 207,518頭での実測:
+#
+#     評価  しきい値   馬券内率  連対率  勝率    1R当り  中央オッズ
+#     S     ≥1.276     87.0%   77.5%  57.5%   0.11頭    1.5
+#     A     ≥0.791     65.2%   51.7%  31.2%   1.00頭    2.7
+#     B     ≥0.437     43.3%   29.8%  14.9%   2.35頭    5.5
+#     D     それ未満    11.9%    6.7%   2.7%  10.39頭   45.1
+#
+#   Sは馬券内87.0%・勝率57.5%（現行は74.6%/41.0%）。9レースに1頭なので
+#   1日36レースなら4頭ほど。年ごとの馬券内率は84.6〜89.2%で安定している。
+#
+#   ⚠ 正直に書いておくと、この改善はほぼ全部が「市場を入れたこと」による。
+#     市場のみで切っても同じ人数で馬券内80.8%になり、モデルを足した効果は
+#     +0.4pt程度しかない（係数も市場0.829に対しモデル0.117）。
+#     評価は「当たる表示」としては良くなったが、モデルの手柄ではない。
+#   ⚠ しきい値を変えたら build_grade.py を回し、この表も実測で更新すること。
+GRADE_TH = [("S", 1.276), ("A", 0.791), ("B", 0.437)]
 GRADE_NOBUY = "D"        # この評価は購入対象外として画面に明示する
+
+_GCAL = None
+_GCAL_LOADED = False
+_G_EPS = 1e-6
+
+
+def _gcal():
+    """評価用の2次元較正器を読む。無ければ None（そのときはモデルのみで切る）。"""
+    global _GCAL, _GCAL_LOADED
+    if not _GCAL_LOADED:
+        _GCAL_LOADED = True
+        try:
+            with open(os.path.join(BASE_DIR, "grade_calib.pkl"), "rb") as fh:
+                _GCAL = pickle.load(fh)
+        except FileNotFoundError:
+            print("  評価用較正器なし（build_grade.py で作成できます）")
+        except Exception as e:
+            print(f"  評価用較正器の読込に失敗: {e}")
+    return _GCAL
+
+
+def _logit(v):
+    v = np.clip(np.asarray(v, dtype=float), _G_EPS, 1 - _G_EPS)
+    return np.log(v / (1 - v))
+
+
+def grade_scores(odds, p_win, p_top3):
+    """レース1つぶんの評価スコアを返す。市場とモデルを合わせた P(複勝)+P(1着)。
+
+    odds/p_win/p_top3 は同じレースの全馬ぶんの配列。市場確率はレース内で
+    正規化するので、レース単位で呼ぶこと。較正器が無ければ None を返す。
+    """
+    c = _gcal()
+    if not c:
+        return None
+    o = pd.to_numeric(pd.Series(odds), errors="coerce")
+    w = pd.to_numeric(pd.Series(p_win), errors="coerce")
+    t = pd.to_numeric(pd.Series(p_top3), errors="coerce")
+    if o.isna().all() or w.isna().all() or t.isna().all():
+        return None
+    imp = 1.0 / o.clip(lower=1.01)
+    s = imp.sum()
+    if not np.isfinite(s) or s <= 0:
+        return None
+    lm = _logit(imp / s)
+    X3 = pd.DataFrame({"lm": lm, "l3": _logit(t)})
+    X3["i3"] = X3.lm * X3.l3
+    X1 = pd.DataFrame({"lm": lm, "l1": _logit(w)})
+    X1["i1"] = X1.lm * X1.l1
+    try:
+        p3 = c["m3"].predict_proba(X3[c["F3"]])[:, 1]
+        p1 = c["m1"].predict_proba(X1[c["F1"]])[:, 1]
+    except Exception:
+        return None
+    return pd.Series(p3 + p1, index=o.index)
 
 
 def grade_of(score):
-    """合成スコア（勝率＋連対率＋複勝率）を評価に変換する。"""
+    """スコアを評価に変換する。しきい値は GRADE_TH。"""
     if score is None or not np.isfinite(score):
         return "D"
     for g, th in GRADE_TH:
@@ -699,25 +782,29 @@ def race_detail(race_id):
     # 確定していれば各馬に着順・払戻を付ける（2026-08-07）。
     # 結果は別枠にせず、その馬の行に横並びで出す。
     rmap = _result_map(race_id)
-    for h in horses:
+    # 評価スコアはレース単位で作る（市場確率をレース内で正規化するため）。
+    # 較正器が無い環境では None が返るので、その場合は旧方式（モデルのみ）に落ちる。
+    _gsc = grade_scores([h.get("単勝オッズ") for h in horses],
+                        [h.get("勝ち確率") for h in horses],
+                        [h.get("複勝確率") for h in horses])
+    for _i, h in enumerate(horses):
         bn = pd.to_numeric(h.get("馬番"), errors="coerce")
         r = rmap.get(int(bn)) if pd.notna(bn) else None
         h["res_pos"] = r["pos"] if r else None
         h["res_tan"] = r["tan"] if r else ""
         h["res_fuku"] = r["fuku"] if r else ""
 
-        # しきい値は GRADE_TH（実績基準）。算出根拠はそちらのコメント参照。
-        # 評価グレード（2026-08-09改定）。
-        #   当初は複勝確率だけで決めていたが、それだと「3着に来るだけの馬」と
-        #   「勝ち負けする馬」が同じ評価になる。勝率・連対率・複勝率を足した
-        #   合成スコアに変えた。これは1着3点・2着2点・3着1点としたときの
-        #   期待獲得点そのもの（P(1着)+P(2着内)+P(3着内)）で、
-        #   8/9実測では予測0.440に対し実測0.444とほぼ一致している。
-        #   3つとも較正済みの絶対値なので、レース内の相対順ではなく固定の
-        #   しきい値で切る。少頭数レースで実力のない馬にAが付くのを防ぐため。
-        _p = [pd.to_numeric(h.get(c), errors="coerce")
-              for c in ("勝ち確率", "連対確率", "複勝確率")]
-        score = float(sum(float(v) for v in _p if pd.notna(v)))
+        # 評価グレード（2026-08-16改定）。しきい値と根拠は GRADE_TH のコメント参照。
+        #   市場（オッズ）とモデルを合わせた P(3着以内)+P(1着) で切る。
+        #   較正器が読めないときだけ、旧方式（モデルの勝率+連対率+複勝率）に落ちる。
+        #   旧方式は市場を見ないぶん精度が落ちる（Sの馬券内 87.0%→74.6%）ので、
+        #   あくまで非常用。grade_calib.pkl が無ければ build_grade.py で作ること。
+        if _gsc is not None and pd.notna(_gsc.iloc[_i]):
+            score = float(_gsc.iloc[_i])
+        else:
+            _p = [pd.to_numeric(h.get(c), errors="coerce")
+                  for c in ("勝ち確率", "連対確率", "複勝確率")]
+            score = float(sum(float(v) for v in _p if pd.notna(v)))
         h["grade_score"] = round(score, 2)
         h["grade"] = grade_of(score)
         # 穴注目（根拠は ANA_POP_MIN 付近のコメント）。人気薄でモデルだけが推す馬。
@@ -830,9 +917,19 @@ def stats():
     # ── 評価グレード別（予測と実測の突き合わせ）──────────────
     grades = []
     if {"勝ち確率", "連対確率", "複勝確率"} <= set(d.columns):
-        sc = (pd.to_numeric(d["勝ち確率"], errors="coerce")
-              + pd.to_numeric(d["連対確率"], errors="coerce")
-              + pd.to_numeric(d["複勝確率"], errors="coerce"))
+        sc = None
+        # レースごとに market+model のスコアを作る（詳細ページと同じ計算）。
+        if {"race_id", "単勝オッズ"} <= set(d.columns) and _gcal():
+            parts = []
+            for _rid, _g in d.groupby("race_id", sort=False):
+                _s = grade_scores(_g["単勝オッズ"], _g["勝ち確率"], _g["複勝確率"])
+                parts.append(_s if _s is not None
+                             else pd.Series(np.nan, index=_g.index))
+            sc = pd.concat(parts).reindex(d.index)
+        if sc is None or sc.isna().all():
+            sc = (pd.to_numeric(d["勝ち確率"], errors="coerce")
+                  + pd.to_numeric(d["連対確率"], errors="coerce")
+                  + pd.to_numeric(d["複勝確率"], errors="coerce"))
         d["_score"] = sc
         d["_grade"] = np.select([sc >= th for _, th in GRADE_TH],
                                 [g for g, _ in GRADE_TH], GRADE_NOBUY)
