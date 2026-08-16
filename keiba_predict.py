@@ -1817,11 +1817,40 @@ MYOMI_RATIO_MIN = 2.5             # ratio方式のときの閾値（要・本番
 #     （2,509構成から選ぶと 120.2% → 49.7%）。
 #     したがってこれは**前向き検証**であって、黒字が確認された構成ではない。
 #     実運用の成績を貯めて、半年後に判定する。
-USE_ARE_UMATAN = True             # 荒れR馬単裏方式
+USE_ARE_UMATAN = True             # 荒れR方式（下の ARE_PLANS をまとめて実行）
 ARE_FAV_MR_MIN = 4                # 1番人気のMF複勝順位がこれ以上なら「荒れR」
-ARE_AX_RANK = 1                   # 軸にする連対順位
-ARE_MATE_RANK = 4                 # 相手にする連対順位の上限
-ARE_STAKE = 500                   # 馬単1点あたりの金額（円）
+ARE_STAKE = 500                   # 1点あたりの金額（円）
+
+# ── 採用する構成（2026-08-16）─────────────────────────────────────
+#   verify34 でスリッページを通過した31件のうち、**影響が±3pt以内**の
+#   7種類だけを採る。影響が大きいもの（-18〜-45pt）は狭いオッズ帯で切って
+#   おり、実運用で必ず崩れるので入れない。
+#
+#   (名前, 券種, 基準列, 軸順位, 相手順位上限, レース条件)
+#     券種  "馬単裏" = 相手→軸 / "馬単表" = 軸→相手 / "馬連" = 順不同
+#     基準  win=MF勝率順位 / ren=MF連対順位
+#     条件  are=荒れR（1番人気がMF複勝4位以下） / cls4=クラス4以上
+#
+#   各構成の検証値（直近2年ROI / 的中 / 7分前ROI / 影響pt）
+#     荒れR 勝率1位軸x上位2 馬単裏   149.2% / 18 / 148.5% / -0.8
+#     クラス4+ 勝率1位軸x上位2 馬単裏 132.6% / 34 / 132.8% / +0.2
+#     荒れR 勝率1位軸x上位2 馬連     126.8% / 28 / 126.1% / -0.7
+#     荒れR 連対1位軸x上位4 馬単裏   117.7% / 46 / 116.1% / -1.6
+#     荒れR 勝率1位軸x上位3 馬単裏   114.1% / 31 / 115.3% / +1.2
+#     荒れR 連対1位軸x上位5 馬単裏   110.6% / 55 / 109.5% / -1.1
+#     荒れR 勝率1位軸x上位4 馬単表   108.0% / 41 / 106.8% / -1.2
+#
+#   ⚠ 6種類が同じ「荒れR」を買うので、1レースで複数の構成が同時に成立する。
+#     組み合わせが重複したぶんは _build_bet_rows で1点にまとめる。
+ARE_PLANS = [
+    ("荒れR勝率1位x2 馬単裏", "馬単裏", "win", 1, 2, "are"),
+    ("クラス4+勝率1位x2 馬単裏", "馬単裏", "win", 1, 2, "cls4"),
+    ("荒れR勝率1位x2 馬連", "馬連", "win", 1, 2, "are"),
+    ("荒れR連対1位x4 馬単裏", "馬単裏", "ren", 1, 4, "are"),
+    ("荒れR勝率1位x3 馬単裏", "馬単裏", "win", 1, 3, "are"),
+    ("荒れR連対1位x5 馬単裏", "馬単裏", "ren", 1, 5, "are"),
+    ("荒れR勝率1位x4 馬単表", "馬単表", "win", 1, 4, "are"),
+]
 
 USE_FUKU_BETTING = False          # True で複勝方式を再開（非推奨）
 # 併用モード（2026-08-14）: 複勝方式とEV方式を同時に走らせ、実測を並行して集める。
@@ -1966,28 +1995,49 @@ def _race_bet_plan(pdf):
     #   7分前に判定しても選ぶ馬が変わらない（スリッページ影響 0.0pt）。
     if USE_ARE_UMATAN:
         _mr = pd.to_numeric(pdf.get("MF複勝順位"), errors="coerce")
-        _r2 = pd.to_numeric(pdf.get("MF連対順位"), errors="coerce")
+        _rank = {"win": pd.to_numeric(pdf.get("MF勝率順位"), errors="coerce"),
+                 "ren": pd.to_numeric(pdf.get("MF連対順位"), errors="coerce")}
         _pop = pd.to_numeric(pdf.get("人気"), errors="coerce")
+        _cls = pd.to_numeric(pdf.get("クラス_num"), errors="coerce")
         _fav = _mr[_pop == 1]
-        if _r2.notna().any() and len(_fav) and pd.notna(_fav.iloc[0]):
-            if float(_fav.iloc[0]) < ARE_FAV_MR_MIN:
-                plan.update({"指数": 30,
-                             "理由": (f"1番人気のモデル評価{int(_fav.iloc[0])}位"
-                                    f"（{ARE_FAV_MR_MIN}位以下でないため対象外）")})
-                return plan
-            ax = pdf[_r2 == ARE_AX_RANK]
-            mates = pdf[(_r2 <= ARE_MATE_RANK) & (_r2 != ARE_AX_RANK)]
+        _favv = float(_fav.iloc[0]) if len(_fav) and pd.notna(_fav.iloc[0]) else np.nan
+        _clsv = float(_cls.dropna().iloc[0]) if _cls.notna().any() else np.nan
+        _is_are = pd.notna(_favv) and _favv >= ARE_FAV_MR_MIN
+        _is_cls4 = pd.notna(_clsv) and _clsv >= 4
+
+        picks, names = [], []
+        for nm, kind, bas, axr, mtr, cond in ARE_PLANS:
+            if cond == "are" and not _is_are:
+                continue
+            if cond == "cls4" and not _is_cls4:
+                continue
+            r = _rank.get(bas)
+            if r is None or not r.notna().any():
+                continue
+            ax = pdf[r == axr]
+            mates = pdf[(r <= mtr) & (r != axr)]
             if ax.empty or mates.empty:
-                plan.update({"指数": 35, "理由": "連対順位が取れず対象外"})
-                return plan
-            a = ax.iloc[0]
+                continue
+            picks.append({"名前": nm, "券種": kind,
+                          "軸": ax.iloc[0]["馬番"],
+                          "相手": mates["馬番"].tolist()})
+            names.append(nm)
+        if picks:
+            _why = []
+            if _is_are:
+                _why.append(f"荒れR(1番人気=モデル{int(_favv)}位)")
+            if _is_cls4:
+                _why.append(f"クラス{int(_clsv)}")
             plan.update({"判定": "買い", "指数": 74, "サイズ": "標準",
-                         "理由": (f"荒れR馬単裏（1番人気=モデル{int(_fav.iloc[0])}位・"
-                                f"軸{a['馬名']}を2着）"),
-                         "menu": [("馬単", "荒れR馬単裏", 113)],
-                         "are_ax": a["馬番"],
-                         "are_mates": mates["馬番"].tolist()})
+                         "理由": f"{'・'.join(_why)} / {len(picks)}構成が成立",
+                         "menu": [("馬単", "荒れR方式", 113)],
+                         "are_picks": picks})
             return plan
+        plan.update({"指数": 32,
+                     "理由": (f"1番人気のモデル評価{int(_favv)}位（荒れR対象外）"
+                            if pd.notna(_favv) and not _is_are
+                            else "荒れR方式の条件に該当せず")})
+        return plan
     cls_v = pd.to_numeric(pdf["クラス_num"].iloc[0], errors="coerce") \
         if "クラス_num" in pdf.columns else np.nan
     cls = float(cls_v) if pd.notna(cls_v) else np.nan
@@ -2224,23 +2274,36 @@ def _build_bet_rows(pdf, race_id):
 
     # 期待値方式は買う馬が確定しているので、印の展開を通さず直接1点を組む
     # （2026-08-04）。印は表示用に残るが、買い目とは切り離す。
-    # 荒れR馬単裏（2026-08-16）: 相手→軸の順で買う。軸は2着に来ることを狙う。
-    if plan.get("are_ax") is not None and plan.get("are_mates"):
-        rows = []
-        try:
-            a = int(pd.to_numeric(plan["are_ax"], errors="coerce"))
-        except (TypeError, ValueError):
-            a = None
-        if a is not None:
-            for m in plan["are_mates"]:
+    # 荒れR方式（2026-08-16）: 採用した7構成をまとめて買い目にする。
+    #   6構成が同じ「荒れR」を対象にするので、同じ組み合わせが重複しうる。
+    #   同一の(券種,組み合わせ)は1点にまとめ、買い方の欄に全構成名を並べる。
+    if plan.get("are_picks"):
+        seen = {}
+        for p in plan["are_picks"]:
+            try:
+                a = int(pd.to_numeric(p["軸"], errors="coerce"))
+            except (TypeError, ValueError):
+                continue
+            for m in p["相手"]:
                 try:
                     b = int(pd.to_numeric(m, errors="coerce"))
                 except (TypeError, ValueError):
                     continue
-                rows.append({"race_id": race_id, "券種": "馬単", "買い方": "荒れR馬単裏",
-                             "組み合わせ": f"{b}-{a}", "BT回収率": 113,
-                             "判定": plan["判定"], "サイズ": plan["サイズ"],
-                             "金額": ARE_STAKE})
+                if p["券種"] == "馬単裏":
+                    kind, combo = "馬単", f"{b}-{a}"
+                elif p["券種"] == "馬単表":
+                    kind, combo = "馬単", f"{a}-{b}"
+                else:
+                    kind, combo = "馬連", f"{min(a,b)}-{max(a,b)}"
+                key = (kind, combo)
+                seen.setdefault(key, []).append(p["名前"])
+        rows = []
+        for (kind, combo), names in seen.items():
+            rows.append({"race_id": race_id, "券種": kind,
+                         "買い方": "荒れR方式", "組み合わせ": combo,
+                         "BT回収率": 113, "判定": plan["判定"],
+                         "サイズ": plan["サイズ"], "金額": ARE_STAKE,
+                         "根拠構成": "/".join(sorted(set(names)))})
         return rows
 
     # 複勝方式は1頭を複勝で1点だけ買う（2026-08-13）。
