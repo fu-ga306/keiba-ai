@@ -91,9 +91,15 @@ def load():
     rf["race_id"] = rf["race_id"].astype(str).str.replace(r"\.0$", "", regex=True)
     D = D.merge(rf, on="race_id", how="left")
     g = D.groupby("race_id")
-    D["r1"] = g["c_win"].rank(ascending=False, method="first")
-    D["r2"] = g["c_top2"].rank(ascending=False, method="first")
-    D["r3"] = g["c_top3"].rank(ascending=False, method="first")
+    # 順位は「較正前」の確率で作る。本番(keiba_predict:1282)が
+    #   pdf["MF複勝順位"] = pd.Series(p3).rank(...)
+    # と生の予測値で順位を付けているため。較正(isotonic)は単調変換なので
+    # 理屈では順位が変わらないはずだが、実際には同値の潰れ方が違って変わる。
+    # c_* で作ると本番と別の馬を軸にする（2026-08-17に発見。荒れR馬単裏
+    # 1-10倍の5年ROIが 68.5%(c_) と 82.1%(p_) でズレた）。
+    D["r1"] = g["p_win"].rank(ascending=False, method="first")
+    D["r2"] = g["p_top2"].rank(ascending=False, method="first")
+    D["r3"] = g["p_top3"].rank(ascending=False, method="first")
     fav = D[D.pr == 1][["race_id", "r3"]].rename(columns={"r3": "fav_mr"})
     D = D.merge(fav, on="race_id", how="left")
     jv = pd.read_csv("jv_payouts.csv", dtype=str)
