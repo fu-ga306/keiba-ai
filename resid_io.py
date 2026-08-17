@@ -92,11 +92,16 @@ def predict_gap(model, df, race_col="race_id", odds_col="単勝オッズ"):
 def pick_bet(d, gap_min=None, model=None):
     """軸の1頭を返す。gap が最大で、かつ gap >= gap_min のときだけ。
 
+    しきい値の優先順位は 引数 > このファイルの AX_GAP。
+    pkl の中の gap_min は見ない。pkl はモデルを作った時点の値を持っており、
+    しきい値だけ変えたときに古い値が勝ってしまうため（2026-08-17に発生。
+    AX_GAP を1.5にしたのに pkl の2.0が使われ、1.5〜2.0の馬が記録されなかった）。
+
     返り値: 1行のDataFrame、または None
     """
     if d is None or d.empty or "gap" not in d.columns:
         return None
-    th = gap_min if gap_min is not None else (model or {}).get("gap_min", 2.0)
+    th = gap_min if gap_min is not None else AX_GAP
     g = pd.to_numeric(d["gap"], errors="coerce")
     if not g.notna().any():
         return None
@@ -128,7 +133,21 @@ def pick_bet(d, gap_min=None, model=None):
 #     軸gap>=3.0 で追加すると 180.5% と出るが、追加したワイドの的中が7本しかなく
 #     直近3年は的中ゼロ。2021-2022の大穴3本で作られた数字なので採らない。
 #     12頭以下で追加は 82.3% で逆効果。
-AX_GAP = 2.0
+#   2026-08-17 追記: 軸のしきい値を緩めた
+#     厳しくすると数字は上がるが、少数の大穴に頼る形になり区間が広がる。
+#     未見の2026年で上位3本を除いたときの成績が、それをはっきり示した。
+#       軸gap>=2.0  2026年 268.1% → 上位3本除くと 31.4%
+#       軸gap>=1.7  2026年 153.4% → 上位3本除くと 39.5%
+#       軸gap>=1.5  2026年 115.6% → 上位3本除くと 57.2%
+#     過去5年と2026年の一致度も、緩いほうが良い。
+#       >=2.0  163.3% vs 268.1%（乖離105pt）
+#       >=1.5  120.6% vs 115.6%（乖離  5pt）
+#     年ごとの振れ幅も >=2.0 が268pt、>=1.5 が84pt。
+#
+#     そこで前向き検証では **1.5 と 1.7 の両方**を記録し、実測で決める。
+#     記録は「軸gap>=1.5」で行い、1.7の成績はあとから絞り込んで出せる。
+AX_GAP = 1.5             # 記録・買い判断のしきい値（緩めた側）。pklより優先
+AX_GAP_TIGHT = 1.7       # もう一方の候補。paper_report が両方を集計する
 MATE_GAP = 1.3
 MATE_MAX = 3
 

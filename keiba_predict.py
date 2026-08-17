@@ -1614,6 +1614,10 @@ def predict_race_pdf(race_id: str, *, history_df: pd.DataFrame, models_pack: dic
             # MF勝率順位で軸と相手を決めるのに、この2列を保存していなかったため
             # 「なぜその買い目になったか」をあとから確かめられなかった。
             "MF勝率順位", "MF連対順位", "クラス_num",
+            # 残差モデルの gap（2026-08-17）。ダッシュボードの印に使う。
+            # gap = モデルの予測確率 ÷ 市場の確率。2.0なら市場の2倍強いと見ている。
+            # ⚠ 列名は resid_gap。"gap" は既に「乖離」で使われているため。
+            "resid_gap",
             "該当戦略", "推奨ランク", "総合スコア", "券種推奨", "妙味軸",
             "妙味", "乖離",   # 2026-07-31: ★判定と市場との評価差（メール/ダッシュボード用）
             "買い指数", "購入推奨", "想定単回収", "買いサイズ",
@@ -1675,6 +1679,10 @@ def predict_race_pdf(race_id: str, *, history_df: pd.DataFrame, models_pack: dic
     #   すべて崩れているため、数字ではなく実測で決める。
     #   ⚠ ここで例外が出ても予想処理は止めない。記録は補助でしかない。
     if not _skip_save:
+        try:
+            _attach_resid_gap(pdf)      # ダッシュボード表示用に gap を pdf に載せる
+        except Exception as e:
+            print(f"  残差gapの付与に失敗（表示のみ影響）: {type(e).__name__}: {e}")
         try:
             _record_resid_paper(pdf, race_id, jyo_name, race_no)
         except Exception as e:
@@ -2046,9 +2054,23 @@ RACE_BUDGET_MAX = None            # (旧)全帯共通の上限。設定時は RA
 PAPER_RESID_PATH = "paper_resid.csv"
 # 記録の列。順序を固定する。列を足し引きすると過去の行が読めなくなる
 # （2026-08-15に odds_history.csv で実際に起きた。1,235行が全部読めなくなった）。
+#   軸gap を持たせておくと、あとから「しきい値1.5だったら/1.7だったら」を
+#   数え直せる。記録は緩い側(1.5)で行い、厳しい側は絞り込みで出す。
 PAPER_COLS = ["race_id", "jyo", "race_no", "馬場", "券種", "組み合わせ", "役割",
-              "馬番", "馬名", "単勝オッズ", "人気", "gap", "残差確率", "市場確率",
+              "馬番", "馬名", "単勝オッズ", "人気", "gap", "軸gap",
               "判定", "記録時刻"]
+
+
+def _attach_resid_gap(pdf):
+    """残差モデルの gap を pdf に付ける。表示用なので失敗しても無視してよい。"""
+    import resid_io
+    m = resid_io.load_model()
+    if m is None:
+        return
+    d = resid_io.predict_gap(m, pdf)
+    if d is None or d.empty or "gap" not in d.columns:
+        return
+    pdf["resid_gap"] = pd.to_numeric(d["gap"], errors="coerce").round(4).values
 
 
 def _record_resid_paper(pdf, race_id, jyo_name, race_no):
@@ -2071,6 +2093,7 @@ def _record_resid_paper(pdf, race_id, jyo_name, race_no):
     bets = resid_io.pick_bets(d, model=m, pdf=pdf)
     now = datetime.now().strftime("%Y/%m/%d %H:%M")
     gs = pd.to_numeric(d["gap"], errors="coerce")
+    ax_gap = float(gs.max()) if gs.notna().any() else float("nan")
     rows = []
     if bets:
         for b in bets:
@@ -2081,8 +2104,8 @@ def _record_resid_paper(pdf, race_id, jyo_name, race_no):
                          "単勝オッズ": b["単勝オッズ"],
                          "人気": d.loc[d["馬名"] == b["馬名"], "人気"].iloc[0]
                          if "人気" in d.columns and (d["馬名"] == b["馬名"]).any() else None,
-                         "gap": round(b["gap"], 4), "残差確率": None,
-                         "市場確率": None, "判定": "買い", "記録時刻": now})
+                         "gap": round(b["gap"], 4), "軸gap": round(ax_gap, 4),
+                         "判定": "買い", "記録時刻": now})
     else:
         top = d.loc[gs.idxmax()] if gs.notna().any() else None
         rows.append({"race_id": str(race_id), "jyo": jyo_name, "race_no": race_no,
@@ -2092,7 +2115,7 @@ def _record_resid_paper(pdf, race_id, jyo_name, race_no):
                      "単勝オッズ": top.get("単勝オッズ") if top is not None else None,
                      "人気": top.get("人気") if top is not None else None,
                      "gap": round(float(gs.max()), 4) if gs.notna().any() else None,
-                     "残差確率": None, "市場確率": None,
+                     "軸gap": round(float(gs.max()), 4) if gs.notna().any() else None,
                      "判定": "見送り", "記録時刻": now})
     p = os.path.join(BASE_DIR, PAPER_RESID_PATH)
     df = pd.DataFrame(rows)

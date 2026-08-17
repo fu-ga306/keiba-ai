@@ -131,6 +131,43 @@ def grade_scores(odds, p_win, p_top3):
     return pd.Series(p3 + p1, index=o.index)
 
 
+# ── 残差モデルの印（2026-08-17）──────────────────────────────────────
+#   gap = モデルの予測確率 ÷ 市場の確率。市場が見落としている度合い。
+#   軸(1.5以上でレース内最大) → 単勝。相手(1.3以上) → 軸とのワイド・馬連。
+#   数字の根拠は resid_io.py と SYSTEM.md「運用の現在形」を参照。
+RESID_AX = 1.5          # 軸のしきい値（resid_io.AX_GAP と揃える）
+RESID_MATE = 1.3        # 相手のしきい値（resid_io.MATE_GAP と揃える）
+RESID_SUB = 1.1         # 押さえ
+
+
+def resid_marks(horses):
+    """各馬に残差モデルの印を付ける。gap が無ければ何もしない。
+
+    h["r_mark"]  : "★軸" / "○" / "△" / ""
+    h["r_gap"]   : gap（小数2桁）
+    h["r_main"]  : True ならメインで買う馬（単勝の対象）
+    """
+    # ⚠ 列名は resid_gap。"gap" は既に「乖離（人気順位−モデル順位）」で
+    #   使われているので衝突する（2026-08-17に実際に衝突した）。
+    gs = [pd.to_numeric(h.get("resid_gap"), errors="coerce") for h in horses]
+    if not any(pd.notna(g) for g in gs):
+        for h in horses:
+            h["r_mark"], h["r_gap"], h["r_main"] = "", None, False
+        return
+    top = max((g for g in gs if pd.notna(g)), default=None)
+    for h, g in zip(horses, gs):
+        h["r_gap"] = round(float(g), 2) if pd.notna(g) else None
+        h["r_main"] = bool(pd.notna(g) and g == top and g >= RESID_AX)
+        if h["r_main"]:
+            h["r_mark"] = "★軸"
+        elif pd.notna(g) and g >= RESID_MATE:
+            h["r_mark"] = "○"
+        elif pd.notna(g) and g >= RESID_SUB:
+            h["r_mark"] = "△"
+        else:
+            h["r_mark"] = ""
+
+
 def grade_of(score):
     """スコアを評価に変換する。しきい値は GRADE_TH。"""
     if score is None or not np.isfinite(score):
@@ -817,6 +854,21 @@ def race_detail(race_id):
         vals = [pd.to_numeric(h.get(c), errors="coerce") for c, _ in ABILITY_AXES]
         vals = [float(v) for v in vals if pd.notna(v)]
         h["abil_avg"] = round(sum(vals) / len(vals), 1) if vals else None
+
+    # ── 残差モデルの印（2026-08-17）────────────────────────────────
+    #   このモデルは「市場（オッズ）が何を見落としているか」を学ぶ。
+    #   gap = モデルの予測確率 ÷ 市場の確率。2.0なら市場の2倍強いと見ている。
+    #
+    #   印の意味
+    #     ★軸 … gapが最大かつ 1.5以上。**メインで買う馬（単勝）**
+    #     ○  … gap 1.3以上。軸との組み合わせ（ワイド・馬連）で狙える相手
+    #     △  … gap 1.1以上。押さえ
+    #   軸と○を組み合わせれば、単勝が外れてもワイド・馬連で拾える形になる。
+    #
+    #   ⚠ 表示のみ。購入は BETTING_ENABLED=False で停止中。
+    #   ⚠ 検証値は「軸の単勝＋ダートならワイド」で 5年120.6%（軸gap>=1.5）。
+    #     馬連・3連系は検証で単勝に届かなかったので、印はあくまで目安。
+    resid_marks(horses)
 
     return render_template(
         "race_detail.html",

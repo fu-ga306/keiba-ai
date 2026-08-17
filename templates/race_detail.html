@@ -65,6 +65,7 @@
         {# 列見出しクリックで並べ替え。data-k は tbody の data-* と対応させる #}
         <tr class="sortable">
           {% if has_result %}<th data-k="res" title="確定した着順と払戻">結果</th>{% endif %}
+          <th data-k="rmark" title="残差モデルの印。gap＝モデルの予測確率÷市場の確率で、市場が何を見落としているかを表す。★軸=gap1.5以上でレース内最大→メインで買う馬（単勝）。○=gap1.3以上→軸との組み合わせ（ワイド・馬連）で狙える。△=gap1.1以上→押さえ">買い印</th>
           <th data-k="mark">印</th>
           <th data-k="ban">馬番</th>
           <th>馬名</th>
@@ -92,7 +93,8 @@
             data-fuku="{{ h.fuku_pct }}" data-ev="{{ h.ev_val }}"
             data-res="{{ h.res_pos or 99 }}"
             data-grade="{{ {'S':1,'A':2,'B':3,'D':4}.get(h.grade, 9) }}"
-            data-abil="{{ h.abil_avg if h.abil_avg is not none else -1 }}">
+            data-abil="{{ h.abil_avg if h.abil_avg is not none else -1 }}"
+            data-rmark="{{ 1 if h.r_main else (2 if h.r_mark == '○' else (3 if h.r_mark == '△' else 9)) }}">
           {% if has_result %}
           <td class="res-cell center{% if h.res_pos and h.res_pos <= 3 %} res-medal res-{{ h.res_pos }}{% endif %}">
             {%- if h.res_pos -%}
@@ -105,6 +107,15 @@
           <td class="rank-mark rank-{{ h.signal_cls }} center">
             {%- if h.is_star %}<span class="star" title="市場より高評価（乖離{{ h.gap }}）">★</span>{% endif -%}
             {{ h.推奨ランク }}</td>
+          <td class="center rmark-cell">
+            {%- if h.r_main -%}
+              <span class="rmark-main" title="メインで買う馬（単勝）。gap {{ h.r_gap }}＝市場の{{ h.r_gap }}倍強いとモデルが見ている">★軸</span>
+            {%- elif h.r_mark -%}
+              <span class="rmark-sub rmark-{{ '2' if h.r_mark == '○' else '3' }}"
+                title="軸との組み合わせ（ワイド・馬連）で狙える相手。gap {{ h.r_gap }}">{{ h.r_mark }}</span>
+            {%- endif -%}
+            {%- if h.r_gap %}<span class="rmark-gap">{{ h.r_gap }}</span>{% endif -%}
+          </td>
           <td class="center">{{ h.馬番 | int }}</td>
           <td class="horse-name-cell">{{ h.馬名 }}{% if h.buy_kinds %}<span class="buy-kind">{{ h.buy_kinds }}</span>{% endif %}</td>
           <td><span class="signal-badge signal-{{ h.signal_cls }}">{{ h.signal_label }}</span></td>
@@ -268,7 +279,7 @@
   if (!head) return;
   var tbody = document.querySelector('.horse-table tbody');
   // 小さい方が良い指標（順位・人気・オッズ）は既定を昇順、率などは降順にする
-  var ASC_FIRST = { mark: 1, ban: 1, airank: 1, pop: 1, odds: 1, res: 1, grade: 1 };
+  var ASC_FIRST = { mark: 1, rmark: 1, ban: 1, airank: 1, pop: 1, odds: 1, res: 1, grade: 1 };
   var cur = null, asc = true;
   head.querySelectorAll('th[data-k]').forEach(function (th) {
     th.style.cursor = 'pointer';

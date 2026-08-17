@@ -892,3 +892,24 @@ body {
                      vector-effect:non-scaling-stroke; opacity:.7; }
 .chart-axis { display:flex; justify-content:space-between; font-size:.72rem; opacity:.55; }
 .chart-range { font-size:.72rem; opacity:.5; margin-top:2px; }
+
+/* ── 残差モデルの印（2026-08-17）──────────────────────────────
+   gap ＝ モデルの予測確率 ÷ 市場の確率。市場が見落としている度合い。
+   ★軸 はメインで買う馬（単勝）なので、他の印と明確に見た目を変える。 */
+.rmark-cell { white-space: nowrap; }
+.rmark-main {
+  display: inline-block; padding: 2px 7px; border-radius: 5px;
+  background: linear-gradient(135deg, #e8590c, #f08c00);
+  color: #fff; font-weight: 700; font-size: 0.82rem; letter-spacing: .02em;
+  box-shadow: 0 1px 3px rgba(232,89,12,.35);
+}
+.rmark-sub {
+  display: inline-block; min-width: 1.5em; padding: 2px 5px; border-radius: 5px;
+  font-weight: 700; font-size: 0.82rem; text-align: center;
+}
+.rmark-2 { background: #d0ebff; color: #1864ab; }   /* ○ 相手（ワイド・馬連） */
+.rmark-3 { background: #f1f3f5; color: #495057; }   /* △ 押さえ */
+.rmark-gap {
+  display: inline-block; margin-left: 4px; font-size: 0.7rem;
+  color: #868e96; font-variant-numeric: tabular-nums;
+}
