@@ -1667,6 +1667,19 @@ def predict_race_pdf(race_id: str, *, history_df: pd.DataFrame, models_pack: dic
     except Exception as e:
         print(f"  予想データ保存エラー: {e}")
 
+    # ── 残差モデルの前向き検証（2026-08-17）──────────────────────────────
+    #   買わずに「買うはずだった馬」だけを記録する。実際の購入は行わない。
+    #   バックテストは 1,891点・的中203・5年通算157.1% だが、年別は
+    #   178/92/227/266/86 で2年が100%割れ。的中203本では確定できないので、
+    #   実測を貯めてから判断する。過去8回、バックテストで良く見えたものが
+    #   すべて崩れているため、数字ではなく実測で決める。
+    #   ⚠ ここで例外が出ても予想処理は止めない。記録は補助でしかない。
+    if not _skip_save:
+        try:
+            _record_resid_paper(pdf, race_id, jyo_name, race_no)
+        except Exception as e:
+            print(f"  残差モデルの記録に失敗（予想には影響なし）: {type(e).__name__}: {e}")
+
     # ── today_bets.csv 保存（推奨買い目を馬番展開して記録）─────────────────
     #   analyze_accuracy.py が実払戻(payout_scraper)と照合し、買い目単位のROIを日次検証する。
     try:
@@ -2028,6 +2041,55 @@ KIND_UNIT = {}                    # 券種別の金額“固定”上書き(円)
 KIND_SKIP = []                    # 買わない券種 例: ["3連単"] で点数を大幅削減
 RACE_BUDGET_MAX = None            # (旧)全帯共通の上限。設定時は RACE_BUDGET より優先
 #   例: RACE_BUDGET_MAX=2000 → 1日約3.8万円上限 / KIND_SKIP=["3連単"] → 1日約270点に減
+
+
+PAPER_RESID_PATH = "paper_resid.csv"
+# 記録の列。順序を固定する。列を足し引きすると過去の行が読めなくなる
+# （2026-08-15に odds_history.csv で実際に起きた。1,235行が全部読めなくなった）。
+PAPER_COLS = ["race_id", "jyo", "race_no", "馬番", "馬名", "単勝オッズ", "人気",
+              "gap", "残差確率", "市場確率", "残差EV", "判定", "記録時刻"]
+
+
+def _record_resid_paper(pdf, race_id, jyo_name, race_no):
+    """残差モデルが「買うはずだった馬」を記録する。買わない。
+
+    前向き検証のための記録なので、買い判断のしきい値を満たさないレースも
+    「見送り」として残す。あとから「しきい値がいくらなら何点だったか」を
+    数えられるようにするため。
+    """
+    import resid_io
+    m = resid_io.load_model()
+    if m is None:
+        return
+    d = resid_io.predict_gap(m, pdf)
+    if d is None or d.empty:
+        return
+    b = resid_io.pick_bet(d, model=m)
+    tgt = b if b is not None else d.loc[[pd.to_numeric(d["gap"], errors="coerce").idxmax()]]
+    r = tgt.iloc[0]
+    row = {
+        "race_id": str(race_id), "jyo": jyo_name, "race_no": race_no,
+        "馬番": r.get("馬番"), "馬名": r.get("馬名"),
+        "単勝オッズ": r.get("単勝オッズ"), "人気": r.get("人気"),
+        "gap": round(float(r["gap"]), 4),
+        "残差確率": round(float(r["残差確率"]), 5),
+        "市場確率": round(float(r["_q"]), 5),
+        "残差EV": round(float(r["残差EV"]), 4),
+        "判定": "買い" if b is not None else "見送り",
+        "記録時刻": datetime.now().strftime("%Y/%m/%d %H:%M"),
+    }
+    p = os.path.join(BASE_DIR, PAPER_RESID_PATH)
+    df = pd.DataFrame([row])
+    if os.path.exists(p):
+        old = pd.read_csv(p, dtype={"race_id": str})
+        old = old[old["race_id"] != str(race_id)]      # 同じレースは最新で置き換え
+        df = pd.concat([old, df], ignore_index=True)
+    # 列は必ず固定リストで揃える。欠けた列はNaNで埋め、余計な列は落とす
+    df = df.reindex(columns=PAPER_COLS)
+    df.to_csv(p, index=False, encoding="utf-8-sig")
+    print(f"  残差モデル記録: {row['判定']} "
+          f"{row['馬番']}番 {row['馬名']} gap={row['gap']:.2f} "
+          f"（購入はしません・累計{len(df)}レース）")
 
 
 def _race_bet_plan(pdf):
