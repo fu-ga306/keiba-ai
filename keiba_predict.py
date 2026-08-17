@@ -2056,9 +2056,13 @@ PAPER_RESID_PATH = "paper_resid.csv"
 # （2026-08-15に odds_history.csv で実際に起きた。1,235行が全部読めなくなった）。
 #   軸gap を持たせておくと、あとから「しきい値1.5だったら/1.7だったら」を
 #   数え直せる。記録は緩い側(1.5)で行い、厳しい側は絞り込みで出す。
+#   評価スコア(gscore)も持たせる。相手の選び方を「gap基準」と「評価基準」の
+#   どちらにするかを、あとから実測で決められるようにするため。
+#   案①（軸=★ → 相手=S評価）は5年116.8%・順列検定p=0.0000で通っており、
+#   現行(120.6%)との差は3.8ptしかない。実測で決める。
 PAPER_COLS = ["race_id", "jyo", "race_no", "馬場", "券種", "組み合わせ", "役割",
               "馬番", "馬名", "単勝オッズ", "人気", "gap", "軸gap",
-              "判定", "記録時刻"]
+              "評価", "評価スコア", "判定", "記録時刻"]
 
 
 def _attach_resid_gap(pdf):
@@ -2071,6 +2075,15 @@ def _attach_resid_gap(pdf):
     if d is None or d.empty or "gap" not in d.columns:
         return
     pdf["resid_gap"] = pd.to_numeric(d["gap"], errors="coerce").round(4).values
+
+
+def _row_of(d, name, col):
+    """馬名から列の値を引く。無ければ None。"""
+    m = d[d["馬名"] == name]
+    if m.empty or col not in m.columns:
+        return None
+    v = m.iloc[0][col]
+    return round(float(v), 3) if isinstance(v, (int, float)) and pd.notna(v) else v
 
 
 def _record_resid_paper(pdf, race_id, jyo_name, race_no):
@@ -2090,6 +2103,18 @@ def _record_resid_paper(pdf, race_id, jyo_name, race_no):
     if d is None or d.empty:
         return
     baba = pdf.attrs.get("turf") if hasattr(pdf, "attrs") else None
+    # 評価（S/A/B/D）も付ける。相手の選び方を後から比べられるようにするため。
+    try:
+        import flask_app as _fa
+        _sc = _fa.grade_scores(pdf.get("単勝オッズ"), pdf.get("勝ち確率"),
+                               pdf.get("複勝確率"))
+    except Exception:
+        _sc = None
+    if _sc is not None:
+        d["_gscore"] = pd.to_numeric(_sc, errors="coerce").values
+        d["_grade"] = [_fa.grade_of(v) for v in d["_gscore"]]
+    else:
+        d["_gscore"], d["_grade"] = np.nan, ""
     bets = resid_io.pick_bets(d, model=m, pdf=pdf)
     now = datetime.now().strftime("%Y/%m/%d %H:%M")
     gs = pd.to_numeric(d["gap"], errors="coerce")
@@ -2105,7 +2130,27 @@ def _record_resid_paper(pdf, race_id, jyo_name, race_no):
                          "人気": d.loc[d["馬名"] == b["馬名"], "人気"].iloc[0]
                          if "人気" in d.columns and (d["馬名"] == b["馬名"]).any() else None,
                          "gap": round(b["gap"], 4), "軸gap": round(ax_gap, 4),
+                         "評価": _row_of(d, b["馬名"], "_grade"),
+                         "評価スコア": _row_of(d, b["馬名"], "_gscore"),
                          "判定": "買い", "記録時刻": now})
+        # 案①用: S評価の馬も「相手候補」として残す（買ってはいない）
+        _ax = bets[0]["馬名"]
+        for _, r2 in d[(d["_grade"] == "S") & (d["馬名"] != _ax)].iterrows():
+            _b2 = resid_io._bn2(r2.get("馬番"))
+            _a2 = resid_io._bn2(bets[0].get("馬番"))
+            if not _b2 or not _a2:
+                continue
+            rows.append({"race_id": str(race_id), "jyo": jyo_name,
+                         "race_no": race_no, "馬場": baba, "券種": "ワイド候補",
+                         "組み合わせ": f"{min(_a2,_b2)}-{max(_a2,_b2)}",
+                         "役割": "S相手", "馬番": r2.get("馬番"),
+                         "馬名": r2.get("馬名"), "単勝オッズ": r2.get("単勝オッズ"),
+                         "人気": r2.get("人気"),
+                         "gap": round(float(r2["gap"]), 4),
+                         "軸gap": round(ax_gap, 4), "評価": "S",
+                         "評価スコア": round(float(r2["_gscore"]), 3)
+                         if pd.notna(r2["_gscore"]) else None,
+                         "判定": "候補", "記録時刻": now})
     else:
         top = d.loc[gs.idxmax()] if gs.notna().any() else None
         rows.append({"race_id": str(race_id), "jyo": jyo_name, "race_no": race_no,
@@ -2116,6 +2161,9 @@ def _record_resid_paper(pdf, race_id, jyo_name, race_no):
                      "人気": top.get("人気") if top is not None else None,
                      "gap": round(float(gs.max()), 4) if gs.notna().any() else None,
                      "軸gap": round(float(gs.max()), 4) if gs.notna().any() else None,
+                     "評価": top.get("_grade") if top is not None else None,
+                     "評価スコア": round(float(top["_gscore"]), 3)
+                     if top is not None and pd.notna(top.get("_gscore")) else None,
                      "判定": "見送り", "記録時刻": now})
     p = os.path.join(BASE_DIR, PAPER_RESID_PATH)
     df = pd.DataFrame(rows)
