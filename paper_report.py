@@ -35,9 +35,10 @@ PAPER = os.path.join(BASE_DIR, "paper_resid.csv")
 rng = np.random.default_rng(20260817)
 
 # train_resid.py backtest / check_resid.py で確認済みの値
-BT = {"買い率": 12.6, "点数": 1891, "的中": 203, "ROI": 157.1,
-      "中央オッズ": 19.8, "中央人気": 7,
-      "年別": "2021:178% 2022:92% 2023:227% 2024:266% 2025:86%"}
+BT = {"買い率": 12.6, "点数": 2926, "的中": 236, "ROI": 163.3,
+      "中央オッズ": 19.8, "中央人気": 7, "1R点数": 1.55,
+      "年別": "2021:210% 2022:106% 2023:154% 2024:337% 2025:69%",
+      "券種": "単勝1,891点(157.0%) / ワイド1,035点(174.9%)"}
 
 
 def log(m):
@@ -84,12 +85,15 @@ def main():
         return
     jv = pd.read_csv(res, dtype=str)
     jv["払戻金"] = pd.to_numeric(jv["払戻金"], errors="coerce").fillna(0)
-    tan = {(r.race_id, r.組み合わせ): r.払戻金
-           for r in jv[jv.券種 == "単勝"].itertuples()}
+    PAY = {(r.race_id, r.券種, r.組み合わせ): r.払戻金
+           for r in jv[jv.券種.isin(("単勝", "ワイド"))].itertuples()}
     b = buy.copy()
-    b["bn"] = pd.to_numeric(b["馬番"], errors="coerce").astype("Int64").astype(str).str.zfill(2)
-    b["払戻"] = [tan.get((r, n), np.nan) for r, n in zip(b.race_id, b.bn)]
-    done = b[b.払戻.notna()]
+    # 結果が出たレースだけを対象にする（払戻表にそのレースが載っているか）
+    done_races = {r.race_id for r in jv.itertuples()}
+    b = b[b.race_id.isin(done_races)]
+    b["払戻"] = [PAY.get((r, k, c), 0.0)
+                for r, k, c in zip(b.race_id, b["券種"], b["組み合わせ"])]
+    done = b
     log(f"\n=== ③ 回収率（結果が出た {len(done):,}レース）===")
     if len(done) < 10:
         log("  まだ照合できるレースが少ないです。")

@@ -90,10 +90,7 @@ def predict_gap(model, df, race_col="race_id", odds_col="単勝オッズ"):
 
 
 def pick_bet(d, gap_min=None, model=None):
-    """買う1頭を返す。事前登録した買い方そのもの。
-
-      各レースで gap が最大の1頭。ただし gap >= gap_min のときだけ。
-      他の条件は付けない（付けると検証と別の買い方になる）。
+    """軸の1頭を返す。gap が最大で、かつ gap >= gap_min のときだけ。
 
     返り値: 1行のDataFrame、または None
     """
@@ -107,3 +104,94 @@ def pick_bet(d, gap_min=None, model=None):
     if float(g.max()) < th:
         return None
     return best
+
+
+# ── 確定した買い方（2026-08-17）─────────────────────────────────────
+#   軸  : 残差モデルの gap が最大の1頭。gap >= AX_GAP
+#         → 単勝 1点
+#   ダートなら、さらに
+#   相手: 軸以外で自分の gap >= MATE_GAP の馬。gap の大きい順に最大 MATE_MAX 頭
+#         → ワイド（軸-相手）を追加
+#   芝は単勝のみ。
+#
+#   なぜダートだけか
+#     モデルの寄与（Benter基準比）が ダート6.3% に対し 芝1.3% で5倍違う。
+#     これは回収率とは独立に model_diag.py で測った値なので、後付けではない。
+#     実際、追加したワイドだけの成績は ダート174.9%（1,035点）。
+#
+#   検証値（walk-forward 5年・resid_gate.py）
+#     2,926点  的中236  ROI 163.3%  95%区間[112.5, 226.2]  100%超 4/5年
+#     年別 210 / 106 / 154 / 337 / 69%
+#     順列検定 p=0.0000（判定5つ＋組み合わせを込みで150回、偽物の最大125.0%）
+#
+#   ⚠ 採用しなかったもの
+#     軸gap>=3.0 で追加すると 180.5% と出るが、追加したワイドの的中が7本しかなく
+#     直近3年は的中ゼロ。2021-2022の大穴3本で作られた数字なので採らない。
+#     12頭以下で追加は 82.3% で逆効果。
+AX_GAP = 2.0
+MATE_GAP = 1.3
+MATE_MAX = 3
+
+
+def _is_dirt(d, pdf=None):
+    """ダートかどうか。列でも attrs でも判定できるようにする。"""
+    for col in ("is_turf",):
+        if d is not None and col in d.columns:
+            v = pd.to_numeric(d[col], errors="coerce").dropna()
+            if len(v):
+                return bool(v.iloc[0] == 0)
+    for src in (d, pdf):
+        if src is None:
+            continue
+        t = getattr(src, "attrs", {}).get("turf")
+        if t is not None:
+            return str(t).startswith(("ダ", "ダート"))
+        if "馬場" in getattr(src, "columns", []):
+            v = src["馬場"].dropna()
+            if len(v):
+                return str(v.iloc[0]).startswith(("ダ", "ダート"))
+    return None                      # 判定できない → ワイドは足さない
+
+
+def pick_bets(d, model=None, pdf=None):
+    """このレースで買う買い目を全部返す。
+
+    返り値: [{"券種","組み合わせ","馬番","馬名","単勝オッズ","gap","役割"}, ...]
+            買わないときは空リスト。
+    ⚠ 組み合わせの馬番は2桁ゼロ埋め。払戻表が "09-14" 形式なので、
+      揃えないと1桁馬番の買い目が照合できない（2026-08-16の事故）。
+    """
+    ax = pick_bet(d, model=model)
+    if ax is None:
+        return []
+    a = ax.iloc[0]
+    an = _bn2(a.get("馬番"))
+    if an is None:
+        return []
+    out = [{"券種": "単勝", "組み合わせ": an, "馬番": a.get("馬番"),
+            "馬名": a.get("馬名"), "単勝オッズ": a.get("単勝オッズ"),
+            "gap": float(a["gap"]), "役割": "軸"}]
+    if _is_dirt(d, pdf) is not True:
+        return out                    # 芝・判定不能は単勝のみ
+    g = pd.to_numeric(d["gap"], errors="coerce")
+    rest = d.drop(index=ax.index)
+    rest = rest[pd.to_numeric(rest["gap"], errors="coerce") >= MATE_GAP]
+    if rest.empty:
+        return out
+    for _, m in rest.nlargest(min(MATE_MAX, len(rest)), "gap").iterrows():
+        bn = _bn2(m.get("馬番"))
+        if bn is None or bn == an:
+            continue
+        out.append({"券種": "ワイド", "組み合わせ": f"{min(an,bn)}-{max(an,bn)}",
+                    "馬番": m.get("馬番"), "馬名": m.get("馬名"),
+                    "単勝オッズ": m.get("単勝オッズ"),
+                    "gap": float(m["gap"]), "役割": "相手"})
+    return out
+
+
+def _bn2(v):
+    """馬番を2桁ゼロ埋めの文字列にする。数値化できなければ None。"""
+    n = pd.to_numeric(v, errors="coerce")
+    if pd.isna(n):
+        return None
+    return str(int(n)).zfill(2)

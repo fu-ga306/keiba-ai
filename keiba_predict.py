@@ -2046,15 +2046,18 @@ RACE_BUDGET_MAX = None            # (旧)全帯共通の上限。設定時は RA
 PAPER_RESID_PATH = "paper_resid.csv"
 # 記録の列。順序を固定する。列を足し引きすると過去の行が読めなくなる
 # （2026-08-15に odds_history.csv で実際に起きた。1,235行が全部読めなくなった）。
-PAPER_COLS = ["race_id", "jyo", "race_no", "馬番", "馬名", "単勝オッズ", "人気",
-              "gap", "残差確率", "市場確率", "残差EV", "判定", "記録時刻"]
+PAPER_COLS = ["race_id", "jyo", "race_no", "馬場", "券種", "組み合わせ", "役割",
+              "馬番", "馬名", "単勝オッズ", "人気", "gap", "残差確率", "市場確率",
+              "判定", "記録時刻"]
 
 
 def _record_resid_paper(pdf, race_id, jyo_name, race_no):
-    """残差モデルが「買うはずだった馬」を記録する。買わない。
+    """残差モデルが「買うはずだった買い目」を記録する。買わない。
 
-    前向き検証のための記録なので、買い判断のしきい値を満たさないレースも
-    「見送り」として残す。あとから「しきい値がいくらなら何点だったか」を
+    買い方は resid_io.pick_bets に一本化してある（軸の単勝＋ダートならワイド）。
+    ここで条件を書き直すと検証とズレるので、必ずあの関数を通す。
+
+    見送りのレースも1行残す。あとから「しきい値を変えていたら何点だったか」を
     数えられるようにするため。
     """
     import resid_io
@@ -2064,22 +2067,35 @@ def _record_resid_paper(pdf, race_id, jyo_name, race_no):
     d = resid_io.predict_gap(m, pdf)
     if d is None or d.empty:
         return
-    b = resid_io.pick_bet(d, model=m)
-    tgt = b if b is not None else d.loc[[pd.to_numeric(d["gap"], errors="coerce").idxmax()]]
-    r = tgt.iloc[0]
-    row = {
-        "race_id": str(race_id), "jyo": jyo_name, "race_no": race_no,
-        "馬番": r.get("馬番"), "馬名": r.get("馬名"),
-        "単勝オッズ": r.get("単勝オッズ"), "人気": r.get("人気"),
-        "gap": round(float(r["gap"]), 4),
-        "残差確率": round(float(r["残差確率"]), 5),
-        "市場確率": round(float(r["_q"]), 5),
-        "残差EV": round(float(r["残差EV"]), 4),
-        "判定": "買い" if b is not None else "見送り",
-        "記録時刻": datetime.now().strftime("%Y/%m/%d %H:%M"),
-    }
+    baba = pdf.attrs.get("turf") if hasattr(pdf, "attrs") else None
+    bets = resid_io.pick_bets(d, model=m, pdf=pdf)
+    now = datetime.now().strftime("%Y/%m/%d %H:%M")
+    gs = pd.to_numeric(d["gap"], errors="coerce")
+    rows = []
+    if bets:
+        for b in bets:
+            rows.append({"race_id": str(race_id), "jyo": jyo_name,
+                         "race_no": race_no, "馬場": baba,
+                         "券種": b["券種"], "組み合わせ": b["組み合わせ"],
+                         "役割": b["役割"], "馬番": b["馬番"], "馬名": b["馬名"],
+                         "単勝オッズ": b["単勝オッズ"],
+                         "人気": d.loc[d["馬名"] == b["馬名"], "人気"].iloc[0]
+                         if "人気" in d.columns and (d["馬名"] == b["馬名"]).any() else None,
+                         "gap": round(b["gap"], 4), "残差確率": None,
+                         "市場確率": None, "判定": "買い", "記録時刻": now})
+    else:
+        top = d.loc[gs.idxmax()] if gs.notna().any() else None
+        rows.append({"race_id": str(race_id), "jyo": jyo_name, "race_no": race_no,
+                     "馬場": baba, "券種": "-", "組み合わせ": "-", "役割": "-",
+                     "馬番": top.get("馬番") if top is not None else None,
+                     "馬名": top.get("馬名") if top is not None else None,
+                     "単勝オッズ": top.get("単勝オッズ") if top is not None else None,
+                     "人気": top.get("人気") if top is not None else None,
+                     "gap": round(float(gs.max()), 4) if gs.notna().any() else None,
+                     "残差確率": None, "市場確率": None,
+                     "判定": "見送り", "記録時刻": now})
     p = os.path.join(BASE_DIR, PAPER_RESID_PATH)
-    df = pd.DataFrame([row])
+    df = pd.DataFrame(rows)
     if os.path.exists(p):
         old = pd.read_csv(p, dtype={"race_id": str})
         old = old[old["race_id"] != str(race_id)]      # 同じレースは最新で置き換え
@@ -2087,9 +2103,14 @@ def _record_resid_paper(pdf, race_id, jyo_name, race_no):
     # 列は必ず固定リストで揃える。欠けた列はNaNで埋め、余計な列は落とす
     df = df.reindex(columns=PAPER_COLS)
     df.to_csv(p, index=False, encoding="utf-8-sig")
-    print(f"  残差モデル記録: {row['判定']} "
-          f"{row['馬番']}番 {row['馬名']} gap={row['gap']:.2f} "
-          f"（購入はしません・累計{len(df)}レース）")
+    n_race = df["race_id"].nunique()
+    if bets:
+        w = sum(1 for b in bets if b["券種"] == "ワイド")
+        print(f"  残差モデル記録: 買い 単勝{bets[0]['馬番']}番 {bets[0]['馬名']}"
+              f" gap={bets[0]['gap']:.2f}" + (f" ＋ワイド{w}点" if w else "")
+              + f"（購入はしません・累計{n_race}レース）")
+    else:
+        print(f"  残差モデル記録: 見送り（購入はしません・累計{n_race}レース）")
 
 
 def _race_bet_plan(pdf):

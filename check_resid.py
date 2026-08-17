@@ -6,14 +6,17 @@
   5回起こした。うち1つは的中54本が11本に見えていた（馬番のゼロ埋め漏れ）。
   数字を出す前に、まず実装が検証どおりかを確かめる。
 
-やること
-  ① 検証で作った予測（resid_pred.csv）を、本番の窓口（resid_io.pick_bet）に
-     通し、同じ買い目が出るかを見る
-  ② その買い目で回収率を計算し、EXPECT と一致するかを見る
-  ③ 特徴量の欠損・オッズ未取得など、本番で起こりうる欠けに耐えるかを見る
+確かめる買い方（resid_io.pick_bets が唯一の実装）
+  軸  : 残差モデルの gap が最大の1頭・gap>=2.0 → 単勝1点
+  ダートなら、相手（軸以外で gap>=1.3・最大3頭）にワイドを追加
+  芝は単勝のみ
 
-⚠ 買い方を変えたら EXPECT を更新すること。更新せずに数字が変わったら、
-  それは実装がズレたということ。
+やること
+  ① 検証データ(resid_kinds_pred.csv)を本番の関数に通し、買い目を作る
+  ② その買い目を実払戻(jv_payouts)で照合し、EXPECT と一致するか見る
+  ③ 本番で起こりうる欠け（列なし・全欠損・1頭）に耐えるか見る
+
+⚠ 買い方を変えたら EXPECT を更新すること。更新せずに数字が変わったら実装ズレ。
 
 実行: python check_resid.py
 """
@@ -26,9 +29,9 @@ warnings.filterwarnings("ignore")
 
 import resid_io
 
-# train_resid.py backtest で測った値。ここと一致しなければ実装がズレている。
-EXPECT = {"買い方": "gap>=2.0 の1頭を単勝1点（3シード平均・600回）",
-          "点数": 1891, "的中": 203, "ROI": 157.1}
+# resid_gate.py で測った値。ここと一致しなければ実装がズレている。
+EXPECT = {"買い方": "軸gap>=2.0 単勝 ＋ ダートならワイド(相手gap>=1.3・最大3頭)",
+          "点数": 2926, "的中": 236, "ROI": 163.3}
 
 
 def log(m):
@@ -37,83 +40,79 @@ def log(m):
 
 def main():
     try:
-        d = pd.read_csv("resid_pred.csv", dtype={"race_id": str})
+        d = pd.read_csv("resid_kinds_pred.csv", dtype={"race_id": str, "bn": str})
     except FileNotFoundError:
-        log("resid_pred.csv がありません。先に python train_resid.py backtest")
+        log("resid_kinds_pred.csv がありません。先に python resid_kinds.py")
         return
-    log(f"検証データ {len(d):,}頭 / {d.race_id.nunique():,}レース\n")
+    d["gap"] = d.p1 / d.q
+    d["馬番"] = pd.to_numeric(d["bn"], errors="coerce")
+    rf = pd.read_csv("race_features.csv", low_memory=False, dtype={"race_id": str},
+                     usecols=["race_id", "is_turf"]).drop_duplicates("race_id")
+    rf["race_id"] = rf["race_id"].astype(str).str.replace(r"\.0$", "", regex=True)
+    d = d.merge(rf, on="race_id", how="left")
+    jv = pd.read_csv("jv_payouts.csv", dtype=str)
+    jv["払戻金"] = pd.to_numeric(jv["払戻金"], errors="coerce").fillna(0)
+    PAY = {(r.race_id, r.券種, r.組み合わせ): r.払戻金
+           for r in jv[jv.券種.isin(("単勝", "ワイド"))].itertuples()}
+    log(f"検証データ {len(d):,}頭 / {d.race_id.nunique():,}レース")
+    log(f"買い方: {EXPECT['買い方']}\n")
 
-    # ── ① 本番の窓口で買い目を作る ────────────────────────────
-    m = {"gap_min": 2.0}
-    picks = []
+    # ── ① 本番の関数で買い目を作り、実払戻で照合 ─────────────────
+    m = {"gap_min": resid_io.AX_GAP}
+    rows, nrace, nwide = [], 0, 0
     for rid, g in d.groupby("race_id", sort=False):
-        b = resid_io.pick_bet(g, model=m)
-        if b is not None:
-            picks.append(b)
-    if not picks:
+        bets = resid_io.pick_bets(g, model=m)
+        if not bets:
+            continue
+        nrace += 1
+        for b in bets:
+            if b["券種"] == "ワイド":
+                nwide += 1
+            rows.append({"年": int(rid[:4]), "券種": b["券種"],
+                         "払戻": PAY.get((rid, b["券種"], b["組み合わせ"]), 0.0)})
+    R = pd.DataFrame(rows)
+    if R.empty:
         log("⚠ 買い目が1つも出ませんでした")
         return
-    P = pd.concat(picks)
-    roi = (P.win * P.odds).sum() / len(P) * 100
-    log("=== ① 本番の関数(resid_io.pick_bet)が作った買い目 ===")
-    log(f"  {len(P):,}点  的中{int(P.win.sum())}  ROI {roi:.1f}%")
+    roi = R.払戻.sum() / (len(R) * 100) * 100
+    hit = int((R.払戻 > 0).sum())
+    log("=== ① 本番の関数(resid_io.pick_bets)が作った買い目 ===")
+    log(f"  買うレース {nrace:,}  点数 {len(R):,}（単勝{len(R)-nwide:,} / ワイド{nwide:,}）")
+    log(f"  的中 {hit}（{hit/len(R)*100:.1f}%）  ROI {roi:.1f}%")
     log("  年別: " + "  ".join(
-        f"{y}:{(x.win*x.odds).sum()/len(x)*100:.0f}%" for y, x in P.groupby("年")))
+        f"{y}:{g.払戻.sum()/(len(g)*100)*100:.0f}%" for y, g in R.groupby("年")))
+    log("  券種別: " + "  ".join(
+        f"{k} {len(g):,}点 的中{int((g.払戻>0).sum())} {g.払戻.sum()/(len(g)*100)*100:.1f}%"
+        for k, g in R.groupby("券種")))
 
-    # ── ② 検証側と同じ選び方を素朴に書いて突き合わせる ───────────
-    sel = d.loc[d.groupby("race_id")["gap"].idxmax()]
-    ref = sel[sel.gap >= 2.0]
-    roi_ref = (ref.win * ref.odds).sum() / len(ref) * 100
-    log("\n=== ② 検証側の素朴な実装 ===")
-    log(f"  {len(ref):,}点  的中{int(ref.win.sum())}  ROI {roi_ref:.1f}%")
+    # ── ② EXPECT と照合 ─────────────────────────────────
+    log("\n=== ② 検証(resid_gate.py)で測った値 ===")
+    log(f"  {EXPECT['点数']:,}点  的中{EXPECT['的中']}  ROI {EXPECT['ROI']}%")
+    ok = (abs(len(R) - EXPECT["点数"]) <= 5 and abs(hit - EXPECT["的中"]) <= 3
+          and abs(roi - EXPECT["ROI"]) < 1.0)
+    log(f"\n  点数 {len(R):,} vs {EXPECT['点数']:,}  {'○' if abs(len(R)-EXPECT['点数'])<=5 else '×'}")
+    log(f"  的中 {hit} vs {EXPECT['的中']}  {'○' if abs(hit-EXPECT['的中'])<=3 else '×'}")
+    log(f"  ROI {roi:.1f}% vs {EXPECT['ROI']}%  {'○' if abs(roi-EXPECT['ROI'])<1.0 else '×'}")
 
-    same_n = len(P) == len(ref)
-    key_p = set(zip(P.race_id.astype(str), P.get("馬名", P.index).astype(str)))
-    key_r = set(zip(ref.race_id.astype(str), ref.get("馬名", ref.index).astype(str)))
-    same_h = key_p == key_r
-    log(f"\n  点数一致 {'○' if same_n else '×'}"
-        f"（{len(P):,} vs {len(ref):,}）")
-    log(f"  買う馬が完全一致 {'○' if same_h else '×'}"
-        f"（違い {len(key_p ^ key_r)}頭）")
-    log(f"  回収率一致 {'○' if abs(roi-roi_ref) < 0.1 else '×'}"
-        f"（{roi:.1f}% vs {roi_ref:.1f}%）")
-
-    # ── ③ 欠けに耐えるか ───────────────────────────────────
+    # ── ③ 欠けへの耐性 ───────────────────────────────────
     log("\n=== ③ 本番で起こりうる欠けへの耐性 ===")
     g0 = d[d.race_id == d.race_id.iloc[0]].copy()
-    cases = [
-        ("空のDataFrame", g0.iloc[0:0]),
-        ("gap列が無い", g0.drop(columns=["gap"])),
-        ("gapが全部欠損", g0.assign(gap=np.nan)),
-        ("1頭だけ", g0.iloc[:1]),
-    ]
-    ok = True
+    cases = [("空のDataFrame", g0.iloc[0:0]), ("gap列が無い", g0.drop(columns=["gap"])),
+             ("gapが全部欠損", g0.assign(gap=np.nan)), ("1頭だけ", g0.iloc[:1]),
+             ("馬番が欠損", g0.assign(馬番=np.nan)),
+             ("is_turfが欠損", g0.assign(is_turf=np.nan))]
+    safe = True
     for lab, x in cases:
         try:
-            r = resid_io.pick_bet(x, model=m)
-            log(f"  {lab:<18} → {'買い目なし' if r is None else f'{len(r)}点'}（例外なし）")
+            r = resid_io.pick_bets(x, model=m)
+            log(f"  {lab:<18} → {len(r)}点（例外なし）")
         except Exception as e:
-            ok = False
+            safe = False
             log(f"  {lab:<18} → ⚠ 例外 {type(e).__name__}: {e}")
-    log(f"  {'○ どの欠けでも落ちない' if ok else '× 例外が出る。修正が必要'}")
 
-    # ── 判定 ──────────────────────────────────────────
-    log("\n" + "=" * 56)
-    good = same_n and same_h and abs(roi - roi_ref) < 0.1 and ok
-    log("✅ 実装は検証どおり。この数字は本番の成績を表す" if good
+    log("\n" + "=" * 58)
+    log("✅ 実装は検証どおり。この数字は本番の成績を表す" if ok and safe
         else "⚠ 実装がズレている。この数字を成績として使ってはいけない")
-    if EXPECT["点数"] is None:
-        log(f"\n  EXPECT を更新してください:")
-        log(f'    EXPECT = {{"買い方": "gap>=2.0 の1頭を単勝1点",')
-        log(f'              "点数": {len(P)}, "的中": {int(P.win.sum())},'
-            f' "ROI": {roi:.1f}}}')
-    else:
-        hit = int(P.win.sum())
-        match = (abs(len(P) - EXPECT["点数"]) <= 5 and abs(hit - EXPECT["的中"]) <= 2
-                 and abs(roi - EXPECT["ROI"]) < 1.0)
-        log(f"\n  EXPECT との照合: {'✅ 一致' if match else '⚠ 不一致'}"
-            f"（{len(P)}点/{hit}的中/{roi:.1f}% vs "
-            f"{EXPECT['点数']}点/{EXPECT['的中']}的中/{EXPECT['ROI']}%）")
 
 
 if __name__ == "__main__":
