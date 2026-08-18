@@ -122,6 +122,28 @@ def main():
         timeout=1800  # 30分
     )
 
+    # ── Step 0.5: 血統マスタと種牡馬成績の更新（2026-08-18追加）────────────
+    #   Step0 は --skip-horse で血統取得を飛ばしていたため、horse_master.csv が
+    #   2026-07-08 で止まり、2026年の新馬598頭の父・母父が不明になっていた。
+    #   血統はモデル寄与の7.4%を占めるので、欠けたままにしない。
+    #
+    #   ⚠ 順序が重要。horse_master → sire_stats → features の順でないと、
+    #     新しい馬の血統が特徴量に反映されない。
+    #   ⚠ horse_scraper は1頭あたり2.5〜4.5秒待つ。598頭で約35分。
+    #     取得済みはスキップするので、次回以降は数分で終わる。
+    #   ⚠ 失敗しても後続は続ける。血統が古いままでも予想は出せる。
+    log("[Step0.5] 血統マスタ更新（未取得の馬だけ取得）")
+    if not run_step("horse_scraper.py",
+                    [PYTHON, os.path.join(BASE_DIR, "horse_scraper.py")],
+                    timeout=7200):   # 2時間（新馬が大量に出る時期を考慮）
+        log("  [警告] 血統の取得に失敗。前回の horse_master.csv のまま続けます")
+
+    log("[Step0.6] 種牡馬成績の再集計")
+    if not run_step("sire_stats.py",
+                    [PYTHON, os.path.join(BASE_DIR, "sire_stats.py")],
+                    timeout=1800):
+        log("  [警告] 種牡馬成績の再集計に失敗。前回の集計のまま続けます")
+
     # ── Step 1: 特徴量再生成 ───────────────────────────────────────────────
     log("[Step1] 特徴量再生成")
     run_step(
