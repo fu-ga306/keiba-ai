@@ -431,6 +431,13 @@ def build_report(pdf, race_id, jyo_name, race_no,
     lines.append(f"  [競馬AI 詳細予想レポート]  {now}")
     lines.append(f"  レースID : {race_id}   {jyo_name} {race_no}R")
     lines.append(sep())
+    # 購入停止中であることを最初に出す（2026-08-18追加）。
+    # メール本文には「買い目」「購入推奨」の節が残っているが、実際には
+    # BETTING_ENABLED=False で一切買っていない。読み違えないよう先頭で断る。
+    if not BETTING_ENABLED:
+        lines.append("  ⚠ 購入停止中です。以下の買い目・推奨はすべて参考表示で、")
+        lines.append(f"    実際の馬券は購入していません（{BETTING_OFF_REASON}）")
+        lines.append(sep())
     lines.append("")
 
     # レース概要
@@ -998,8 +1005,46 @@ def build_report(pdf, race_id, jyo_name, race_no,
     lines.append("  ※ ワイド・馬連・馬単の的中率は確率モデルによる近似値です。")
     lines.append("  ※ 複勝オッズは実オッズと異なる場合があります（keiba_auto.pyは実オッズ使用）。")
 
+    # ── 残差モデルの買い印（2026-08-18追加）──────────────────────────────
+    #   市場（オッズ）が何を見落としているかを学ぶモデル。
+    #   gap = モデルの予測確率 ÷ 市場の確率。2.0なら市場の2倍強いと見ている。
+    #   ⚠ 購入はしない。実測を貯めるための記録のみ（BETTING_ENABLED=False）。
+    try:
+        import resid_io as _rio
+        _rm = _rio.load_model()
+        _rd = _rio.predict_gap(_rm, pdf) if _rm is not None else None
+        if _rd is not None and "gap" in _rd.columns:
+            _g = pd.to_numeric(_rd["gap"], errors="coerce")
+            lines.append("")
+            lines.append(header("[買い印（残差モデル）]", "─"))
+            _bets = _rio.pick_bets(_rd, model=_rm, pdf=pdf)
+            if _bets:
+                _ax = _bets[0]
+                lines.append(f"  ★軸 {int(_ax['馬番']):>2}番 {_ax['馬名']}"
+                             f"  {_odds(_ax['単勝オッズ'])}"
+                             f"  gap {_ax['gap']:.2f}（市場の{_ax['gap']:.1f}倍と評価）")
+                _w = [b for b in _bets if b["券種"] == "ワイド"]
+                if _w:
+                    lines.append(f"  相手（ダートなのでワイドを追加）:")
+                    for b in _w:
+                        lines.append(f"    ○ {int(b['馬番']):>2}番 {b['馬名']}"
+                                     f"  {_odds(b['単勝オッズ'])}  gap {b['gap']:.2f}")
+                else:
+                    lines.append("  相手: なし（芝、または条件を満たす馬がいない）")
+                lines.append(f"  → 買うなら 単勝1点" + (f" ＋ ワイド{len(_w)}点" if _w else ""))
+            else:
+                lines.append(f"  見送り（gap最大 {_g.max():.2f} < {_rio.AX_GAP}）")
+            lines.append("")
+            lines.append("  ※ この印では購入していません。実測を貯めている段階です。")
+            lines.append("  ※ 5年検証: 軸gap>=1.5で回収率120.6%（10,349点・的中1,178）")
+            lines.append("     ただし年別は 137/116/111/163/79% と振れます。")
+    except Exception as _e:
+        lines.append(f"  （買い印の算出に失敗: {type(_e).__name__}）")
+
     # ── 💰 レース判定と買い目（_race_bet_planに完全連動・2026-07-16）──
     #   レース単位でマトリクス判定(クラス×妙人気帯×MF自信度×頭数)し、買い目と厚さを自動調整。
+    #   ⚠ 2026-08-17から BETTING_ENABLED=False で全経路の購入を停止している。
+    #     判定は「見送り」で固定されるので、この節はほぼ情報を持たない。
     lines.append("")
     _plan = _race_bet_plan(pdf)
     _badge = {"勝負": "🔥勝負", "買い": "✅買い", "堅実": "🟢堅実", "少額": "⚠少額",
@@ -1056,8 +1101,14 @@ def build_report(pdf, race_id, jyo_name, race_no,
             lines.append(f"   ── 合計 {len(_rows_bet)}点 / {_tot_amt:,}円 ──")
         lines.append("   ※ 相手（人気上位/◯位内）は直前オッズの人気で自動決定＝レースごとに最適化")
     elif _plan["判定"] == "見送り":
-        lines.append("  このレースは購入非推奨（レース単位ゲートで除外）。資金は✅買いレースに温存。")
-    lines.append("  ※ BT=2025実払戻3144R。判定/買い目はtoday_bets.csvに保存され、翌日照合されます。")
+        if BETTING_ENABLED:
+            lines.append("  このレースは購入非推奨（レース単位ゲートで除外）。資金は✅買いレースに温存。")
+        else:
+            lines.append("  ※ 全レース購入停止中のため、この判定は常に見送りになります。")
+    if BETTING_ENABLED:
+        lines.append("  ※ BT=2025実払戻3144R。判定/買い目はtoday_bets.csvに保存され、翌日照合されます。")
+    else:
+        lines.append("  ※ 上の節は旧方式の名残です。実際に見ているのは[買い印（残差モデル）]です。")
     lines.append("")
 
     # ── 推奨馬の組み合わせ的中率（フォーメーション・実績補正済み）──────────
