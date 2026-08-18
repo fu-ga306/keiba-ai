@@ -149,6 +149,29 @@ def main():
             log(f"  ○ {name}: {list(vals.values())[0]}（{len(vals)}か所で一致）")
 
     log("\n" + "=" * 70)
+    log("  ③b 学習と本番で同じ入力を使っているか")
+    log("=" * 70)
+    log("  モデルは学習時の値の分布で木を作る。本番だけ違う値を渡すと判断が狂う。")
+    log("  2026-08-18に実際に起きた: 本番だけ全期間の血統を使い、軸に選ぶ馬が")
+    log("  15.1%のレースで変わっていた（gapの相関 0.941）。")
+    try:
+        txt = open(os.path.join(BASE, "features.py"), encoding="utf-8").read()
+        # 呼び出しだけを見る。関数定義の既定値（def ...=False）は対象外。
+        # 定義まで拾うと「不一致」と誤検知する（2026-08-18に実際に誤検知した）。
+        tr = [m[1] if isinstance(m, tuple) else m for m in
+              re.findall(r"(?<!def )_run_feature_pipeline\([^)]*"
+                         r"use_train_snapshot\s*=\s*(True|False)", txt)]
+        log(f"  features.py の血統スナップショット指定: {tr}")
+        if len(set(tr)) > 1:
+            log("  ⚠ 学習と本番で指定が違う")
+            ng("高", f"features.py の use_train_snapshot が不一致: {tr}。"
+                     f"学習と本番で違う血統値がモデルに渡る")
+        elif tr:
+            log(f"  ○ すべて {tr[0]} で揃っている")
+    except Exception as e:
+        log(f"  確認できず: {type(e).__name__}")
+
+    log("\n" + "=" * 70)
     log("  ④ 飛ばされている工程")
     log("=" * 70)
     for f in ("weekly_update.py", "auto_predict_publish.py"):

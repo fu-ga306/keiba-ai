@@ -2090,7 +2090,24 @@ def build_features_for_prediction(race_df, history_df):
 
     combined = pd.concat([history_df, race_df[history_df.columns]], ignore_index=True)
     combined = load_and_prepare(df=combined)
-    combined = _run_feature_pipeline(combined, use_train_snapshot=False)  # 本番: 血統は全期間版
+    # ── 血統スナップショットは学習と同じ ≤2024版を使う（2026-08-18に修正）────
+    #   以前は本番だけ全期間版(sire_stats_father.csv・708頭)を使い、学習・検証は
+    #   ≤2024版(sire_stats_father_train.csv・626頭)を使っていた。
+    #   同じ馬に学習時と予測時で違う血統値が入るので、モデルは学習していない
+    #   入力を渡されることになる。実測した影響:
+    #
+    #     gapの相関              0.941（1.000であるべき）
+    #     軸に選ぶ馬が変わる      15.1%（6,215レース中939）
+    #     買う/買わないが反転     12.1%（755レース）
+    #
+    #   全期間版のほうが情報は新しいが、モデルがその分布を知らなければ意味がない。
+    #   バックテストで測った成績を本番で再現するには、入力を揃えるほうが先。
+    #
+    #   ⚠ 学習側(build_features)も use_train_snapshot=True。両方を同時に変える
+    #     ときだけ揃えること。片方だけ変えると同じ不一致が再発する。
+    #   ⚠ ≤2024版なので、2025年以降にデビューした種牡馬の産駒は血統が欠損する
+    #     （2025年で3.9%）。これはリーク防止の代償で、仕様どおり。
+    combined = _run_feature_pipeline(combined, use_train_snapshot=True)
 
     # 予測対象レースの行だけ取り出す
     result = combined[combined["race_id"].isin(target_ids)].copy()
