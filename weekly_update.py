@@ -235,6 +235,20 @@ def main():
     #     ② 学習を古くすると成績が落ちる。2023年までで固定して2025年を当てると
     #        70%まで落ちた（毎年学習し直せば136%）。こまめな再学習が要る
     #   失敗しても予想は止まらない（残差モデルが無ければ記録しないだけ）。
+    # ── Step 3.65: 評価(S/A/B/D)の較正器を作り直す（2026-08-18追加）────────
+    #   評価は市場とモデルの2次元ロジスティック（grade_calib.pkl）で決めている。
+    #   モデルや特徴量が変われば確率の癖も変わるので、較正器も作り直す必要がある。
+    #   週次に入っておらず、古い較正器のまま評価が付き続ける穴だった。
+    #   ⚠ bet_cache が要る。無ければ黙って飛ばす（評価は前回の較正器のまま）。
+    if os.path.exists(os.path.join(BASE_DIR, "bet_cache_2025.csv")):
+        log("[Step3.65] 評価の較正器を再作成")
+        if not run_step("build_grade.py",
+                        [PYTHON, os.path.join(BASE_DIR, "build_grade.py")],
+                        timeout=1800):
+            log("  [警告] 評価の較正器の再作成に失敗。前回のまま動きます")
+    else:
+        log("[Step3.65] スキップ（bet_cache が無いので較正器は作れません）")
+
     log("[Step3.7] 残差モデル再学習（train_resid・買い判断には未使用）")
     if not run_step("train_resid.py",
                     [PYTHON, os.path.join(BASE_DIR, "train_resid.py")],
@@ -392,6 +406,43 @@ def _notify(elapsed):
             lines.append(f"  {f}: {m:%m/%d %H:%M}{note}")
         else:
             lines.append(f"  {f}: 見つからない")
+    # ── データの欠けを毎週チェックする（2026-08-18追加）────────────────────
+    #   血統マスタが1か月半止まっていたのに誰も気づかなかった。工程が「成功」でも
+    #   中身が欠けていることはあるので、結果そのものを見る。
+    lines.append("")
+    lines.append("データの欠け:")
+    try:
+        import pandas as _pd
+        _hm = _pd.read_csv(os.path.join(BASE_DIR, "horse_master.csv"), dtype=str)
+        _hm["horse_id"] = (_hm["horse_id"].astype(str)
+                           .str.replace(".0", "", regex=False).str.strip())
+        _rc = _pd.read_csv(os.path.join(BASE_DIR, "race_data_clean.csv"),
+                           usecols=["race_id", "horse_id"], dtype=str, low_memory=False)
+        _rc["horse_id"] = (_rc["horse_id"].astype(str)
+                           .str.replace(".0", "", regex=False).str.strip())
+        _rc["年"] = _rc["race_id"].str.replace(r"\.0$", "", regex=True).str[:4]
+        _have = set(_hm["horse_id"])
+        _cur = str(datetime.now().year)
+        _now = _rc[_rc["年"] == _cur]
+        _miss = _now[~_now["horse_id"].isin(_have)]["horse_id"].nunique()
+        _tot = _now["horse_id"].nunique()
+        _pct = _miss / _tot * 100 if _tot else 0
+        _mark = "" if _pct < 2 else ("  ← 要確認" if _pct < 10 else "  ← 異常")
+        lines.append(f"  血統が取れていない馬({_cur}年): {_miss}/{_tot}頭"
+                     f"（{_pct:.1f}%）{_mark}")
+    except Exception as e:
+        lines.append(f"  血統チェックに失敗: {type(e).__name__}")
+    for _f, _lab in (("race_features.csv", "特徴量"),
+                     ("sire_stats_father.csv", "種牡馬成績"),
+                     ("model_resid.pkl", "残差モデル")):
+        _p = os.path.join(BASE_DIR, _f)
+        if os.path.exists(_p):
+            _a = (datetime.now() - datetime.fromtimestamp(os.path.getmtime(_p))).days
+            lines.append(f"  {_lab}の更新: {_a}日前"
+                         + ("  ← 止まっている" if _a > 10 else ""))
+        else:
+            lines.append(f"  {_lab}: 見つからない  ← 異常")
+
     if ng:
         lines += ["", "失敗したもの:"] + [f"  {l}" for l in ng]
         lines += ["", "詳しくは weekly_update_log.txt を見てください。"]

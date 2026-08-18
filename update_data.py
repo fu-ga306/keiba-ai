@@ -279,12 +279,25 @@ def run_horse_scraper():
 
 # ── Step5: 父馬産駒成績の再集計 ──────────────────────────────────────────
 def run_sire_stats():
+    """種牡馬成績を集計する。本番用と学習用の**両方**を作ること。
+
+    ⚠ 2026-08-18まで build_sire_stats() を引数なしで1回だけ呼んでおり、
+      本番用（全期間・sire_stats_father.csv）しか作られていなかった。
+      学習用（≤2024・sire_stats_father_train.csv）は 2026-08-01 で止まっていた。
+
+      学習用は features.py が use_train_snapshot=True で読む。つまり特徴量を
+      作り直しても血統は古い集計のまま、という状態が続いていた。
+      リーク防止のため年で切るのは正しいが、集計そのものは毎回やり直す必要がある
+      （新しい馬の成績が ≤2024 の産駒成績にも効いてくるため）。
+    """
     log("sire_stats.py 実行中...")
     sys.path.insert(0, BASE_DIR)
     try:
-        from sire_stats import build_sire_stats
-        build_sire_stats()
-        log(f"  産駒成績集計完了 → {SIRE_CSV}")
+        from sire_stats import build_sire_stats, TRAIN_MAX_YEAR
+        build_sire_stats(max_year=None, suffix="")            # 本番予測用（全期間）
+        log(f"  本番用の集計完了 → {SIRE_CSV}")
+        build_sire_stats(max_year=TRAIN_MAX_YEAR, suffix="_train")  # 学習・BT用
+        log(f"  学習用の集計完了 → sire_stats_father_train.csv（≤{TRAIN_MAX_YEAR}）")
     except Exception as e:
         log(f"  sire_statsエラー: {e}")
 
