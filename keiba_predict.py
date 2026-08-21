@@ -1650,6 +1650,15 @@ def predict_race_pdf(race_id: str, *, history_df: pd.DataFrame, models_pack: dic
     pdf.attrs["cls"]  = _cls_str or cls_inv.get(
         int(pdf["クラス_num"].iloc[0]) if pd.notna(pdf["クラス_num"].iloc[0]) else 0, "不明")
 
+    # ── 残差モデルの gap を先に付ける（2026-08-22に順序を修正）─────────────
+    #   以前は today_predictions.csv を保存した**後**に付けていたため、
+    #   保存された CSV に resid_gap 列が入らず、ダッシュボードの買い印が
+    #   一度も表示されなかった。付けてから保存する。
+    try:
+        _attach_resid_gap(pdf)
+    except Exception as e:
+        print(f"  残差gapの付与に失敗（表示のみ影響）: {type(e).__name__}: {e}")
+
     # ── today_predictions.csv 保存
     _skip_save = False   # オッズ取得失敗時に保存を止めるフラグ（bets保存も連動）
     try:
@@ -1730,10 +1739,6 @@ def predict_race_pdf(race_id: str, *, history_df: pd.DataFrame, models_pack: dic
     #   すべて崩れているため、数字ではなく実測で決める。
     #   ⚠ ここで例外が出ても予想処理は止めない。記録は補助でしかない。
     if not _skip_save:
-        try:
-            _attach_resid_gap(pdf)      # ダッシュボード表示用に gap を pdf に載せる
-        except Exception as e:
-            print(f"  残差gapの付与に失敗（表示のみ影響）: {type(e).__name__}: {e}")
         try:
             _record_resid_paper(pdf, race_id, jyo_name, race_no)
         except Exception as e:

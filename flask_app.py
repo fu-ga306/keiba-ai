@@ -214,6 +214,34 @@ def _finalize(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _fill_resid_gap(df: pd.DataFrame) -> pd.DataFrame:
+    """today_predictions.csv に resid_gap が無いとき、記録から軸だけ補う。
+
+    2026-08-22まで、予想の保存より後に resid_gap を付けていたため、
+    保存済みCSVに列が入らず画面に買い印が出なかった。予想側は直したが、
+    その日のうちに出た古いCSVは列を持たないままなので、ここで補完する。
+
+    ⚠ 補えるのは paper_resid.csv に載っている馬（軸と相手）だけ。
+      他の馬の gap は分からないので空のままにする。
+      次回の予想からは全馬に付くので、この補完は使われなくなる。
+    """
+    if "resid_gap" in df.columns or "race_id" not in df.columns:
+        return df
+    p = os.path.join(BASE_DIR, "paper_resid.csv")
+    if not os.path.exists(p):
+        return df
+    try:
+        r = pd.read_csv(p, dtype={"race_id": str})
+        r = r[r["判定"].isin(("買い", "候補"))]
+        if r.empty or "馬名" not in df.columns:
+            return df
+        key = r.drop_duplicates(["race_id", "馬名"]).set_index(["race_id", "馬名"])["gap"]
+        df["resid_gap"] = [key.get((a, b)) for a, b in zip(df["race_id"], df["馬名"])]
+    except Exception:
+        pass
+    return df
+
+
 def fetch_csv(url: str) -> pd.DataFrame:
     now = time.time()
     local_path = os.path.join(BASE_DIR, LOCAL_MAP[url]) if url in LOCAL_MAP else None
@@ -509,8 +537,25 @@ def build_bet_recs(group: pd.DataFrame, are_tan: int = 50, are_ren: int = 50) ->
 
 def calc_rec_level(group: pd.DataFrame, are_tan: int, are_ren: int, bet_recs: list) -> tuple:
     """レース推奨レベルを返す (label, css_class, score)。
-    買い指数(honest backtestで単勝回収率に較正)を最優先で使う。
-    無い旧データはEVベースにフォールバック。"""
+
+    2026-08-22改定: 残差モデルの判定を最優先にする。
+      いま実際に見ているのは残差モデル（gap＝モデルの予測確率÷市場の確率）で、
+      旧方式（購入推奨・買い指数）は購入停止に伴い常に「見送り」になる。
+      画面が全レース見送りに見えるのに記録では32レースが「買い」という
+      食い違いが起きていたので、画面を実態に合わせる。
+
+      ★軸あり（gap>=1.5）→「★軸」
+      それ未満          →「見送り」
+    """
+    g = pd.to_numeric(group.get("resid_gap"), errors="coerce")
+    if g is not None and g.notna().any():
+        mx = float(g.max())
+        if mx >= RESID_AX:
+            # gapが大きいほど強い。1.5→60, 2.0→75, 3.0→90 くらいの目盛り
+            sc = int(min(99, 45 + (mx - 1.0) * 30))
+            return ("★軸", "rec-hot" if mx >= 2.0 else "rec-good", sc)
+        return "見送り", "rec-pass", int(max(0, mx * 30))
+
     # 見送り判定
     if bet_recs and bet_recs[0]["type"] == "見送り":
         return "見送り", "rec-pass", 0
@@ -706,7 +751,7 @@ def _keep_latest_meet_day(df):
 
 @app.route("/races")
 def races():
-    df = fetch_csv(TODAY_PRED_URL)
+    df = _fill_resid_gap(fetch_csv(TODAY_PRED_URL))
     if df.empty:
         return render_template("error.html", msg="予想データが取得できませんでした。しばらく後に再度お試しください。")
     df = _keep_latest_meet_day(df)  # 前日データ混入を除去
@@ -738,7 +783,7 @@ def races():
 
 @app.route("/race/<race_id>")
 def race_detail(race_id):
-    df = fetch_csv(TODAY_PRED_URL)
+    df = _fill_resid_gap(fetch_csv(TODAY_PRED_URL))
     if df.empty:
         return render_template("error.html", msg="データ取得失敗")
 
