@@ -203,6 +203,31 @@ def main():
                 ng("中", f"{n} が週次更新に入っていない")
 
     log("\n" + "=" * 70)
+    log("  ⑤b 集計ツールが実際に動くか")
+    log("=" * 70)
+    log("  paper_report.py が KeyError で落ちていたのに気づかなかった（2026-08-22）。")
+    log("  週次で呼んでいても、落ちていれば何も分からない。実際に動かして確かめる。")
+    import subprocess as _sp
+    for _t in ("paper_report.py", "audit_calls.py"):
+        _p = os.path.join(BASE, _t)
+        if not os.path.exists(_p):
+            continue
+        try:
+            _r = _sp.run(["python", _p], cwd=BASE, capture_output=True,
+                         text=True, timeout=300,
+                         env=dict(os.environ, PYTHONUTF8="1"))
+            _ok = _r.returncode == 0
+            log(f"  {'○' if _ok else '⚠'} {_t:<22}"
+                f"{'正常終了' if _ok else '異常終了'}")
+            if not _ok:
+                _last = [x for x in (_r.stderr or "").splitlines() if x.strip()]
+                log(f"      {_last[-1][:80] if _last else ''}")
+                ng("高", f"{_t} が異常終了する。集計できない状態")
+        except Exception as e:
+            log(f"  ⚠ {_t:<22}実行できず（{type(e).__name__}）")
+            ng("中", f"{_t} を実行できない")
+
+    log("\n" + "=" * 70)
     log("  ⑥ 参照切れ（コードが読むファイルが存在するか）")
     log("=" * 70)
     MUST = ["market_free_model.py", "resid_io.py", "model_diag.py", "features.py",

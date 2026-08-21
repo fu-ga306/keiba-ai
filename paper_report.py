@@ -1,24 +1,26 @@
 # -*- coding: utf-8 -*-
-"""残差モデルの前向き検証（買わずに記録）を集計する（2026-08-17）
+"""残差モデルの前向き検証（買わずに記録）を集計する（2026-08-22 全面改訂）
 
 なぜ前向き検証か
-  バックテストでは 1,891点・的中203・5年通算157.1% だった。順列検定も通った
-  （p=0.0000）。だが過去8回、バックテストで良く見えたものがすべて崩れている。
-  だから今回は**実際に走らせて記録を貯めてから**決める。買わない。
+  バックテストでは 軸gap>=1.5 で 10,349点・的中1,178・5年120.6% だった。
+  順列検定も通っている（p=0.0000）。だが過去8回、バックテストで良く見えたものが
+  すべて崩れている。だから実際に走らせて記録を貯めてから決める。買わない。
+
+記録の形（paper_resid.csv）
+  1レースにつき複数行。軸1行＋ダートなら相手が最大3行、見送りなら1行。
+  軸gap 列があるので、しきい値1.5と1.7の両方を後から集計できる。
 
 見るもの
-  ① 買い率が想定どおりか
-     バックテストでは 14,972レース中1,891レース＝12.6%。
-     実測がこれと大きく違えば、本番と検証で条件が違っている。
-  ② 選ばれる馬の人気・オッズの分布が想定どおりか
-     バックテストの中央オッズは19.8倍・中央7番人気。
-  ③ 実際の回収率
-     ただし的中100本を超えるまでは数字を信用しない。
-     バックテストでも年ごとの的中は28〜67本で、その本数だとROIは倍半分に振れる。
+  ① 買い率がバックテストと合っているか
+     ズレていれば本番と検証で条件が違う。真っ先に気づくべき異常。
+  ② 選ばれる軸の人気・オッズの分布が想定どおりか
+  ③ 実際の回収率（結果が出たレースのみ）
+     ただし的中100本を超えるまで数字を信用しない。5年検証でも60倍以上の帯は
+     的中11本・95%区間[59.5, 288.4]で何も言えなかった。同じことが起きる。
 
-判断の目安
-  的中100本 … ようやく傾向が見え始める
-  的中200本 … バックテスト（203本）と同じ土俵で比べられる
+⚠ 2026-08-22に全面改訂。以前の版は BT を辞書にした際に買い率の参照を直し忘れ、
+  KeyError で落ちていた。また記録が1レース1行の前提だったが、実際は軸＋相手で
+  複数行になるため集計もずれていた。
 
 実行: python paper_report.py
 """
@@ -32,21 +34,17 @@ warnings.filterwarnings("ignore")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PAPER = os.path.join(BASE_DIR, "paper_resid.csv")
-rng = np.random.default_rng(20260817)
+rng = np.random.default_rng(20260822)
 
-# train_resid.py backtest / check_resid.py で確認済みの値
-# 軸のしきい値ごとのバックテスト値（2021-2025 walk-forward）
+# 軸のしきい値ごとのバックテスト値（2021-2025 walk-forward・実払戻で照合）
 BT = {
     1.5: {"買い率": 47.7, "点数": 10349, "的中": 1178, "ROI": 120.6,
-          "区間": (103.1, 140.0), "年別": "137/116/111/163/79", "超年": 4,
-          "2026": 115.6},
+          "年別": "137/116/111/163/79"},
     1.7: {"買い率": 27.5, "点数": 6195, "的中": 584, "ROI": 131.1,
-          "区間": (104.9, 161.1), "年別": "146/119/115/217/77", "超年": 4,
-          "2026": 153.4},
-    2.0: {"買い率": 12.6, "点数": 2926, "的中": 236, "ROI": 163.3,
-          "区間": (111.5, 229.5), "年別": "210/106/154/337/69", "超年": 4,
-          "2026": 268.1},
+          "年別": "146/119/115/217/77"},
 }
+BT_ODDS_MED = 10.6      # 軸の中央オッズ（gap>=1.5）
+BT_POP_MED = 5          # 軸の中央人気
 
 
 def log(m):
@@ -59,71 +57,97 @@ def main():
         log("予想を1回まわすと作られます（購入はしません）。")
         return
     d = pd.read_csv(PAPER, dtype={"race_id": str})
-    log(f"記録 {len(d):,}レース（{d.race_id.str[:8].min()} 〜 {d.race_id.str[:8].max()}）\n")
+    d["軸gap"] = pd.to_numeric(d.get("軸gap"), errors="coerce")
+    nrace = d.race_id.nunique()
+    ndays = d.race_id.str[:10].nunique()
+    log(f"記録 {nrace:,}レース / {len(d):,}行"
+        f"（race_id {d.race_id.min()} 〜 {d.race_id.max()}）\n")
 
-    buy = d[d.判定 == "買い"]
-    rate = len(buy) / len(d) * 100
-    log("=== ① 買い率 ===")
-    log(f"  実測 {len(buy):,}/{len(d):,} = {rate:.1f}%   バックテスト {BT['買い率']}%")
-    diff = abs(rate - BT["買い率"])
-    log(f"  → {'○ 想定どおり' if diff < 5 else '⚠ ズレている。本番と検証で条件が違う可能性'}"
-        f"（差 {diff:.1f}pt）")
+    # ── ① 買い率 ────────────────────────────────────────
+    log("=== ① 買い率（しきい値ごと）===")
+    log("  ズレていたら本番と検証で条件が違う。真っ先に疑うところ。")
+    log(f"  {'軸gap':<9}{'買うレース':>11}{'買い率':>9}{'BT買い率':>10}{'判定':>10}")
+    for th, bt in sorted(BT.items()):
+        n = d[(d.判定 == "買い") & (d.軸gap >= th)].race_id.nunique()
+        r = n / nrace * 100 if nrace else 0
+        diff = abs(r - bt["買い率"])
+        log(f"  >={th:<7}{n:>11,}{r:>8.1f}%{bt['買い率']:>9.1f}%"
+            f"{('○' if diff < 10 else '⚠ ズレ'):>10}")
+    log("  ※ 開催日ごとにレースの堅さが違うので、数日ぶんでは揺れます。")
+    log("    1番人気が4倍以上のような混戦が多い日は、買い率が上がり人気薄に寄ります。")
 
-    if buy.empty:
-        log("\nまだ買い判定のレースがありません。")
+    ax = d[(d.判定 == "買い") & (d.役割 == "軸")]
+    if ax.empty:
+        log("\nまだ買い判定の軸がありません。")
         return
 
-    log("\n=== ② 選ばれている馬 ===")
-    o = pd.to_numeric(buy["単勝オッズ"], errors="coerce")
-    p = pd.to_numeric(buy["人気"], errors="coerce")
-    log(f"  中央オッズ {o.median():.1f}倍（BT {BT['中央オッズ']}倍）")
-    log(f"  中央人気   {p.median():.0f}番人気（BT {BT['中央人気']}番人気）")
-    log(f"  gap 中央値 {pd.to_numeric(buy['gap'], errors='coerce').median():.2f}")
-    log(f"  {'人気帯':<12}{'頭数':>7}{'割合':>7}")
+    # ── ② 選ばれている軸 ──────────────────────────────────
+    o = pd.to_numeric(ax["単勝オッズ"], errors="coerce")
+    p = pd.to_numeric(ax["人気"], errors="coerce")
+    log("\n=== ② 選ばれている軸 ===")
+    log(f"  中央オッズ {o.median():>6.1f}倍（BT {BT_ODDS_MED}倍）")
+    log(f"  中央人気   {p.median():>6.0f}番人気（BT {BT_POP_MED}番人気）")
+    log(f"  {'人気帯':<12}{'頭数':>7}{'割合':>8}")
     for lo, hi, lab in [(1, 1, "1番人気"), (2, 3, "2-3番"), (4, 5, "4-5番"),
-                        (6, 7, "6-7番"), (8, 12, "8-12番"), (13, 99, "13番以下")]:
+                        (6, 7, "6-7番"), (8, 9, "8-9番"), (10, 12, "10-12番"),
+                        (13, 99, "13番以下")]:
         n = int(((p >= lo) & (p <= hi)).sum())
-        if n:
-            log(f"  {lab:<12}{n:>7}{n/len(buy)*100:>6.1f}%")
+        log(f"  {lab:<12}{n:>7}{n/len(ax)*100:>7.1f}%")
 
-    # ── 結果との照合 ────────────────────────────────────
-    res = os.path.join(BASE_DIR, "jv_payouts.csv")
-    if not os.path.exists(res):
+    # ── ③ 回収率 ───────────────────────────────────────
+    jvp = os.path.join(BASE_DIR, "jv_payouts.csv")
+    if not os.path.exists(jvp):
         log("\n（払戻データが無いので回収率は出せません）")
         return
-    jv = pd.read_csv(res, dtype=str)
+    jv = pd.read_csv(jvp, dtype=str)
     jv["払戻金"] = pd.to_numeric(jv["払戻金"], errors="coerce").fillna(0)
     PAY = {(r.race_id, r.券種, r.組み合わせ): r.払戻金
            for r in jv[jv.券種.isin(("単勝", "ワイド"))].itertuples()}
-    b = buy.copy()
-    # 結果が出たレースだけを対象にする（払戻表にそのレースが載っているか）
-    done_races = {r.race_id for r in jv.itertuples()}
-    b = b[b.race_id.isin(done_races)]
+    done = set(jv.race_id)
+
+    b = d[(d.判定 == "買い") & d.race_id.isin(done)].copy()
+    log(f"\n=== ③ 回収率（結果が出た {b.race_id.nunique():,}レース）===")
+    if len(b) < 5:
+        log("  まだ結果が出たレースがありません。")
+        log("  ※ jv_payouts.csv はJRA-VANから取り込むので、反映まで数日かかります。")
+        log(f"     記録は {nrace:,}レース貯まっています。")
+        return
     b["払戻"] = [PAY.get((r, k, c), 0.0)
                 for r, k, c in zip(b.race_id, b["券種"], b["組み合わせ"])]
-    done = b
-    log(f"\n=== ③ 回収率（結果が出た {len(done):,}レース）===")
-    if len(done) < 10:
-        log("  まだ照合できるレースが少ないです。")
-        return
-    hit = int((done.払戻 > 0).sum())
-    roi = done.払戻.sum() / (len(done) * 100) * 100
-    log(f"  {len(done):,}点  的中{hit}（{hit/len(done)*100:.1f}%）  回収率 {roi:.1f}%")
-    if hit >= 20:
-        v = done.払戻.values
-        bs = np.array([rng.choice(v, len(v)).mean() for _ in range(3000)])
-        log(f"  95%区間 [{np.percentile(bs,2.5):.1f}, {np.percentile(bs,97.5):.1f}]")
-    log(f"\n  バックテスト: {BT['点数']:,}点 的中{BT['的中']} ROI {BT['ROI']}%")
-    log(f"               年別 {BT['年別']}")
+
+    for th, bt in sorted(BT.items()):
+        s = b[b.軸gap >= th]
+        if len(s) < 5:
+            continue
+        hit = int((s.払戻 > 0).sum())
+        line = (f"  軸gap>={th}  {len(s):>5,}点  的中{hit:>4}"
+                f"（{hit/len(s)*100:>4.1f}%）  回収率 {s.払戻.mean():>6.1f}%")
+        if hit >= 20:
+            v = s.払戻.values
+            bs = np.array([rng.choice(v, len(v)).mean() for _ in range(3000)])
+            line += f"  95%区間[{np.percentile(bs,2.5):.0f}, {np.percentile(bs,97.5):.0f}]"
+        log(line)
+        log(f"           BT: {bt['点数']:,}点 的中{bt['的中']} {bt['ROI']}%"
+            f"  年別 {bt['年別']}")
+
+    log("\n  券種別:")
+    for k, g in b.groupby("券種"):
+        if len(g) >= 5:
+            log(f"    {k:<6}{len(g):>5,}点  的中{int((g.払戻>0).sum()):>4}"
+                f"  回収率 {g.払戻.mean():>6.1f}%")
+
+    # ── 判断の目安 ──────────────────────────────────────
+    hit = int((b.払戻 > 0).sum())
     log("\n=== 判断の目安 ===")
     if hit < 100:
-        log(f"  的中{hit}本。**まだ数字を信用しない。**"
-            f"（目安100本まであと{100-hit}本）")
-        log("  バックテストでも年ごとの的中は28〜67本で、その本数だとROIは倍半分に振れる。")
-    elif hit < 200:
+        log(f"  的中{hit}本。**まだ数字を信用しない。**（目安100本まであと{100-hit}本）")
+        log("  的中が少ないと1本の大穴で数字がひっくり返る。5年検証でも")
+        log("  60倍以上の帯は的中11本・95%区間[59.5, 288.4]で何も言えなかった。")
+    elif hit < 300:
         log(f"  的中{hit}本。傾向が見え始める段階。まだ確定ではない。")
     else:
-        log(f"  的中{hit}本。バックテスト(203本)と同じ土俵。比較できる。")
+        log(f"  的中{hit}本。バックテスト(1,178本)と比べられる水準に近い。")
+    log(f"\n  {ndays}開催日で{nrace:,}レース記録。的中100本には数か月かかります。")
 
 
 if __name__ == "__main__":
