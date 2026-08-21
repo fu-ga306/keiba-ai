@@ -301,14 +301,27 @@ def get_payout(race_id):
 
 
 def _load_done_race_ids():
-    """既に取得済みのrace_idを返す（再開用）。"""
-    if os.path.exists(OUTPUT_CSV):
+    """既に払戻を持っている race_id を返す（再開用）。
+
+    payout_data.csv（netkeiba取得分）だけでなく jv_payouts.csv（JV-Link取得分）も
+    見る。JRA-VANの契約終了で取得元をnetkeibaへ移すが、過去分の払戻はローカルに
+    残っているので取り直す必要がない。
+
+    ⚠ 2026-08-22まで payout_data.csv しか見ておらず、JVで持っている
+      23,340レースを再取得しようとしていた。1レース2〜3.5秒待つので、
+      無駄なアクセスが数万回になるところだった。
+    """
+    done = set()
+    for path in (OUTPUT_CSV, os.path.join(BASE_DIR, "jv_payouts.csv")):
+        if not os.path.exists(path):
+            continue
         try:
-            df = pd.read_csv(OUTPUT_CSV, low_memory=False, usecols=["race_id"])
-            return set(df["race_id"].astype(str).unique())
+            df = pd.read_csv(path, low_memory=False, usecols=["race_id"])
+            done |= set(df["race_id"].astype(str)
+                        .str.replace(r"\.0$", "", regex=True).unique())
         except Exception:
-            return set()
-    return set()
+            continue
+    return done
 
 
 def _save(rows, append=True):

@@ -17,6 +17,8 @@ import time
 BASE = os.path.dirname(os.path.abspath(__file__))
 HR_PATH = os.path.join(BASE, "data", "jv", "RACE_HR.txt")
 JV_CSV = os.path.join(BASE, "jv_payouts.csv")
+# netkeibaから取った払戻（payout_scraper.py の出力）。今後はこちらが主。
+NETKEIBA_CSV = os.path.join(BASE, "payout_data.csv")
 PY32 = r"C:/Users/別府飛河/AppData/Local/Python32/Python312/python.exe"
 UNORDERED = {"馬連", "ワイド", "3連複", "枠連"}
 
@@ -81,17 +83,30 @@ def _load_hr():
 
 
 def _load_csv():
+    """ローカルの払戻DBを読む。netkeiba取得分とJV取得分の**両方**を見る。
+
+    ⚠ 2026-08-22まで jv_payouts.csv しか見ていなかった。JRA-VANの契約終了に伴い
+      netkeiba へ切り替えたのに、netkeiba で取った payout_data.csv を読んで
+      いなかったため、新しいレースは毎回ウェブへ取りに行っていた。
+
+    優先順は netkeiba(payout_data.csv) → JV(jv_payouts.csv)。
+    同じ race_id が両方にあれば netkeiba を採る（今後はこちらが正）。
+    """
     global _csv_cache
     if _csv_cache is not None:
         return _csv_cache
     _csv_cache = {}
-    if not os.path.exists(JV_CSV):
-        return _csv_cache
     import pandas as pd
-    d = pd.read_csv(JV_CSV, dtype=str)
-    d["払戻金"] = pd.to_numeric(d["払戻金"], errors="coerce").fillna(0).astype(int)
-    for rid, g in d.groupby("race_id"):
-        _csv_cache[rid] = g.to_dict("records")
+    # 後に読むほうが優先されるよう、JV → netkeiba の順に入れる
+    for path in (JV_CSV, NETKEIBA_CSV):
+        if not os.path.exists(path):
+            continue
+        d = pd.read_csv(path, dtype=str)
+        if "払戻金" not in d.columns:
+            continue
+        d["払戻金"] = pd.to_numeric(d["払戻金"], errors="coerce").fillna(0).astype(int)
+        for rid, g in d.groupby("race_id"):
+            _csv_cache[str(rid).replace(".0", "")] = g.to_dict("records")
     return _csv_cache
 
 

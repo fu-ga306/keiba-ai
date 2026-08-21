@@ -95,12 +95,21 @@ def main():
         log(f"  {lab:<12}{n:>7}{n/len(ax)*100:>7.1f}%")
 
     # ── ③ 回収率 ───────────────────────────────────────
-    jvp = os.path.join(BASE_DIR, "jv_payouts.csv")
-    if not os.path.exists(jvp):
+    # 払戻は netkeiba(payout_data.csv) と JV(jv_payouts.csv) の両方を見る。
+    # JRA-VANの契約終了で取得元をnetkeibaへ移したが、過去分はJV側に残っている。
+    frames = []
+    for path in ("jv_payouts.csv", "payout_data.csv"):
+        fp = os.path.join(BASE_DIR, path)
+        if os.path.exists(fp):
+            frames.append(pd.read_csv(fp, dtype=str))
+    if not frames:
         log("\n（払戻データが無いので回収率は出せません）")
         return
-    jv = pd.read_csv(jvp, dtype=str)
+    jv = pd.concat(frames, ignore_index=True)
+    jv["race_id"] = jv["race_id"].astype(str).str.replace(r"\.0$", "", regex=True)
     jv["払戻金"] = pd.to_numeric(jv["払戻金"], errors="coerce").fillna(0)
+    # 同じ race_id が両方にあれば後勝ち（＝netkeiba側）
+    jv = jv.drop_duplicates(["race_id", "券種", "組み合わせ"], keep="last")
     PAY = {(r.race_id, r.券種, r.組み合わせ): r.払戻金
            for r in jv[jv.券種.isin(("単勝", "ワイド"))].itertuples()}
     done = set(jv.race_id)
@@ -109,7 +118,7 @@ def main():
     log(f"\n=== ③ 回収率（結果が出た {b.race_id.nunique():,}レース）===")
     if len(b) < 5:
         log("  まだ結果が出たレースがありません。")
-        log("  ※ jv_payouts.csv はJRA-VANから取り込むので、反映まで数日かかります。")
+        log("  ※ 払戻は週次(Step0.55)でnetkeibaから取得します。反映は次の週次更新後です。")
         log(f"     記録は {nrace:,}レース貯まっています。")
         return
     b["払戻"] = [PAY.get((r, k, c), 0.0)

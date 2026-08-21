@@ -138,6 +138,21 @@ def main():
                     timeout=7200):   # 2時間（新馬が大量に出る時期を考慮）
         log("  [警告] 血統の取得に失敗。前回の horse_master.csv のまま続けます")
 
+    # ── Step 0.55: 払戻の取得（2026-08-22追加）──────────────────────────
+    #   JRA-VANの契約を終了する方針なので、払戻の取得元をnetkeibaへ移す。
+    #   過去分(2019-2026・26,051レース)は jv_payouts.csv にローカル保存済みで
+    #   今後もそのまま使うため、取り直しは不要。新しいレースだけ取る。
+    #
+    #   ⚠ 払戻が無いと前向き検証の回収率が出せない。ここが止まると
+    #     「記録は貯まるのに成績が分からない」状態になる。
+    #   ⚠ 取得済み判定は payout_data.csv と jv_payouts.csv の両方を見る。
+    #     片方しか見ないと2万件超を無駄に取りに行く（2026-08-22に修正）。
+    log("[Step0.55] 払戻の取得（netkeiba・未取得分のみ）")
+    if not run_step("payout_scraper.py",
+                    [PYTHON, os.path.join(BASE_DIR, "payout_scraper.py")],
+                    timeout=7200):
+        log("  [警告] 払戻の取得に失敗。回収率の集計が古いままになります")
+
     log("[Step0.6] 種牡馬成績の再集計")
     if not run_step("sire_stats.py",
                     [PYTHON, os.path.join(BASE_DIR, "sire_stats.py")],
