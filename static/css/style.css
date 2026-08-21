@@ -774,11 +774,30 @@ body {
   .page-title { font-size: 17px; }
   .uma-name { font-size: 13px; }
   .bet-item { flex-wrap: wrap; }
+  /* 買い印はスマホでも潰さない。★軸が一目で分かることが最優先なので、
+     gap の数字だけ改行して下に置き、印そのものは大きさを保つ。 */
+  .rmark-cell { min-width: 3.4em; }
+  .rmark-main { padding: 2px 5px; font-size: 0.78rem; }
+  .rmark-sub { padding: 2px 4px; font-size: 0.78rem; min-width: 1.3em; }
+  .rmark-gap { display: block; margin-left: 0; font-size: 0.62rem; line-height: 1.1; }
 }
 
 @media (max-width: 400px) {
   .signal-summary { grid-template-columns: 1fr; }
   .race-no { font-size: 17px; }
+  .rmark-gap { display: none; }   /* 狭い画面では gap の数字は省く */
+}
+
+/* 横スクロールできることを指で分かるようにする（スマホは影が唯一の手掛かり） */
+.table-scroll {
+  background:
+    linear-gradient(90deg, #fff 30%, rgba(255,255,255,0)),
+    linear-gradient(90deg, rgba(255,255,255,0), #fff 70%) 100% 0,
+    radial-gradient(farthest-side at 0 50%, rgba(0,0,0,.14), transparent),
+    radial-gradient(farthest-side at 100% 50%, rgba(0,0,0,.14), transparent) 100% 0;
+  background-repeat: no-repeat;
+  background-size: 40px 100%, 40px 100%, 14px 100%, 14px 100%;
+  background-attachment: local, local, scroll, scroll;
 }
 
 /* ── 妙味表示（2026-07-31）──────────────────────────────
@@ -912,4 +931,28 @@ body {
 .rmark-gap {
   display: inline-block; margin-left: 4px; font-size: 0.7rem;
   color: #868e96; font-variant-numeric: tabular-nums;
+}
+
+/* ── 推奨買い目（残差モデル・2026-08-22）──────────────────────
+   ★軸から相手へ流れる形を、上から下への流れとして見せる。 */
+.rbet-flow {
+  background: #fff; border: 1px solid #e4dfd8; border-radius: 10px;
+  padding: 12px 14px; margin-bottom: 12px;
+}
+.rbet-ax, .rbet-mate {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 6px 0; font-size: .92rem;
+}
+.rbet-ax { border-bottom: 1px dashed #e4dfd8; }
+.rbet-no { font-weight: 700; font-variant-numeric: tabular-nums; }
+.rbet-name { flex: 1 1 8em; }
+.rbet-odds { color: #495057; font-variant-numeric: tabular-nums; }
+.rbet-gap {
+  background: #f1f3f5; color: #495057; border-radius: 4px;
+  padding: 1px 6px; font-size: .76rem; font-variant-numeric: tabular-nums;
+}
+.rbet-arrow { color: #868e96; font-size: .8rem; padding: 6px 0 2px; }
+@media (max-width: 640px) {
+  .rbet-ax, .rbet-mate { font-size: .84rem; gap: 6px; }
+  .rbet-name { flex: 1 1 100%; order: 3; }
 }

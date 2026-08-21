@@ -145,45 +145,67 @@
   </div>
 </section>
 
-<!-- 推奨買い目（マトリクス判定・実払戻BT連動） -->
+<!-- 推奨買い目（残差モデル・2026-08-22改定） -->
+{#
+  旧方式(my_bets)は購入停止で常に空になり、画面に何も出なくなっていた。
+  いま実際に記録しているのは残差モデルの買い目なので、それを出す。
+  gap = モデルの予測確率 ÷ 市場の確率。2.0なら市場の2倍強いと見ている。
+#}
 <section class="section-block">
   <h2 class="section-title">💰 推奨買い目</h2>
-  {% if plan_reason %}<p class="plan-reason">判定理由: {{ plan_reason }}{% if plan_size and plan_size != '-' %} ／ 資金配分: <b>{{ plan_size }}</b>{% endif %}</p>{% endif %}
-  {% if my_bets %}
+  {% if r_bets %}
+  <div class="rbet-flow">
+    <div class="rbet-ax">
+      <span class="rmark-main">★軸</span>
+      <span class="rbet-no">{{ r_ax.馬番 | int }}番</span>
+      <span class="rbet-name">{{ r_ax.馬名 }}</span>
+      <span class="rbet-odds">{{ r_ax.単勝オッズ }}倍</span>
+      <span class="rbet-gap" title="モデルの予測確率 ÷ 市場の確率">gap {{ r_ax.r_gap }}</span>
+    </div>
+    {% if r_mates %}
+    <div class="rbet-arrow">↓ ダートなので相手に流す</div>
+    {% for m in r_mates %}
+    <div class="rbet-mate">
+      <span class="rmark-sub rmark-2">○</span>
+      <span class="rbet-no">{{ m.馬番 | int }}番</span>
+      <span class="rbet-name">{{ m.馬名 }}</span>
+      <span class="rbet-odds">{{ m.単勝オッズ }}倍</span>
+      <span class="rbet-gap">gap {{ m.r_gap }}</span>
+    </div>
+    {% endfor %}
+    {% elif r_is_dirt %}
+    <div class="rbet-arrow">相手なし（gap1.3以上の馬がいない）→ 単勝のみ</div>
+    {% else %}
+    <div class="rbet-arrow">芝は単勝のみ（ワイドを足すのはダートだけ）</div>
+    {% endif %}
+  </div>
   <table class="bets-table">
-    <thead><tr><th>券種</th><th>買い方</th><th>組み合わせ</th><th>点数</th><th>金額</th><th>BT回収率</th></tr></thead>
+    <thead><tr><th>券種</th><th>組み合わせ</th><th>点数</th></tr></thead>
     <tbody>
-      {% for b in my_bets %}
+      {% for b in r_bets %}
       <tr>
         <td><b>{{ b.kind }}</b></td>
-        <td>{{ b.name }}</td>
         <td class="bets-combo">{{ b.combo }}</td>
         <td>{{ b.points }}点</td>
-        <td>{{ "{:,}".format(b.amount) }}円</td>
-        <td>BT{{ b.bt }}%</td>
       </tr>
       {% endfor %}
-      <tr>
-        <td colspan="3"><b>合計</b></td>
-        <td><b>{{ my_bets | sum(attribute='points') }}点</b></td>
-        <td><b>{{ "{:,}".format(my_bets | sum(attribute='amount')) }}円</b></td>
-        <td></td>
-      </tr>
+      <tr><td colspan="2"><b>合計</b></td>
+          <td><b>{{ r_bets | sum(attribute='points') }}点</b></td></tr>
     </tbody>
   </table>
-  <p class="bets-note">※ BT=バックテスト回収率。翌日に実結果と自動照合されます。</p>
   {% else %}
-  <p class="bets-note">
-    <b>現在は購入を停止しています（2026-08-14〜）。</b><br>
-    時系列リークを修正したクリーンデータで検証し直したところ、実運用（7分前オッズで判定）で
-    100%を超える買い方が1つも残りませんでした。EV方式は確定オッズ基準109.8%に対し
-    7分前では約82.8%、複勝方式は84.7%です。<br>
-    締切2分前のオッズを半年ほど蓄積し、投票時刻を遅らせれば回復するかを検証するまで、
-    予想の表示のみを続けます。
-  </p>
+  <p class="bets-note"><b>見送り</b>（gapが1.5以上の馬がいません）</p>
   {% endif %}
+  <p class="bets-note">
+    <b>※ 記録のみで、実際には購入していません。</b><br>
+    5年検証 回収率120.6%（10,349点・的中1,178本）。
+    ただし年別は 137 / 116 / 111 / 163 / <b>79</b>% と振れます。
+    年単位では負ける年があるので、通算でしか判断できません。<br>
+    ★軸＝買う馬（単勝）。○＝ダートで流す相手（ワイド）。
+    <b>「評価」列とは別物</b>で、評価は「来やすさ」、買い印は「市場との評価差」を見ています。
+    両方が同じ馬を指すのは0.6%しかないので、評価Dの★軸は正常です。
+  </p>
 </section>
-
 
 
 <!-- 能力値パラメータ -->

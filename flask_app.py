@@ -168,6 +168,50 @@ def resid_marks(horses):
             h["r_mark"] = ""
 
 
+def resid_bets(horses, baba=None):
+    """残差モデルの買い目を作る（2026-08-22）。
+
+    画面の「推奨買い目」を実態に合わせるための関数。旧方式（購入推奨・買い指数）は
+    購入停止に伴い常に空になり、画面が何も出さなくなっていた。
+    いま実際に記録しているのは残差モデルの買い目なので、それを出す。
+
+    買い方は resid_io.pick_bets と同じ:
+      軸  gapが最大かつ RESID_AX 以上           → 単勝1点
+      相手 ダートのみ。gapが RESID_MATE 以上・最大3頭 → ワイド追加
+      芝は単勝のみ
+
+    返り値: (買い目リスト, 軸dict または None, 相手リスト)
+    ⚠ 実際には購入していない。表示と記録だけ。
+    """
+    resid_marks(horses)
+    ax = next((h for h in horses if h.get("r_main")), None)
+    if ax is None:
+        return [], None, []
+    an = pd.to_numeric(ax.get("馬番"), errors="coerce")
+    if pd.isna(an):
+        return [], None, []
+    an = str(int(an)).zfill(2)
+    is_dirt = str(baba or "").startswith(("ダ", "ダート"))
+    mates = []
+    if is_dirt:
+        cand = [h for h in horses
+                if h is not ax and (h.get("r_gap") or 0) >= RESID_MATE]
+        mates = sorted(cand, key=lambda h: -(h.get("r_gap") or 0))[:3]
+    bets = [{"kind": "単勝", "combo": an, "points": 1, "role": "軸",
+             "馬番": ax.get("馬番"), "馬名": ax.get("馬名"),
+             "odds": ax.get("単勝オッズ"), "gap": ax.get("r_gap")}]
+    for m in mates:
+        bn = pd.to_numeric(m.get("馬番"), errors="coerce")
+        if pd.isna(bn):
+            continue
+        bn = str(int(bn)).zfill(2)
+        bets.append({"kind": "ワイド", "combo": f"{min(an,bn)}-{max(an,bn)}",
+                     "points": 1, "role": "相手",
+                     "馬番": m.get("馬番"), "馬名": m.get("馬名"),
+                     "odds": m.get("単勝オッズ"), "gap": m.get("r_gap")})
+    return bets, ax, mates
+
+
 def grade_of(score):
     """スコアを評価に変換する。しきい値は GRADE_TH。"""
     if score is None or not np.isfinite(score):
@@ -914,6 +958,9 @@ def race_detail(race_id):
     #   ⚠ 検証値は「軸の単勝＋ダートならワイド」で 5年120.6%（軸gap>=1.5）。
     #     馬連・3連系は検証で単勝に届かなかったので、印はあくまで目安。
     resid_marks(horses)
+    # 残差モデルの買い目（2026-08-22）。旧方式(my_bets)は購入停止で常に空なので、
+    # 実際に記録している買い目をこちらで作って画面に出す。
+    r_bets, r_ax, r_mates = resid_bets(horses, baba)
 
     return render_template(
         "race_detail.html",
@@ -929,6 +976,8 @@ def race_detail(race_id):
         klass=klass,
         date_str=date_str,
         my_bets=my_bets,
+        r_bets=r_bets, r_ax=r_ax, r_mates=r_mates,
+        r_is_dirt=str(baba or "").startswith(("ダ", "ダート")),
         rec_level=rec_level,
         rec_cls=rec_cls,
         plan_reason=plan_reason,
