@@ -212,23 +212,47 @@ def main():
         be = re.search(r"^BETTING_ENABLED\s*=\s*(True|False)", kp, re.M)
         vm = re.search(r'^VOTE_MODE\s*=\s*"(\w+)"', av, re.M)
         armed = os.path.exists(os.path.join(BASE, "AUTO_VOTE_ARMED"))
-        bets = os.path.exists(os.path.join(BASE, "today_bets.csv"))
         env = os.path.join(BASE, ".env")
         ipat = ("IPAT_" in open(env, encoding="utf-8").read()) if os.path.exists(env) else False
+        # 投票する対象があるか。取得元(BET_SOURCE)によって見るファイルが違う。
+        # resid = paper_resid.csv の判定「買い」/ legacy = today_bets.csv
+        bs = re.search(r'^BET_SOURCE\s*=\s*"(\w+)"', av, re.M)
+        src = bs.group(1) if bs else "?"
+        # BET_SOURCE="resid" では paper_resid.csv（＝前向き検証の記録。購入停止中でも
+        # 「買い」行が書かれる）を読むので、その存在はガードにならない。
+        # 代わりに auto_vote._effective_mode() の実測を最後の一段として見る。
         guards = [
             ("BETTING_ENABLED", be.group(1) if be else "?", "False"),
             ("VOTE_MODE", vm.group(1) if vm else "?", "dryrun"),
             ("AUTO_VOTE_ARMED", "あり" if armed else "なし", "なし"),
-            ("today_bets.csv", "あり" if bets else "なし", "なし"),
             ("IPAT認証", "設定済" if ipat else "未設定", "未設定"),
         ]
+        log(f"  買い目の取得元: BET_SOURCE={src}"
+            f"（{'残差モデル' if src == 'resid' else '旧方式' if src == 'legacy' else '不明'}）")
+        if src not in ("resid", "legacy"):
+            ng("高", f"auto_vote.BET_SOURCE が不明な値({src})。投票対象が読めない")
+        elif src == "legacy":
+            ng("高", "auto_vote.BET_SOURCE=legacy。購入停止した旧方式を投票する設定になっている")
         opened = 0
         for name, cur, safe in guards:
             ok = (cur == safe)
             opened += 0 if ok else 1
             log(f"  {'○ 閉' if ok else '⚠ 開'} {name:<20}{cur}")
+        # 最後に、実際に効くモードを auto_vote 自身に聞く（設定の読み違えを防ぐ）
+        try:
+            import auto_vote as _av
+            eff, why = _av._effective_mode()
+            log(f"  {'○ 閉' if eff == 'dryrun' else '⚠ 開'} {'実効モード':<20}{eff}"
+                + (f"（{why}）" if why else ""))
+            if eff != "dryrun":
+                opened += 1
+                ng("高", "auto_vote が実投票モードで動く状態にある")
+        except Exception as e:
+            log(f"  ⚠ 実効モードを確認できず: {type(e).__name__}")
+            ng("中", "auto_vote._effective_mode() が読めない")
+
         if opened == 0:
-            log("  → 5段すべて閉じている。お金は動かない")
+            log("  → 全段閉じている。お金は動かない")
         else:
             log(f"  → {opened}段が開いている。意図した切り替えか確認すること")
             ng("高" if opened >= 3 else "中",

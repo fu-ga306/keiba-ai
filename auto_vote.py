@@ -37,6 +37,7 @@ IPATへ投票する。**安全第一：既定OFF＋ドライラン**。トグル
   いるので通常は使わない。
 """
 import os
+import re
 import csv
 from datetime import datetime
 
@@ -145,8 +146,28 @@ def _read_today_bets(race_id):
     return sub.to_dict("records")
 
 
+def _betting_enabled():
+    """keiba_predict.BETTING_ENABLED を読む。importすると予想処理を巻き込むので
+    ソースを正規表現で見る。読めなければ False（＝安全側）を返す。"""
+    try:
+        src = open(os.path.join(BASE_DIR, "keiba_predict.py"), encoding="utf-8").read()
+        m = re.search(r"^BETTING_ENABLED\s*=\s*(True|False)", src, re.M)
+        return bool(m) and m.group(1) == "True"
+    except Exception:
+        return False
+
+
 def _effective_mode():
-    """実際に効くモードを返す。ipatでも条件が欠ければdryrunへ降格。"""
+    """実際に効くモードを返す。ipatでも条件が欠ければdryrunへ降格。
+
+    ⚠ BETTING_ENABLED の確認をここに置く理由（2026-08-22 追加）
+      BET_SOURCE="resid" は paper_resid.csv を読む。このファイルは前向き検証の
+      記録なので、購入停止中(BETTING_ENABLED=False)でも「買い」行が書かれる。
+      つまり取得元をresidにした時点で、BETTING_ENABLED という親スイッチが
+      投票経路を素通りしていた。ここで見ないと5段のガードが4段に減る。
+    """
+    if BET_SOURCE == "resid" and not _betting_enabled():
+        return "dryrun", "keiba_predict.BETTING_ENABLED=False→dryrun降格"
     if VOTE_MODE != "ipat":
         return "dryrun", ""
     if not os.path.exists(ARMED_FILE):
