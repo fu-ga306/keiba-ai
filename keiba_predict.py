@@ -1140,7 +1140,8 @@ def build_report(pdf, race_id, jyo_name, race_no,
 
 
 # ── 予測コア（auto/predict 共通エンジン） ────────────────────────────────
-def predict_race_pdf(race_id: str, *, history_df: pd.DataFrame, models_pack: dict):
+def predict_race_pdf(race_id: str, *, history_df: pd.DataFrame, models_pack: dict,
+                     record_resid: bool = True):
     """
     出馬表取得 → 特徴量構築 → 予測 → 印付け → CSV保存 → pdf を返す。
 
@@ -1738,7 +1739,15 @@ def predict_race_pdf(race_id: str, *, history_df: pd.DataFrame, models_pack: dic
     #   実測を貯めてから判断する。過去8回、バックテストで良く見えたものが
     #   すべて崩れているため、数字ではなく実測で決める。
     #   ⚠ ここで例外が出ても予想処理は止めない。記録は補助でしかない。
-    if not _skip_save:
+    #   ⚠ record_resid=False は締切直前(oddsonly)ジョブ用（2026-08-22）
+    #     この記録は「実際に賭けるならこれ」を残すもの。賭ける判断をするのは
+    #     発走7分前（メールが出て auto_vote が動く時点）。
+    #     ところが締切直前(-1分)のオッズ記録ジョブも predict_race_pdf を通るため、
+    #     7分前に記録した内容を-1分の値で上書きしていた。結果、
+    #       投票した買い目(-7分) と 評価する買い目(-1分) が食い違う。
+    #     実測 2026-08-22: 23点中4点が不一致。賭けていない買い目を評価し、
+    #     賭けた買い目が評価から消えていた。
+    if not _skip_save and record_resid:
         try:
             _record_resid_paper(pdf, race_id, jyo_name, race_no)
         except Exception as e:
@@ -2926,7 +2935,9 @@ def predict_race(race_id: str, send_mail: bool = True, odds_only: bool = False):
     print(f"  読み込み完了: {len(history_df)}行")
 
     # ── 予測コア（共通エンジン）
-    pdf = predict_race_pdf(race_id, history_df=history_df, models_pack=models_pack)
+    # 締切直前ジョブ(odds_only)は残差記録を書かない。7分前の記録を残すため。
+    pdf = predict_race_pdf(race_id, history_df=history_df, models_pack=models_pack,
+                           record_resid=not odds_only)
     if pdf is None:
         return
 
