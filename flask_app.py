@@ -269,8 +269,14 @@ def _fill_resid_gap(df: pd.DataFrame) -> pd.DataFrame:
       他の馬の gap は分からないので空のままにする。
       次回の予想からは全馬に付くので、この補完は使われなくなる。
     """
-    if "resid_gap" in df.columns or "race_id" not in df.columns:
+    if "race_id" not in df.columns:
         return df
+    # 列があっても「値が入っていない行」は埋める。
+    # ⚠ 列の有無だけで判定すると、一部のレースにしか値が無いときに補完を
+    #   飛ばしてしまい、残りが全部「見送り」になる（2026-08-22に実際に起きた）。
+    if "resid_gap" in df.columns:
+        if pd.to_numeric(df["resid_gap"], errors="coerce").notna().all():
+            return df
     p = os.path.join(BASE_DIR, "paper_resid.csv")
     if not os.path.exists(p):
         return df
@@ -280,7 +286,12 @@ def _fill_resid_gap(df: pd.DataFrame) -> pd.DataFrame:
         if r.empty or "馬名" not in df.columns:
             return df
         key = r.drop_duplicates(["race_id", "馬名"]).set_index(["race_id", "馬名"])["gap"]
-        df["resid_gap"] = [key.get((a, b)) for a, b in zip(df["race_id"], df["馬名"])]
+        fill = [key.get((a, b)) for a, b in zip(df["race_id"], df["馬名"])]
+        if "resid_gap" in df.columns:
+            cur = pd.to_numeric(df["resid_gap"], errors="coerce")
+            df["resid_gap"] = [c if pd.notna(c) else f for c, f in zip(cur, fill)]
+        else:
+            df["resid_gap"] = fill
     except Exception:
         pass
     return df
