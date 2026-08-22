@@ -14,6 +14,27 @@ IPATへ投票する。**安全第一：既定OFF＋ドライラン**。トグル
 
   ※IPAT自動化はJRAの利用規約上グレー。自己資金・自己アカウントの個人利用が前提。
     実投票は必ず少額で挙動確認してから本運用すること。
+
+━━ IPAT認証の設定（実投票にだけ必要。ドライランでは不要）━━━━━━━━━━━━━
+  .env に次の4つを書く。.env は .gitignore 済みなのでGitHubには上がらない。
+
+      IPAT_INET_ID=xxxxxxxx        # INET-ID（ハガキ等に記載の8桁）
+      IPAT_SUBSCRIBER=xxxxxxxx     # 加入者番号
+      IPAT_PASSWORD=xxxx           # 暗証番号(4桁)
+      IPAT_PARS=xxxx               # P-ARS番号(4桁)
+
+  4つのうち1つでも欠けると _effective_mode() が自動でドライランへ降格する。
+  つまり「設定し忘れたまま実弾が出る」ことはない。
+
+  ⚠ 認証情報を書いても、それだけでは投票されない。VOTE_MODE="ipat" と
+    AUTO_VOTE_ARMED ファイルと SETUP_DONE=True が揃って初めて実投票になる。
+  ⚠ IPATの入金は自動化していない。残高が無ければ投票は失敗する。
+    先にIPAT側で入金しておくこと。
+
+━━ 買い目の取得元 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  BET_SOURCE="resid" が既定。残差モデル（いま前向き検証している買い方）を投票する。
+  "legacy" にすると旧方式(today_bets.csv)に戻るが、こちらは検証で100%を割って
+  いるので通常は使わない。
 """
 import os
 import csv
@@ -27,8 +48,13 @@ VOTE_MODE = "dryrun"             # "dryrun"=記録のみ(実弾ゼロ) / "ipat"=
 #   ↑2026-07-24: 今週から予想検証のためドライランON。実投票にはVOTE_MODE="ipat"＋
 #     AUTO_VOTE_ARMEDファイル＋IPAT認証＋_submit_ipatのSETUP_DONE=True が全て必要。
 # ━━ 安全弁 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-DAILY_BUDGET_MAX = 30000         # 1日の投票総額上限(円)。超過分は以降スキップ
-PER_RACE_MAX     = 5000          # 1レースの投票上限(円)。today_bets側の予算と二重チェック
+#   ⚠ 上限は「検証した買い方の規模」に合わせてある（2026-08-22に見直し）。
+#     残差モデルは1レース1〜4点・1点100円なので、1レース最大400円。
+#     1日36レースのうち買うのは約半分なので、1日でも数千円にしかならない。
+#     上限が実際の規模より大きすぎると、バグで点数が暴発したとき止められない。
+#     実運用を始めるときは、まずここをさらに小さくして挙動を確かめること。
+DAILY_BUDGET_MAX = 3000          # 1日の投票総額上限(円)。超過分は以降スキップ
+PER_RACE_MAX     = 500           # 1レースの投票上限(円)。買い目側の金額と二重チェック
 DAILY_LOSS_STOP  = None          # 1日の実損失がこれを超えたら以降停止(円)。Noneで無効
 
 ARMED_FILE = os.path.join(BASE_DIR, "AUTO_VOTE_ARMED")
@@ -65,8 +91,50 @@ def _today_spent():
     return total
 
 
+# ━━ 買い目の取得元（2026-08-22追加）━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#   BET_SOURCE = "resid"  … 残差モデル（paper_resid.csv）。いま評価している買い方
+#                "legacy" … 旧方式（today_bets.csv）。購入停止済みで100%を割る
+#
+#   ⚠ 既定を "resid" にしてある。以前は today_bets.csv だけを読んでいたため、
+#     BETTING_ENABLED を True にすると「検証していない旧方式」が投票される
+#     という危険な状態だった（2026-08-22に修正）。
+#   ⚠ 取得元を変えても、実投票のガード（VOTE_MODE / ARMED / 認証 / SETUP_DONE）
+#     は別。ここを変えただけでは1円も動かない。
+BET_SOURCE = "resid"
+STAKE_PER_POINT = 100     # 1点あたりの金額(円)。検証は1点100円換算で行っている
+
+
+def _read_resid_bets(race_id):
+    """残差モデルの買い目を paper_resid.csv から読む。
+
+    記録の形は1レース複数行（軸の単勝1行＋ダートなら相手のワイド最大3行）。
+    判定が「買い」の行だけを投票対象にする。「候補」（S評価の相手）は
+    検証していないので投票しない。
+    """
+    import pandas as pd
+    path = os.path.join(BASE_DIR, "paper_resid.csv")
+    if not os.path.exists(path):
+        return []
+    df = pd.read_csv(path, dtype={"race_id": str})
+    df["race_id"] = df["race_id"].astype(str).str.replace(r"\.0$", "", regex=True)
+    sub = df[(df["race_id"] == str(race_id)) & (df["判定"] == "買い")]
+    out = []
+    for _, r in sub.iterrows():
+        kind = str(r.get("券種") or "")
+        if kind not in ("単勝", "ワイド"):      # 候補行などは投票しない
+            continue
+        out.append({"race_id": str(race_id), "券種": kind,
+                    "買い方": f"残差{r.get('役割') or ''}",
+                    "組み合わせ": str(r.get("組み合わせ") or ""),
+                    "金額": STAKE_PER_POINT,
+                    "馬名": r.get("馬名"), "gap": r.get("gap")})
+    return out
+
+
 def _read_today_bets(race_id):
-    """today_bets.csv から当該レースの買い目行（金額つき）を読む。"""
+    """当該レースの買い目行（金額つき）を読む。取得元は BET_SOURCE で切り替える。"""
+    if BET_SOURCE == "resid":
+        return _read_resid_bets(race_id)
     import pandas as pd
     path = os.path.join(BASE_DIR, "today_bets.csv")
     if not os.path.exists(path):
