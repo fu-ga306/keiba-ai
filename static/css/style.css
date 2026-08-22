@@ -956,3 +956,20 @@ body {
   .rbet-ax, .rbet-mate { font-size: .84rem; gap: 6px; }
   .rbet-name { flex: 1 1 100%; order: 3; }
 }
+
+/* ── 馬体重（2026-08-22）──────────────────────────────────
+   発走50分前ごろに発表される。それ以前は「―」で、異常ではない。
+   増減が大きいほど目立たせる（±20kg以上は明らかな変化）。 */
+.w-cell { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.w-val { font-weight: 600; }
+.w-diff { margin-left: 3px; font-size: .78em; color: #868e96; }
+.w-none { color: #ced4da; }
+.w-mid .w-diff { color: #e8590c; font-weight: 700; }
+.w-big .w-diff { color: #c92a2a; font-weight: 700; }
+.w-status {
+  margin: 0 0 10px; padding: 6px 10px; border-radius: 6px;
+  background: #f8f9fa; border: 1px solid #e4dfd8;
+  font-size: .82rem; color: #6b635c;
+}
+.w-status-done { background: #ebfbee; border-color: #c3fae8; color: #2b8a3e; }
+.w-status-note { margin-left: 6px; font-size: .76rem; color: #adb5bd; }

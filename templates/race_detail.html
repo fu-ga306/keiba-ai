@@ -70,7 +70,8 @@
           <th data-k="ban">馬番</th>
           <th>馬名</th>
           <th>シグナル</th>
-          <th data-k="grade" title="5年OOSの実測で「実際に何%馬券内に来るか」で切った評価。S:76% / A:50% / B:28% / D:9%。Dは11回に1回しか来ない＝買わない判定">評価</th>
+          <th data-k="grade" title="市場とモデルを合わせた「来やすさ」。5年OOSの実測で S:87% / A:65% / B:43% / D:12%（馬券内率）。買い印とは別物で、こちらは絶対的に来る確率を見ている">評価</th>
+          <th data-k="w" title="馬体重と前走からの増減。発走の約50分前に発表される。それより前は「―」になる（異常ではない）">馬体重</th>
           <th data-k="abil" title="能力6軸（勝負力・安定感・末脚・先行力・距離適性・実績）の平均。レース内100点満点・オッズは見ない">能力</th>
           <th data-k="airank" title="市場フリーモデルの3着内予測順">AI順位</th>
           <th data-k="gap" title="人気順位 − AI順位。正ならAIが市場より高く評価">乖離</th>
@@ -94,7 +95,8 @@
             data-res="{{ h.res_pos or 99 }}"
             data-grade="{{ {'S':1,'A':2,'B':3,'D':4}.get(h.grade, 9) }}"
             data-abil="{{ h.abil_avg if h.abil_avg is not none else -1 }}"
-            data-rmark="{{ 1 if h.r_main else (2 if h.r_mark == '○' else (3 if h.r_mark == '△' else 9)) }}">
+            data-rmark="{{ 1 if h.r_main else (2 if h.r_mark == '○' else (3 if h.r_mark == '△' else 9)) }}"
+            data-w="{{ h.w_val if h.w_val else -1 }}">
           {% if has_result %}
           <td class="res-cell center{% if h.res_pos and h.res_pos <= 3 %} res-medal res-{{ h.res_pos }}{% endif %}">
             {%- if h.res_pos -%}
@@ -124,6 +126,14 @@
               <span class="grade-score">{{ h.grade_score }}</span>
               {% if h.is_ana %}<span class="badge-ana-mark"
                 title="穴注目: 10-12番人気でモデル複勝5位以内。5年OOSで勝率2.00倍（2.49% vs 1.25%）">穴</span>{% endif %}</td>
+          <td class="center w-cell {{ h.w_cls }}">
+            {%- if h.w_val -%}
+              <span class="w-val">{{ h.w_val }}</span>
+              {%- if h.w_diff is not none %}<span class="w-diff">{{ "%+d"|format(h.w_diff) }}</span>{% endif -%}
+            {%- else -%}
+              <span class="w-none" title="発走50分前ごろに発表されます">―</span>
+            {%- endif -%}
+          </td>
           <td class="abil-cell">
             {%- if h.abil_avg is not none -%}
             <span class="abil-num">{{ "%.1f"|format(h.abil_avg) }}</span>
@@ -144,6 +154,15 @@
     </table>
   </div>
 </section>
+
+{# 馬体重の発表状況（2026-08-22）。発走50分前ごろに出るので、
+   朝の予想時点では未発表。「取れていない」との区別が付くようにする。 #}
+{% if weight_status %}
+<p class="w-status {{ 'w-status-done' if weight_status.done else '' }}">
+  馬体重: <b>{{ weight_status.label }}</b>
+  {%- if not weight_status.done %}<span class="w-status-note">（未発表でも予想は出ています）</span>{% endif -%}
+</p>
+{% endif %}
 
 <!-- 推奨買い目（残差モデル・2026-08-22改定） -->
 {#
@@ -301,7 +320,7 @@
   if (!head) return;
   var tbody = document.querySelector('.horse-table tbody');
   // 小さい方が良い指標（順位・人気・オッズ）は既定を昇順、率などは降順にする
-  var ASC_FIRST = { mark: 1, rmark: 1, ban: 1, airank: 1, pop: 1, odds: 1, res: 1, grade: 1 };
+  var ASC_FIRST = { mark: 1, rmark: 1, w: 1, ban: 1, airank: 1, pop: 1, odds: 1, res: 1, grade: 1 };
   var cur = null, asc = true;
   head.querySelectorAll('th[data-k]').forEach(function (th) {
     th.style.cursor = 'pointer';

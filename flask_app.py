@@ -944,6 +944,30 @@ def race_detail(race_id):
         vals = [float(v) for v in vals if pd.notna(v)]
         h["abil_avg"] = round(sum(vals) / len(vals), 1) if vals else None
 
+        # ── 馬体重（2026-08-22追加）──────────────────────────────
+        #   馬体重はレースの約50分前に発表される。朝の一括予想（6:55〜）の
+        #   時点では全馬が未発表なので、値が無いことは異常ではない。
+        #   「まだ出ていない」のか「取得に失敗した」のかを画面で区別できるよう、
+        #   未発表は "―" と出し、発表済みなら増減も併せて出す。
+        _w = pd.to_numeric(h.get("馬体重"), errors="coerce")
+        _dw = pd.to_numeric(h.get("体重増減"), errors="coerce")
+        h["w_val"] = int(_w) if pd.notna(_w) else None
+        h["w_diff"] = int(_dw) if pd.notna(_dw) else None
+        # 増減の大きさで色を変える。±20kg以上は明らかな変化として目立たせる。
+        h["w_cls"] = ("" if pd.isna(_dw) else
+                      "w-big" if abs(_dw) >= 20 else
+                      "w-mid" if abs(_dw) >= 10 else "")
+
+    # 馬体重が発表済みか（レース単位）。1頭でも入っていれば発表済みとみなす。
+    _w_done = sum(1 for h in horses if h.get("w_val") is not None)
+    weight_status = {
+        "done": _w_done > 0,
+        "n": _w_done,
+        "total": len(horses),
+        "label": (f"発表済み（{_w_done}/{len(horses)}頭）" if _w_done
+                  else "未発表（発走50分前ごろに出ます）"),
+    }
+
     # ── 残差モデルの印（2026-08-17）────────────────────────────────
     #   このモデルは「市場（オッズ）が何を見落としているか」を学ぶ。
     #   gap = モデルの予測確率 ÷ 市場の確率。2.0なら市場の2倍強いと見ている。
@@ -976,7 +1000,7 @@ def race_detail(race_id):
         klass=klass,
         date_str=date_str,
         my_bets=my_bets,
-        r_bets=r_bets, r_ax=r_ax, r_mates=r_mates,
+        r_bets=r_bets, r_ax=r_ax, r_mates=r_mates, weight_status=weight_status,
         r_is_dirt=str(baba or "").startswith(("ダ", "ダート")),
         rec_level=rec_level,
         rec_cls=rec_cls,
