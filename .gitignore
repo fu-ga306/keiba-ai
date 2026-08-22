@@ -64,3 +64,9 @@ vote_log.csv
 AUTO_VOTE_ARMED
 paper_resid.csv
 archive_*/
+
+# IPAT関連（口座残高や個人情報が写るので絶対に上げない）
+ipat_probe/
+vote_shots/
+vote_done/
+manual_bets.csv
