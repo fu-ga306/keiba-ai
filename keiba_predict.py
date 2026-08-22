@@ -1747,9 +1747,10 @@ def predict_race_pdf(race_id: str, *, history_df: pd.DataFrame, models_pack: dic
     #       投票した買い目(-7分) と 評価する買い目(-1分) が食い違う。
     #     実測 2026-08-22: 23点中4点が不一致。賭けていない買い目を評価し、
     #     賭けた買い目が評価から消えていた。
-    if not _skip_save and record_resid:
+    if not _skip_save:
+        _rp = PAPER_RESID_PATH if record_resid else PAPER_RESID_CLOSE_PATH
         try:
-            _record_resid_paper(pdf, race_id, jyo_name, race_no)
+            _record_resid_paper(pdf, race_id, jyo_name, race_no, path=_rp)
         except Exception as e:
             print(f"  残差モデルの記録に失敗（予想には影響なし）: {type(e).__name__}: {e}")
 
@@ -2117,6 +2118,13 @@ RACE_BUDGET_MAX = None            # (旧)全帯共通の上限。設定時は RA
 
 
 PAPER_RESID_PATH = "paper_resid.csv"
+# 締切直前(-1分)に同じ判定をやり直した結果。paper_resid.csv とは別に貯める。
+#   なぜ要るか: バックテストは確定オッズで買い目を選んでいる(bet_cache の odds)。
+#   本番は発走7分前に決めるしかないので、同じ買い目にならない。
+#   2026-08-22の実測では23点中4点(17%)が違った。
+#   両方を残せば「-7分で決めた場合、確定オッズ基準のBTからどれだけ目減りするか」
+#   を後から測れる。測れなければ、BTの120.6%が再現可能かを判断できない。
+PAPER_RESID_CLOSE_PATH = "paper_resid_close.csv"
 # 記録の列。順序を固定する。列を足し引きすると過去の行が読めなくなる
 # （2026-08-15に odds_history.csv で実際に起きた。1,235行が全部読めなくなった）。
 #   軸gap を持たせておくと、あとから「しきい値1.5だったら/1.7だったら」を
@@ -2151,7 +2159,7 @@ def _row_of(d, name, col):
     return round(float(v), 3) if isinstance(v, (int, float)) and pd.notna(v) else v
 
 
-def _record_resid_paper(pdf, race_id, jyo_name, race_no):
+def _record_resid_paper(pdf, race_id, jyo_name, race_no, path=PAPER_RESID_PATH):
     """残差モデルが「買うはずだった買い目」を記録する。買わない。
 
     買い方は resid_io.pick_bets に一本化してある（軸の単勝＋ダートならワイド）。
@@ -2230,7 +2238,7 @@ def _record_resid_paper(pdf, race_id, jyo_name, race_no):
                      "評価スコア": round(float(top["_gscore"]), 3)
                      if top is not None and pd.notna(top.get("_gscore")) else None,
                      "判定": "見送り", "記録時刻": now})
-    p = os.path.join(BASE_DIR, PAPER_RESID_PATH)
+    p = os.path.join(BASE_DIR, path)
     df = pd.DataFrame(rows)
     if os.path.exists(p):
         # ⚠ 組み合わせ・馬番も必ず文字列で読む（2026-08-22）

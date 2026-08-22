@@ -112,9 +112,48 @@ def main():
     jv = jv.drop_duplicates(["race_id", "券種", "組み合わせ"], keep="last")
     PAY = {(r.race_id, r.券種, r.組み合わせ): r.払戻金
            for r in jv[jv.券種.isin(("単勝", "ワイド"))].itertuples()}
-    done = set(jv.race_id)
+    # ⚠ 券種ごとに「結果が出たか」を分ける（2026-08-22）
+    #   today_results.csv には単勝・複勝の払戻しか無い。ワイドの払戻は
+    #   払戻表(payout_data.csv)を週次で取るまで分からない。
+    #   券種をまとめて「結果が出た」と扱うと、**ワイドの的中を外れ(0円)として
+    #   数えてしまう**。回収率を実際より低く見せる方向の誤りで、
+    #   「やっぱりダメだった」と誤って結論づける事故につながる。
+    done_tan = set(jv.race_id)      # 単勝: 払戻表 or today_results
+    done_wide = set(jv.race_id)     # ワイド: 払戻表のみ
 
-    b = d[(d.判定 == "買い") & d.race_id.isin(done)].copy()
+    # ── 当日分は today_results.csv から拾う（2026-08-22追加）──────────────
+    #   払戻表(payout_data.csv)は週次でしか取りに行かないので、その日の夜に
+    #   このレポートを見ても「結果が出た0レース」と出てしまう。当日の結果は
+    #   today_results.csv に単勝・複勝の払戻まで入っているので、単勝だけは
+    #   即日で照合できる。ワイドは払戻が無いので週次を待つ。
+    #   ⚠ 単勝だけの数字は的中率が低く振れやすい。速報として見るもの。
+    tr = os.path.join(BASE_DIR, "today_results.csv")
+    n_today = 0
+    if os.path.exists(tr):
+        t = pd.read_csv(tr, dtype={"race_id": str, "馬番": str})
+        t["馬番"] = (t["馬番"].astype(str)
+                   .str.replace(r"\.0$", "", regex=True).str.zfill(2))
+        t["単勝"] = pd.to_numeric(t.get("単勝"), errors="coerce").fillna(0)
+        for r in t[t["単勝"] > 0].itertuples():
+            key = (r.race_id, "単勝", r.馬番)
+            if key not in PAY:                 # 払戻表があればそちらを優先
+                PAY[key] = float(r.単勝)
+        # 着順が入っているレースは「結果が出た」とみなす（外れも0円で数える）
+        fin = set(t.loc[pd.to_numeric(t["着順"], errors="coerce").notna(), "race_id"])
+        n_today = len(fin - done_tan)
+        done_tan |= fin        # 単勝だけ。ワイドは払戻が無いので足さない
+    if n_today:
+        log(f"\n  （当日分 {n_today}レースを today_results.csv から反映。"
+            f"単勝のみ。ワイドの払戻は週次取得後）")
+
+    _ok = (((d["券種"] == "単勝") & d.race_id.isin(done_tan))
+           | ((d["券種"] == "ワイド") & d.race_id.isin(done_wide)))
+    b = d[(d.判定 == "買い") & _ok].copy()
+    _pend = d[(d.判定 == "買い") & ~_ok & d["券種"].isin(("単勝", "ワイド"))]
+    if len(_pend):
+        log("  （結果待ち "
+            + " / ".join(f"{k}{v}点" for k, v in _pend["券種"].value_counts().items())
+            + "。ワイドの払戻は週次取得後）")
     log(f"\n=== ③ 回収率（結果が出た {b.race_id.nunique():,}レース）===")
     if len(b) < 5:
         log("  まだ結果が出たレースがありません。")
@@ -144,6 +183,31 @@ def main():
         if len(g) >= 5:
             log(f"    {k:<6}{len(g):>5,}点  的中{int((g.払戻>0).sum()):>4}"
                 f"  回収率 {g.払戻.mean():>6.1f}%")
+
+    # ── ④ 決める時刻による買い目の違い ──────────────────────────
+    #   バックテストは確定オッズで買い目を選んでいる(bet_cache の odds)。
+    #   本番は発走7分前に決めるしかない。同じ買い目にならないので、
+    #   BTの数字がそのまま出るとは限らない。その差をここで測る。
+    close = os.path.join(BASE_DIR, "paper_resid_close.csv")
+    if os.path.exists(close):
+        c = pd.read_csv(close, dtype={"race_id": str, "組み合わせ": str})
+        A = {(r.race_id, r.券種, str(r.組み合わせ))
+             for r in d[d.判定 == "買い"].itertuples()}
+        B = {(r.race_id, r.券種, str(r.組み合わせ))
+             for r in c[c.判定 == "買い"].itertuples()}
+        both = len(A & B)
+        log("\n=== ④ いつ決めるかで買い目がどれだけ変わるか ===")
+        log(f"  7分前(実際に賭ける) {len(A):>5}点 / {len({x[0] for x in A})}レース")
+        log(f"  締切時(BTに近い)   {len(B):>5}点 / {len({x[0] for x in B})}レース")
+        if A or B:
+            log(f"  一致 {both}点  7分前のみ {len(A-B)}点  締切時のみ {len(B-A)}点")
+            uni = len(A | B)
+            log(f"  → 選び方の食い違い {uni-both}/{uni} ({(uni-both)/uni*100:.0f}%)")
+            log("  この割合が大きいほど、BTの数字は本番で再現しにくい。")
+            log("  BTは確定オッズで選べるが、本番は7分前に決めるしかないため。")
+    else:
+        log("\n=== ④ いつ決めるかで買い目がどれだけ変わるか ===")
+        log("  paper_resid_close.csv がまだありません（次の開催日から貯まります）。")
 
     # ── 判断の目安 ──────────────────────────────────────
     hit = int((b.払戻 > 0).sum())
