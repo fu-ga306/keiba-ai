@@ -203,6 +203,40 @@ def main():
                 ng("中", f"{n} が週次更新に入っていない")
 
     log("\n" + "=" * 70)
+    log("  ⑤a 自動投票のガード（お金が動く経路）")
+    log("=" * 70)
+    log("  1つでも開いていれば実弾が出る可能性がある。毎回ここを確認する。")
+    try:
+        kp = open(os.path.join(BASE, "keiba_predict.py"), encoding="utf-8").read()
+        av = open(os.path.join(BASE, "auto_vote.py"), encoding="utf-8").read()
+        be = re.search(r"^BETTING_ENABLED\s*=\s*(True|False)", kp, re.M)
+        vm = re.search(r'^VOTE_MODE\s*=\s*"(\w+)"', av, re.M)
+        armed = os.path.exists(os.path.join(BASE, "AUTO_VOTE_ARMED"))
+        bets = os.path.exists(os.path.join(BASE, "today_bets.csv"))
+        env = os.path.join(BASE, ".env")
+        ipat = ("IPAT_" in open(env, encoding="utf-8").read()) if os.path.exists(env) else False
+        guards = [
+            ("BETTING_ENABLED", be.group(1) if be else "?", "False"),
+            ("VOTE_MODE", vm.group(1) if vm else "?", "dryrun"),
+            ("AUTO_VOTE_ARMED", "あり" if armed else "なし", "なし"),
+            ("today_bets.csv", "あり" if bets else "なし", "なし"),
+            ("IPAT認証", "設定済" if ipat else "未設定", "未設定"),
+        ]
+        opened = 0
+        for name, cur, safe in guards:
+            ok = (cur == safe)
+            opened += 0 if ok else 1
+            log(f"  {'○ 閉' if ok else '⚠ 開'} {name:<20}{cur}")
+        if opened == 0:
+            log("  → 5段すべて閉じている。お金は動かない")
+        else:
+            log(f"  → {opened}段が開いている。意図した切り替えか確認すること")
+            ng("高" if opened >= 3 else "中",
+               f"自動投票のガードが{opened}段開いている。AUTO_VOTE_手順書.md を参照")
+    except Exception as e:
+        log(f"  確認できず: {type(e).__name__}")
+
+    log("\n" + "=" * 70)
     log("  ⑤b 集計ツールが実際に動くか")
     log("=" * 70)
     log("  paper_report.py が KeyError で落ちていたのに気づかなかった（2026-08-22）。")
