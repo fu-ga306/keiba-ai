@@ -700,19 +700,31 @@ def build_features(race_df, history_df):
                     feat["同距離過去勝率"]     = (same_dist_df["着順_num"] == 1).mean()
                     feat["同距離過去平均着順"] = same_dist_df["着順_num"].mean()
 
-        # 【バグ修正】前走間隔：ソート済み valid_df の最終行を使う
+        # 前走間隔（週）: 実開催日の差で計算する。
+        #   ⚠ 2026-08-22まで race_id[:8] を "%Y%m%d" として解釈していた。
+        #     race_id は「年+場コード+回次+日次+R」で日付ではない。
+        #     202607030106 → 中京3回1日目6R であって 7月3日ではない。
+        #     [:8]="20260703" は必ず日付として解釈できてしまうので例外も出ず、
+        #     「場コードの差」を週数と呼び続けていた。
+        #   学習側(features.py)は 2026-07-28 に実開催日へ直しており、
+        #   ここだけ取り残されていた＝学習と本番で意味の違う値を入れる状態。
+        #   この関数は一本化パイプラインが落ちたときのフォールバックなので
+        #   普段は動かないが、動いたときに静かに壊れるのが最も危ない。
+        feat["前走間隔"] = np.nan
         if "valid_df" in hs and "race_id" in hs["valid_df"].columns and len(hs["valid_df"]) > 0:
             try:
-                current_date = datetime.strptime(
-                    str(row.get("race_id", ""))[:8], "%Y%m%d"
-                )
-                last_race_id = str(hs["valid_df"]["race_id"].astype(str).max())[:8]
-                last_date    = datetime.strptime(last_race_id, "%Y%m%d")
-                feat["前走間隔"] = (current_date - last_date).days / 7
+                from features import _race_date_map
+                _m = _race_date_map()
+                d1 = _m.get(str(row.get("race_id", ""))[:10])
+                # 過去走は「最大のrace_id」ではなく実開催日が最新のものを取る。
+                # race_idの大小は時系列ではない（場コードが先に来るため）。
+                _dts = [_m.get(str(r)[:10])
+                        for r in hs["valid_df"]["race_id"].astype(str)]
+                _dts = [d for d in _dts if d is not None and pd.notna(d)]
+                if d1 is not None and pd.notna(d1) and _dts:
+                    feat["前走間隔"] = (pd.Timestamp(d1) - pd.Timestamp(max(_dts))).days / 7
             except Exception:
                 feat["前走間隔"] = np.nan
-        else:
-            feat["前走間隔"] = np.nan
 
         # ── 距離変化系特徴量（学習時features.pyと同じロジック）──
         prev_dist = np.nan
