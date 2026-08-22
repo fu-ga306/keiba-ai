@@ -849,6 +849,41 @@ def build_features(race_df, history_df):
 
 
 # ── Step4: メール本文作成 ──────────────────────────────────────────────────
+def _resid_bets_for(pdf):
+    """残差モデルの買い目を返す: (買い目のlist, 軸gap, 算出できたか)。
+
+    ⚠ なぜここに要るか（2026-08-22）
+      7分前ジョブのメールは、送るか否かを keiba_predict._build_bet_rows で
+      判定していた。あれは旧方式で BETTING_ENABLED=False に連動するため、
+      購入停止中はどのレースでも0行を返す。結果、
+      **開催日なのにメールが1通も飛ばない**状態になっていた（今日 0通/4抑止）。
+      いま実際に見ているのは残差モデルなので、判定も本文もそちらに合わせる。
+      買い目の定義は resid_io.pick_bets に一本化してある。
+
+    ⚠ 第3の戻り値 ok を返す理由
+      「算出できて見送り」と「算出に失敗」を区別する。区別しないと、
+      残差モデルが壊れたときに全レースが見送り扱いになり、また静かに
+      メールが止まる。いま直したのと同じ事故を形を変えて繰り返すことになる。
+      呼び出し側は ok=False なら配信する（気づけるように fail-open）。
+    """
+    try:
+        import resid_io
+        m = resid_io.load_model()
+        if m is None:
+            print("  ⚠ 残差モデルを読めません（model_resid.pkl）")
+            return [], float("nan"), False
+        d = resid_io.predict_gap(m, pdf)
+        if d is None or d.empty:
+            print("  ⚠ 残差モデルのgapを算出できません")
+            return [], float("nan"), False
+        gs = pd.to_numeric(d["gap"], errors="coerce")
+        ax = float(gs.max()) if gs.notna().any() else float("nan")
+        return (resid_io.pick_bets(d, model=m, pdf=pdf) or []), ax, True
+    except Exception as e:
+        print(f"  ⚠ 残差モデルの買い目算出に失敗: {type(e).__name__}: {e}")
+        return [], float("nan"), False
+
+
 def make_email_body(race_id, pdf):
     jyo_cd   = int(str(race_id)[4:6])
     race_no  = int(str(race_id)[10:12])
@@ -869,7 +904,12 @@ def make_email_body(race_id, pdf):
         if "距離" in pdf.columns and pd.notna(pdf["距離"].iloc[0])
         else "不明"
     )
-    turf = "芝" if pdf["is_turf"].iloc[0] == 1 else "ダート"
+    # is_turf が無い場合に落ちないようにする。ここで例外を出すと
+    # メール本文の生成ごと止まり、そのレースの通知が丸ごと消える。
+    if "is_turf" in pdf.columns and pd.notna(pdf["is_turf"].iloc[0]):
+        turf = "芝" if pdf["is_turf"].iloc[0] == 1 else "ダート"
+    else:
+        turf = "不明"
     lines.append(f"馬場: {turf} {dist}m  状態: {baba}\n")
 
     # ── 購入推奨度（買い指数・レース単位／honest backtestで単勝回収率に較正済み）──
@@ -885,7 +925,35 @@ def make_email_body(race_id, pdf):
     except Exception:
         pass
 
-    # ── 推奨買い目（_race_bet_plan・today_betsと同一の確定メニュー）────────────
+    # ── 買い印（残差モデル）─────────────────────────────────────────────
+    #   いま実際に見ているのはこれ。下の「推奨買い目」は旧方式の名残で、
+    #   購入停止中は常に空になる。混同しないよう、こちらを先に置く。
+    try:
+        _rb, _axgap, _rok = _resid_bets_for(pdf)
+        lines.append("=" * 40)
+        lines.append("[買い印（残差モデル）]")
+        lines.append("=" * 40)
+        if not _rok:
+            lines.append("  ⚠ 買い印を算出できませんでした（モデル読込か特徴量の問題）")
+            lines.append("     見送りではありません。判断できない状態です。")
+        elif _rb:
+            for _b in _rb:
+                _o = _b.get("単勝オッズ")
+                _os = f"{float(_o):.1f}倍" if pd.notna(_o) else "-"
+                lines.append(
+                    f"  {_b['役割']:<3}{_b['券種']:<4}{_b['組み合わせ']:<7}"
+                    f"{_b['馬名']}  {_os}  gap {_b['gap']:.2f}")
+            lines.append(f"  ── {len(_rb)}点 / 1点100円なら {len(_rb)*100:,}円 ──")
+            lines.append("  ⚠ 記録のみ。購入は停止中（BETTING_ENABLED=False）")
+        else:
+            _g = f"{_axgap:.2f}" if pd.notna(_axgap) else "-"
+            lines.append(f"  見送り（最大gap {_g} < しきい値 1.5）")
+        lines.append("")
+    except Exception as _e:
+        lines.append(f"  （買い印の算出に失敗: {type(_e).__name__}）")
+        lines.append("")
+
+    # ── 推奨買い目（旧方式。購入停止中は常に空）────────────────────────────
     try:
         from keiba_predict import _build_bet_rows, _race_bet_plan
         _plan = _race_bet_plan(pdf)
@@ -1179,21 +1247,30 @@ def run_single_race(race_id, history_df, models_pack):
 
     body    = make_email_body(race_id, pdf)
     print(body)
-    # 買い目の有無・判定を取得（buy_only配信の判定に使う）
-    _has_bets, _verdict = False, ""
-    try:
-        from keiba_predict import _build_bet_rows, _race_bet_plan
-        _has_bets = len(_build_bet_rows(pdf, str(race_id))) > 0
-        _verdict = _race_bet_plan(pdf).get("判定", "")
-    except Exception:
-        pass
-    _do_send = (SEND_EMAIL is True) or (SEND_EMAIL == "buy_only" and _has_bets)
+    # ── 配信するか（buy_only の判定）──────────────────────────────────
+    #   ⚠ 2026-08-22まで keiba_predict._build_bet_rows で判定していた。
+    #     あれは旧方式で BETTING_ENABLED=False に連動するため、購入停止中は
+    #     どのレースでも0行を返す。結果 buy_only 配信が全レースで止まり、
+    #     開催日なのにメールが1通も来ない状態だった（今日 送信0/抑止4）。
+    #     判定は実際に見ている残差モデルに合わせる。
+    _rbets, _axgap, _rok = _resid_bets_for(pdf)
+    _has_bets = len(_rbets) > 0
+    # 算出できなかったときは配信する。黙って止まるより、届いて気づける方がよい。
+    _do_send = (SEND_EMAIL is True) or (SEND_EMAIL == "buy_only"
+                                        and (_has_bets or not _rok))
     if _do_send:
-        _vmap = {"勝負": "🔥勝負", "買い": "✅買い", "堅実": "🟢堅実"}
-        subject = f"【競馬AI {_vmap.get(_verdict, '')}】{jyo_name} {race_no}R 買い目"
+        if not _rok:
+            subject = f"【競馬AI ⚠算出不能】{jyo_name} {race_no}R 要確認"
+        else:
+            _ax = next((b for b in _rbets if b.get("役割") == "軸"), None)
+            _tag = f" gap{_ax['gap']:.2f}" if _ax else ""
+            subject = (f"【競馬AI ✅買い{_tag}】{jyo_name} {race_no}R "
+                       f"{len(_rbets)}点")
         send_email(subject, body)
     else:
-        _why = "非開催/見送りレース" if SEND_EMAIL == "buy_only" else "メール配信OFF"
+        _g = f"{_axgap:.2f}" if pd.notna(_axgap) else "-"
+        _why = (f"見送り（最大gap {_g} < 1.5）" if SEND_EMAIL == "buy_only"
+                else "メール配信OFF")
         print(f"  （メール非送信: {_why}・ダッシュボードで確認）")
     try:
         record_from_prediction(race_id, pdf)
