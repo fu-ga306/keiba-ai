@@ -56,7 +56,7 @@ def main():
         log("paper_resid.csv がまだありません。")
         log("予想を1回まわすと作られます（購入はしません）。")
         return
-    d = pd.read_csv(PAPER, dtype={"race_id": str})
+    d = pd.read_csv(PAPER, dtype={"race_id": str, "組み合わせ": str})
     d["軸gap"] = pd.to_numeric(d.get("軸gap"), errors="coerce")
     nrace = d.race_id.nunique()
     ndays = d.race_id.str[:10].nunique()

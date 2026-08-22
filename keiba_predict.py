@@ -2224,7 +2224,14 @@ def _record_resid_paper(pdf, race_id, jyo_name, race_no):
     p = os.path.join(BASE_DIR, PAPER_RESID_PATH)
     df = pd.DataFrame(rows)
     if os.path.exists(p):
-        old = pd.read_csv(p, dtype={"race_id": str})
+        # ⚠ 組み合わせ・馬番も必ず文字列で読む（2026-08-22）
+        #   dtype指定が race_id だけだと、組み合わせ列が全部数字のとき
+        #   pandas が int64 として読み、"03"→3 と0埋めが消える。
+        #   払戻表は "03" 形式なので、消えると照合できず外れ扱いになる。
+        #   ワイドの "04-06" や見送りの "-" が1行でも混じれば object のまま
+        #   なので、この事故は「その日の最初の数レース」だけ静かに起きる。
+        old = pd.read_csv(p, dtype={"race_id": str, "組み合わせ": str,
+                                    "馬番": str})
         old = old[old["race_id"] != str(race_id)]      # 同じレースは最新で置き換え
         df = pd.concat([old, df], ignore_index=True)
     # 列は必ず固定リストで揃える。欠けた列はNaNで埋め、余計な列は落とす
