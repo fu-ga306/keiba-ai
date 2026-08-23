@@ -622,6 +622,18 @@ def main():
     schedule.every().day.at("21:10").do(run_daily_archive)
     print("  [済] 日次アーカイブ(21:10)をスケジュール登録")
 
+    # 当日ぶんの払戻取得（2026-08-24追加）。日次点検(21:20)より前に置く。
+    #   ワイドの払戻は today_results.csv にも history_marks.csv にも無いので、
+    #   ここで取らないと週次まで的中が分からない。
+    schedule.every().day.at("21:05").do(run_payout_today)
+    print("  [済] 当日払戻の取得(21:05)をスケジュール登録")
+
+    # 日次点検（2026-08-24追加）。アーカイブ(21:10)の後、終了(22:30)の前。
+    #   audit_system.py はどのスケジュールにも入っていなかった。書いてあるのに
+    #   回していなければ、落ちていても壊れていても分からない。
+    schedule.every().day.at("21:20").do(run_daily_check)
+    print("  [済] 日次点検(21:20)をスケジュール登録")
+
     schedule.every().day.at("22:30").do(_nightly_exit)
     print("  [済] 日次終了(22:30)をスケジュール登録")
 
@@ -654,6 +666,125 @@ def run_daily_archive():
         return
     if n:
         git_push(f"履歴を蓄積 {datetime.now().strftime('%m/%d')}")
+
+
+def run_payout_today():
+    """その日のレースの払戻だけを取得する（2026-08-24追加）。
+
+    なぜ要るか
+      払戻表(payout_data.csv)は週次でしか取りに行かない。単勝の払戻は
+      today_results.csv / history_marks.csv にあるので即日照合できるが、
+      **ワイドはどちらにも無い**ので、週次まで的中も外れも分からなかった。
+      8/22-8/23のワイド10点が丸ごと評価保留になっていた。
+      その日のぶんだけ取れば、翌朝には全券種の収支が出る。
+
+    アクセスは当日の36レースぶんだけ。既に払戻表にあるレースは飛ばす。
+    payout_scraper 側のレート制限(_throttle)をそのまま使う。
+    """
+    try:
+        import payout_scraper as ps
+    except Exception as e:
+        print(f"  払戻取得を読み込めません: {e}")
+        return
+    # 今日どのレースを予想したかは paper_resid.csv が持っている
+    src = os.path.join(BASE_DIR, "paper_resid.csv")
+    if not os.path.exists(src):
+        print("  paper_resid.csv が無いので払戻取得をスキップ")
+        return
+    d = pd.read_csv(src, dtype={"race_id": str})
+    today = datetime.now().strftime("%Y/%m/%d")
+    ids = sorted(set(d.loc[d["記録時刻"].astype(str).str.startswith(today), "race_id"]))
+    if not ids:
+        print("  今日の記録が無いので払戻取得をスキップ")
+        return
+    done = ps._load_done_race_ids()
+    todo = [r for r in ids if r not in done]
+    print(f"  払戻取得: 今日{len(ids)}レース中 {len(todo)}レースが未取得")
+    got = rows_all = 0
+    for rid in todo:
+        try:
+            rows = ps.get_payout(rid)
+        except Exception as e:
+            print(f"  {rid} 取得失敗: {type(e).__name__}")
+            continue
+        if rows == "BLOCKED":
+            # ブロックされたら即やめる。粘るとIP遮断が長引く。週次で拾い直せる。
+            print("  ⚠ netkeibaにブロックされたため中止（週次で取り直します）")
+            break
+        if rows:
+            ps._save(rows, append=True)
+            got += 1
+            rows_all += len(rows)
+    try:
+        ps._close_fallback_driver()
+    except Exception:
+        pass
+    print(f"  払戻取得完了: {got}レース / {rows_all}行")
+    if got:
+        git_push(f"払戻を取得 {datetime.now():%m/%d}")
+
+
+def run_daily_check():
+    """日次の自己点検。audit_system と paper_report を実際に走らせて結果を送る。
+
+    なぜ要るか（2026-08-24）
+      8/22-8/23の2日間で11件の不具合が見つかったが、自動検知はゼロだった。
+      全部あとから手で調べて出たもの。特に危ないのは「沈黙する故障」で、
+      たとえば7分前メールが丸一日1通も飛んでいなかったのに、
+      ログにもエラーは出ず、誰も気づかなかった。
+      能動的に数えて突きつけないと分からない種類の壊れ方をする。
+
+      audit_system.py は書いてあったのに、どのスケジュールにも入っていなかった
+      （grepして0件）。週次にも日次にも無い。書いただけで回していなかった。
+    """
+    import subprocess as _sp
+    parts, ng_high, ng_mid = [], 0, 0
+    for name in ("audit_system.py", "paper_report.py"):
+        try:
+            r = _sp.run([PYTHON, os.path.join(BASE_DIR, name)],
+                        cwd=BASE_DIR, capture_output=True, text=True,
+                        encoding="utf-8", errors="replace", timeout=900)
+            out = (r.stdout or "") + (r.stderr or "")
+            if r.returncode != 0:
+                out += f"\n⚠ {name} が異常終了しました（コード{r.returncode}）"
+                ng_high += 1
+        except Exception as e:
+            out = f"⚠ {name} を実行できませんでした: {type(e).__name__}: {e}"
+            ng_high += 1
+        # 件数を拾って件名に出す（本文を読まなくても異常が分かるように）
+        m = re.search(r"【重要度高】(\d+)件", out)
+        if m:
+            ng_high += int(m.group(1))
+        m = re.search(r"【重要度中】(\d+)件", out)
+        if m:
+            ng_mid += int(m.group(1))
+        parts.append(f"{'=' * 60}\n■ {name}\n{'=' * 60}\n{out}")
+
+    # 7分前メールが何通飛んだか。0通なら沈黙する故障を疑う
+    mail_line = ""
+    try:
+        lp = os.path.join(BASE_DIR, "keiba_auto_run.log")
+        t = open(lp, encoding="utf-8", errors="ignore").read()
+        i = t.rfind("件を予約しました")
+        today = t[i:] if i > 0 else ""
+        sent = len(re.findall(r"メール送信完了", today))
+        skip = len(re.findall(r"メール非送信", today))
+        ran = len(re.findall(r"予測開始", today))
+        mail_line = (f"7分前ジョブ: 予想{ran}レース / メール送信{sent}通 / 非送信{skip}件")
+        if ran and sent == 0:
+            mail_line += "\n  ⚠ 1通も飛んでいません。買い判定が全滅か、配信経路の故障を疑ってください。"
+            ng_high += 1
+    except Exception:
+        pass
+
+    head = (f"競馬AI 日次点検 {datetime.now():%Y/%m/%d}\n\n"
+            f"重要度高 {ng_high}件 / 重要度中 {ng_mid}件\n"
+            + (mail_line + "\n" if mail_line else "")
+            + "\n（このメールは毎晩21:20に自動送信されます）\n\n")
+    mark = "⚠" if ng_high else "○"
+    _send_alert(f"【競馬AI 日次点検 {mark}高{ng_high}/中{ng_mid}】"
+                f"{datetime.now():%m/%d}", head + "\n\n".join(parts))
+    print(f"  日次点検を送信（高{ng_high}/中{ng_mid}）")
 
 
 def _nightly_exit():
