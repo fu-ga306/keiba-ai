@@ -700,8 +700,19 @@ def run_payout_today():
     done = ps._load_done_race_ids()
     todo = [r for r in ids if r not in done]
     print(f"  払戻取得: 今日{len(ids)}レース中 {len(todo)}レースが未取得")
+    # 時間上限（2026-08-24）。21:10のアーカイブ、21:20の点検と同じスレッドで
+    #   直列に走るので、ここが長引くと後ろが全部ずれる。8/9に1つのジョブが
+    #   固まって以降のジョブが全滅した事故と同じ形。
+    #   36レースなら通常2.8分だが、Seleniumに落ちると倍以上かかる。
+    #   途中で切り上げても、残りは週次(Step0.55)が拾い直す。
+    PAYOUT_BUDGET = 240      # 秒
+    t0 = time.time()
     got = rows_all = 0
     for rid in todo:
+        if time.time() - t0 > PAYOUT_BUDGET:
+            print(f"  時間上限{PAYOUT_BUDGET}秒に達したので中断"
+                  f"（残り{len(todo)-got}レースは週次で取得）")
+            break
         try:
             rows = ps.get_payout(rid)
         except Exception as e:
