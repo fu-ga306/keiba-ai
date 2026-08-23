@@ -121,30 +121,40 @@ def main():
     done_tan = set(jv.race_id)      # 単勝: 払戻表 or today_results
     done_wide = set(jv.race_id)     # ワイド: 払戻表のみ
 
-    # ── 当日分は today_results.csv から拾う（2026-08-22追加）──────────────
-    #   払戻表(payout_data.csv)は週次でしか取りに行かないので、その日の夜に
-    #   このレポートを見ても「結果が出た0レース」と出てしまう。当日の結果は
-    #   today_results.csv に単勝・複勝の払戻まで入っているので、単勝だけは
-    #   即日で照合できる。ワイドは払戻が無いので週次を待つ。
-    #   ⚠ 単勝だけの数字は的中率が低く振れやすい。速報として見るもの。
-    tr = os.path.join(BASE_DIR, "today_results.csv")
-    n_today = 0
-    if os.path.exists(tr):
-        t = pd.read_csv(tr, dtype={"race_id": str, "馬番": str})
+    # ── 払戻表が来る前でも単勝は照合できる ─────────────────────────────
+    #   払戻表(payout_data.csv)は週次でしか取りに行かない。それを待つと
+    #   開催日の夜に見ても「結果が出た0レース」としか出ない。
+    #   単勝の払戻を持っているファイルが2つあるので、そこから先に拾う。
+    #     today_results.csv  … 当日ぶんだけ。翌日には上書きされて消える
+    #     history_marks.csv  … 日次アーカイブ(21:10)が積んでいる過去ぶん
+    #   ⚠ today_results.csv だけを見ていると前日ぶんが照合できず、
+    #     通算の回収率が出せない（2026-08-23に判明）。両方見ること。
+    #   ワイドの払戻はどちらにも無いので、そちらは週次を待つ。
+    for src, note in (("history_marks.csv", "過去ぶん"),
+                      ("today_results.csv", "当日ぶん")):
+        fp2 = os.path.join(BASE_DIR, src)
+        if not os.path.exists(fp2):
+            continue
+        try:
+            t = pd.read_csv(fp2, dtype={"race_id": str, "馬番": str})
+        except Exception as e:
+            log(f"  （{src} を読めません: {type(e).__name__}）")
+            continue
+        if "単勝" not in t.columns or "着順" not in t.columns:
+            continue
         t["馬番"] = (t["馬番"].astype(str)
                    .str.replace(r"\.0$", "", regex=True).str.zfill(2))
-        t["単勝"] = pd.to_numeric(t.get("単勝"), errors="coerce").fillna(0)
+        t["単勝"] = pd.to_numeric(t["単勝"], errors="coerce").fillna(0)
         for r in t[t["単勝"] > 0].itertuples():
             key = (r.race_id, "単勝", r.馬番)
             if key not in PAY:                 # 払戻表があればそちらを優先
                 PAY[key] = float(r.単勝)
         # 着順が入っているレースは「結果が出た」とみなす（外れも0円で数える）
         fin = set(t.loc[pd.to_numeric(t["着順"], errors="coerce").notna(), "race_id"])
-        n_today = len(fin - done_tan)
+        n_add = len(fin - done_tan)
         done_tan |= fin        # 単勝だけ。ワイドは払戻が無いので足さない
-    if n_today:
-        log(f"\n  （当日分 {n_today}レースを today_results.csv から反映。"
-            f"単勝のみ。ワイドの払戻は週次取得後）")
+        if n_add:
+            log(f"  （{note} {n_add}レースを {src} から反映。単勝のみ）")
 
     _ok = (((d["券種"] == "単勝") & d.race_id.isin(done_tan))
            | ((d["券種"] == "ワイド") & d.race_id.isin(done_wide)))
@@ -196,15 +206,30 @@ def main():
         B = {(r.race_id, r.券種, str(r.組み合わせ))
              for r in c[c.判定 == "買い"].itertuples()}
         both = len(A & B)
+        # ⚠ 必ず「両方に記録があるレース」だけで比べる（2026-08-23）
+        #   締切時の記録は7分前より遅れて貯まるので、母集団が揃わない。
+        #   全体で突き合わせると、まだ締切記録が無いレースの買い目が
+        #   全部「7分前のみ」に数えられ、食い違い93%のような嘘の数字が出る。
+        #   比較は同じレースどうしでしかできない。
+        common = {r for r in d.race_id.unique()} & {r for r in c.race_id.unique()}
+        A = {x for x in A if x[0] in common}
+        B = {x for x in B if x[0] in common}
+        both = len(A & B)
         log("\n=== ④ いつ決めるかで買い目がどれだけ変わるか ===")
-        log(f"  7分前(実際に賭ける) {len(A):>5}点 / {len({x[0] for x in A})}レース")
-        log(f"  締切時(BTに近い)   {len(B):>5}点 / {len({x[0] for x in B})}レース")
-        if A or B:
+        log(f"  両方に記録があるレース {len(common)}件で比較")
+        log(f"  7分前(実際に賭ける) {len(A):>5}点")
+        log(f"  締切時(BTに近い)   {len(B):>5}点")
+        uni = len(A | B)
+        if uni:
             log(f"  一致 {both}点  7分前のみ {len(A-B)}点  締切時のみ {len(B-A)}点")
-            uni = len(A | B)
             log(f"  → 選び方の食い違い {uni-both}/{uni} ({(uni-both)/uni*100:.0f}%)")
-            log("  この割合が大きいほど、BTの数字は本番で再現しにくい。")
-            log("  BTは確定オッズで選べるが、本番は7分前に決めるしかないため。")
+            log("  BTは確定オッズで選べるが、本番は7分前に決めるしかない。")
+            log("  ただし odds_timing_bt.py の検証では、この食い違いがあっても")
+            log("  ROIの目減りは-0.8ptだった（順位はオッズに依存しないため）。")
+        else:
+            log("  まだ買い判定が両方に無いので比べられません。")
+        if len(common) < 20:
+            log(f"  ※ {len(common)}レースでは揺れます。数開催ぶん貯めてから見ること。")
     else:
         log("\n=== ④ いつ決めるかで買い目がどれだけ変わるか ===")
         log("  paper_resid_close.csv がまだありません（次の開催日から貯まります）。")
