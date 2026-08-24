@@ -18,6 +18,14 @@
 
 実行: python audit_system.py
 """
+import sys
+
+for _s in (sys.stdout, sys.stderr):   # cp932環境でのUnicodeEncodeError→異常終了を防ぐ
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 import os
 import re
 import subprocess

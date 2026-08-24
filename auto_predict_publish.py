@@ -752,9 +752,17 @@ def run_daily_check():
     parts, ng_high, ng_mid = [], 0, 0
     for name in ("audit_system.py", "paper_report.py"):
         try:
+            # ⚠ 子プロセスにUTF-8を明示する（2026-08-24）
+            #   これが無いと子の標準出力は cp932 になり、
+            #   ①「⚠」(U+26A0)を print した瞬間に UnicodeEncodeError で落ちる
+            #   ②こちらは encoding="utf-8" で読むので、届いた分も文字化けする
+            #   実際に初回の日次点検で両方起き、2本とも異常終了した。
+            #   スクリプト側にも同じ対策を入れてあるが、環境変数でも二重に塞ぐ。
+            _env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
             r = _sp.run([PYTHON, os.path.join(BASE_DIR, name)],
                         cwd=BASE_DIR, capture_output=True, text=True,
-                        encoding="utf-8", errors="replace", timeout=900)
+                        encoding="utf-8", errors="replace", timeout=900,
+                        env=_env)
             out = (r.stdout or "") + (r.stderr or "")
             if r.returncode != 0:
                 out += f"\n⚠ {name} が異常終了しました（コード{r.returncode}）"

@@ -19,6 +19,14 @@
   manual_bets.csv は「実際に買った」記録。この2つは別物として分けている。
   混ぜると、買い忘れたレースを的中扱いにしてしまう事故が起きる。
 """
+import sys
+
+for _s in (sys.stdout, sys.stderr):   # cp932環境でのUnicodeEncodeError→異常終了を防ぐ
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 import os
 import re
 import sys
