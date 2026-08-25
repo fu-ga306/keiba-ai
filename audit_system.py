@@ -274,7 +274,11 @@ def main():
     log("  paper_report.py が KeyError で落ちていたのに気づかなかった（2026-08-22）。")
     log("  週次で呼んでいても、落ちていれば何も分からない。実際に動かして確かめる。")
     import subprocess as _sp
-    for _t in ("paper_report.py", "audit_calls.py"):
+    # check_resid.py を足した理由（2026-08-25）
+    #   8/17にしきい値を2.0→1.5に緩めたとき EXPECT の更新を忘れ、以後8日間
+    #   「⚠ 実装がズレている」と誤警告を出し続けていた。誰も走らせていないので
+    #   気づけなかった。オオカミ少年のまま放置すると、本当にズレたときに効かない。
+    for _t in ("paper_report.py", "audit_calls.py", "check_resid.py"):
         _p = os.path.join(BASE, _t)
         if not os.path.exists(_p):
             continue
