@@ -71,3 +71,6 @@ vote_shots/
 vote_done/
 manual_bets.csv
 paper_resid_close.csv
+x_queue.txt
+x_posted.csv
+X_POST_ARMED
