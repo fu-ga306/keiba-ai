@@ -807,9 +807,26 @@ def run_daily_check():
         if soon:
             url = os.environ.get("SALE_URL", "（ダッシュボードのURL）")
             sale_line = ("\n" + "=" * 60
-                         + "\n■ 販売ページ：note に貼る文面（期間が変わりました）\n"
+                         + "\n■ 販売ページ：note に貼る文面（合言葉が変わりました）\n"
                          + "=" * 60 + "\n"
                          + sale_gate.note_block(url, d) + "\n")
+            # 記事の下書きも丸ごと添える。**そのまま貼れる完成形**にして、
+            # 毎週の手作業を「コピーして貼る」だけにする。
+            try:
+                import subprocess as _sp2
+                _e2 = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+                _r2 = _sp2.run([PYTHON, os.path.join(BASE_DIR, "note_weekly.py"),
+                                "--print"], cwd=BASE_DIR, capture_output=True,
+                               text=True, encoding="utf-8", errors="replace",
+                               timeout=600, env=_e2)
+                if _r2.returncode == 0 and _r2.stdout.strip():
+                    sale_line += ("\n" + "=" * 60
+                                  + "\n■ 今週の販売note（下書き・そのまま貼れます）\n"
+                                  + "=" * 60 + "\n" + _r2.stdout.strip() + "\n")
+                else:
+                    sale_line += "\n（note下書きの生成に失敗しました。実績データを確認してください）\n"
+            except Exception as _e3:
+                sale_line += f"\n（note下書きを作れませんでした: {type(_e3).__name__}）\n"
     except Exception:
         pass
 
