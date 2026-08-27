@@ -1287,13 +1287,18 @@ def _sale_rows(g):
             gs = f"{gap:.2f}" + ("　高く見ている" if gap >= 1.3
                                  else "　低く見ている" if gap <= 0.8 else "")
         mk = getattr(r, "推奨ランク", None)
+        pv = float(r.複勝確率_較正) * 100
+        # 確率の帯で色を変える。数字を読まなくても強弱が分かるように
+        cls = "p5" if pv >= 50 else "p4" if pv >= 35 else "p3" if pv >= 20 else "p0"
         out.append({
             "mark": mk if isinstance(mk, str) and mk else "―",
             "num": r.馬番, "name": r.馬名,
-            "prob": f"{r.複勝確率_較正*100:.1f}",
+            "prob": f"{pv:.1f}", "cls": cls,
             "pop": f"{int(r.人気)}" if pd.notna(r.人気) else "―",
             "odds": f"{r.単勝オッズ:.1f}" if pd.notna(r.単勝オッズ) else "―",
             "gap": gs,
+            # 市場より高く見ている馬だけ印を出す。全部に出すと読めない
+            "gapup": "妙" if (pd.notna(gap) and gap >= 1.3) else "",
             "abil": [_sale_bar(getattr(r, c, np.nan)) for c in _SALE_ABI],
         })
     return out
@@ -1324,12 +1329,14 @@ def sale_index():
         rows = _sale_rows(g)
         if not rows:
             continue
-        races.append({"id": rid, "jyo": g["jyo"].iloc[0],
+        races.append({"id": rid, "jyo": str(g["jyo"].iloc[0]),
                       "no": int(g["race_no"].iloc[0]),
-                      "top": rows[0], "n": len(rows)})
-    races.sort(key=lambda x: (str(x["jyo"]), x["no"]))
-    return render_template("sale_index.html", races=races, unlocked=unlocked,
-                           tried=bool(k), k=k,
+                      "top": rows[0], "n": len(rows),
+                      "cls": rows[0]["cls"]})
+    races.sort(key=lambda x: (x["jyo"], x["no"]))
+    venues = sorted({r["jyo"] for r in races})
+    return render_template("sale_index.html", races=races, venues=venues,
+                           unlocked=unlocked, tried=bool(k), k=k,
                            date_str=_dt.datetime.now().strftime("%m/%d"))
 
 
@@ -1348,7 +1355,7 @@ def sale(race_id):
     jyo = g["jyo"].iloc[0] if "jyo" in g.columns else ""
     rno = g["race_no"].iloc[0] if "race_no" in g.columns else ""
     race = {"head": f"{jyo}{int(rno) if pd.notna(rno) else ''}R",
-            "free": rows[:3], "all": rows}
+            "free": rows[:3], "all": rows, "rest": max(0, len(rows) - 3)}
 
     k = request.args.get("k", "")
     unlocked = sale_gate.check(k)
@@ -1363,7 +1370,7 @@ def sale(race_id):
                         "pred": f"{r.予測:.1f}", "act": f"{r.実際:.1f}",
                         "diff": f"{d:+.1f}"})
     return render_template("sale.html", race=race, labels=_SALE_LAB,
-                           unlocked=unlocked, tried=bool(k),
+                           unlocked=unlocked, tried=bool(k), k=k,
                            cal=cal, cal_day=cday, cal_races=cr, cal_horses=ch,
                            cal_worst=f"{worst:.1f}")
 
