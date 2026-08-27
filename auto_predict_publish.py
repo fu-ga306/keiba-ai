@@ -803,7 +803,13 @@ def run_daily_check():
     try:
         import sale_gate
         d = datetime.now()
-        soon = (d.day <= 3) if sale_gate.ROTATE == "month" else (d.weekday() == 0)
+        # 配信は金曜（2026-08-27に月曜から変更）。
+        #   開催は土日なので、直前の金曜に出すほうが読まれる。
+        #   月曜に出すと週末までに忘れられる。
+        #   合言葉はISO週で切り替わり、土日は同じ週の終わりに入る。
+        #   つまり金曜に配る合言葉は、その週末をそのままカバーする。
+        SALE_DOW = 4          # 0=月 4=金
+        soon = (d.day <= 3) if sale_gate.ROTATE == "month" else (d.weekday() == SALE_DOW)
         if soon:
             url = os.environ.get("SALE_URL", "（ダッシュボードのURL）")
             sale_line = ("\n" + "=" * 60
