@@ -1,110 +1,371 @@
 {% extends "base.html" %}
+{% block title %}{{ jyo }} {{ race_no }}R — 競馬AI予想{% endblock %}
 {% block content %}
-<style>
-  .sv{max-width:820px;margin:0 auto;padding:0 10px}
-  .sv h1{font-size:1.05rem;margin:14px 0 2px}
-  .sv .sub{font-size:.78rem;color:#777;margin-bottom:10px}
-  .back{font-size:.8rem;color:#666;text-decoration:none}
-  /* 馬の一覧。1行1頭でコンパクトに */
-  .hs{border-top:1px solid #eee;margin-top:8px}
-  .h{display:grid;grid-template-columns:1.4em 2.1em 1fr 4.2em;align-items:center;gap:7px;
-     padding:8px 3px;border-bottom:1px solid #eee}
-  .h.free{background:#fffdf5}
-  .mk{text-align:center;font-size:.82rem;color:#b8860b;font-weight:700}
-  .no{text-align:center;font-size:.8rem;color:#555;background:#f2f2f2;border-radius:3px;padding:2px 0}
-  .nm{font-size:.9rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .nm small{color:#999;font-size:.72rem;margin-left:5px}
-  .pv{text-align:right;font-weight:700;font-size:.95rem;font-variant-numeric:tabular-nums}
-  .p5{color:#1a7f37}.p4{color:#3a6ea5}.p3{color:#555}.p0{color:#aaa}
-  .gapup{color:#c2410c;font-size:.72rem;margin-left:4px}
-  /* 折りたたみ */
-  details{border:1px solid #eee;border-radius:6px;margin:12px 0;padding:0}
-  summary{padding:9px 12px;font-size:.85rem;cursor:pointer;background:#fafafa;border-radius:6px}
-  details[open] summary{border-bottom:1px solid #eee;border-radius:6px 6px 0 0}
-  .dd{padding:10px 12px}
-  table.t{width:100%;border-collapse:collapse;font-size:.8rem}
-  .t th,.t td{border-bottom:1px solid #eee;padding:5px 4px;text-align:right}
-  .t th{color:#777;font-weight:400}
-  .t td.l,.t th.l{text-align:left}
-  .bar{font-family:monospace;letter-spacing:-1.5px;color:#666}
-  /* 合言葉 */
-  .gate{border:1px dashed #bbb;border-radius:6px;padding:14px;margin:14px 0;background:#fbfbfb;text-align:center}
-  .gate input{padding:7px;font-size:.95rem;width:10em;margin-right:5px}
-  .gate button{padding:7px 14px;font-size:.95rem;cursor:pointer}
-  .err{color:#c00;font-size:.8rem;margin-top:6px}
-  .note{font-size:.75rem;color:#888;line-height:1.7;margin-top:16px;
-        border-top:1px solid #eee;padding-top:10px}
-</style>
 
-<div class="sv">
-  <a class="back" href="/sale{% if unlocked and k %}?k={{ k }}{% endif %}">← レース一覧</a>
-  <h1>{{ race.head }}</h1>
-  <div class="sub">3着以内に入る確率の高い順。左の印は市場との差（妙味）です。</div>
+<div class="page-header">
+  <a href="{{ url_for('races') }}" class="back-link">← 一覧に戻る</a>
+  <h1 class="page-title">{{ jyo }} {{ race_no }}R</h1>
+  {% if date_str %}<span class="page-date">{{ date_str }}</span>{% endif %}
+</div>
 
-  <div class="hs">
-    {% for h in (race.all if unlocked else race.free) %}
-    <div class="h {% if loop.index <= 3 %}free{% endif %}">
-      <div class="mk">{{ h.mark }}</div>
-      <div class="no">{{ h.num }}</div>
-      <div class="nm">{{ h.name }}<small>{{ h.pop }}人 / {{ h.odds }}倍</small>{% if h.gapup %}<span class="gapup">{{ h.gapup }}</span>{% endif %}</div>
-      <div class="pv {{ h.cls }}">{{ h.prob }}%</div>
+
+<!-- レース情報 -->
+<div class="race-info-card">
+  <div class="race-info-row">
+    <span class="venue-badge lg">{{ jyo }}</span>
+    <span class="race-no-lg">{{ race_no }}R</span>
+    <span class="race-class-lg">{{ klass }}</span>
+    <span class="race-dist-lg">{{ baba_emo }} {{ dist }}m</span>
+    {% if cond %}<span class="track-cond cond-{{ cond }}">{{ cond }}</span>{% endif %}
+    {% if rec_level %}<span class="rec-badge {{ rec_cls }}">{{ rec_level }}</span>{% endif %}
+  </div>
+
+  <!-- 荒れスコア -->
+  <div class="are-section large">
+    <div class="are-ring-wrap">
+      <div class="are-ring-container">
+        <svg class="are-ring" viewBox="0 0 36 36">
+          <circle class="ring-track" cx="18" cy="18" r="15.9" fill="none" stroke-width="3.5"/>
+          <circle class="ring-bar {{ are_tan_cls }}" cx="18" cy="18" r="15.9" fill="none" stroke-width="3.5"
+            stroke-dasharray="{{ are_tan }} 100" stroke-linecap="round"
+            transform="rotate(-90 18 18)"/>
+        </svg>
+        <div class="are-ring-label"><span class="are-value">{{ are_tan }}</span></div>
+      </div>
+      <div class="are-desc">
+        <div class="are-type">単勝荒れ度</div>
+        <div class="are-level {{ are_tan_cls }}">{{ are_tan_lbl }}</div>
+      </div>
+    </div>
+
+    <div class="are-ring-wrap">
+      <div class="are-ring-container">
+        <svg class="are-ring" viewBox="0 0 36 36">
+          <circle class="ring-track" cx="18" cy="18" r="15.9" fill="none" stroke-width="3.5"/>
+          <circle class="ring-bar {{ are_ren_cls }}" cx="18" cy="18" r="15.9" fill="none" stroke-width="3.5"
+            stroke-dasharray="{{ are_ren }} 100" stroke-linecap="round"
+            transform="rotate(-90 18 18)"/>
+        </svg>
+        <div class="are-ring-label"><span class="are-value">{{ are_ren }}</span></div>
+      </div>
+      <div class="are-desc">
+        <div class="are-type">連系荒れ度</div>
+        <div class="are-level {{ are_ren_cls }}">{{ are_ren_lbl }}</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 全馬テーブル -->
+<section class="section-block">
+  <h2 class="section-title">🐴 全馬予想詳細</h2>
+  <div class="table-scroll">
+    <table class="horse-table">
+      <thead>
+        {# 列見出しクリックで並べ替え。data-k は tbody の data-* と対応させる #}
+        <tr class="sortable">
+          {% if has_result %}<th data-k="res" title="確定した着順と払戻">結果</th>{% endif %}
+          <th data-k="rmark" title="残差モデルの印。gap＝モデルの予測確率÷市場の確率で、市場が何を見落としているかを表す。★軸=gap1.5以上でレース内最大→メインで買う馬（単勝）。○=gap1.3以上→軸との組み合わせ（ワイド・馬連）で狙える。△=gap1.1以上→押さえ">買い印</th>
+          <th data-k="mark">印</th>
+          <th data-k="ban">馬番</th>
+          <th>馬名</th>
+          <th>シグナル</th>
+          <th data-k="grade" title="市場とモデルを合わせた「来やすさ」。5年OOSの実測で S:87% / A:65% / B:43% / D:12%（馬券内率）。買い印とは別物で、こちらは絶対的に来る確率を見ている">評価</th>
+          <th data-k="w" title="馬体重と前走からの増減。発走の約50分前に発表される。それより前は「―」になる（異常ではない）">馬体重</th>
+          <th data-k="abil" title="能力6軸（勝負力・安定感・末脚・先行力・距離適性・実績）の平均。レース内100点満点・オッズは見ない">能力</th>
+          <th data-k="airank" title="市場フリーモデルの3着内予測順">AI順位</th>
+          <th data-k="gap" title="人気順位 − AI順位。正ならAIが市場より高く評価">乖離</th>
+          <th data-k="pop">人気</th>
+          <th data-k="odds">単勝オッズ</th>
+          <th data-k="win">勝率</th>
+          <th data-k="ren">連対率</th>
+          <th data-k="fuku">複勝率</th>
+          <th data-k="ev">単勝EV</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for h in horses %}
+        {% set mo = {'◎':1,'○':2,'▲':3,'△':4,'×':5} %}
+        <tr class="{{ 'row-axis' if h.signal_cls == 'axis' else '' }} {{ 'row-fuku' if h.signal_cls == 'fuku' else '' }} {{ 'row-buy' if h.is_buy else '' }}"
+            data-mark="{{ mo.get(h.推奨ランク, 9) }}" data-ban="{{ h.馬番 | int }}"
+            data-airank="{{ h.ai_rank_val }}" data-gap="{{ h.gap_val }}"
+            data-pop="{{ h.人気 or 99 }}" data-odds="{{ h.単勝オッズ or 9999 }}"
+            data-win="{{ h.win_pct }}" data-ren="{{ h.ren_pct }}"
+            data-fuku="{{ h.fuku_pct }}" data-ev="{{ h.ev_val }}"
+            data-res="{{ h.res_pos or 99 }}"
+            data-grade="{{ {'S':1,'A':2,'B':3,'D':4}.get(h.grade, 9) }}"
+            data-abil="{{ h.abil_avg if h.abil_avg is not none else -1 }}"
+            data-rmark="{{ 1 if h.r_main else (2 if h.r_mark == '○' else (3 if h.r_mark == '△' else 9)) }}"
+            data-w="{{ h.w_val if h.w_val else -1 }}">
+          {% if has_result %}
+          <td class="res-cell center{% if h.res_pos and h.res_pos <= 3 %} res-medal res-{{ h.res_pos }}{% endif %}">
+            {%- if h.res_pos -%}
+              <span class="res-pos">{{ '🥇' if h.res_pos == 1 else ('🥈' if h.res_pos == 2 else ('🥉' if h.res_pos == 3 else h.res_pos ~ '着')) }}</span>
+              {%- if h.res_tan %}<span class="res-pay">単{{ h.res_tan }}</span>{% endif -%}
+              {%- if h.res_fuku %}<span class="res-pay">複{{ h.res_fuku }}</span>{% endif -%}
+            {%- else -%}<span class="res-none">–</span>{%- endif -%}
+          </td>
+          {% endif %}
+          <td class="rank-mark rank-{{ h.signal_cls }} center">
+            {%- if h.is_star %}<span class="star" title="市場より高評価（乖離{{ h.gap }}）">★</span>{% endif -%}
+            {{ h.推奨ランク }}</td>
+          <td class="center rmark-cell">
+            {%- if h.r_main -%}
+              <span class="rmark-main" title="メインで買う馬（単勝）。gap {{ h.r_gap }}＝市場の{{ h.r_gap }}倍強いとモデルが見ている">★軸</span>
+            {%- elif h.r_mark -%}
+              <span class="rmark-sub rmark-{{ '2' if h.r_mark == '○' else '3' }}"
+                title="軸との組み合わせ（ワイド・馬連）で狙える相手。gap {{ h.r_gap }}">{{ h.r_mark }}</span>
+            {%- endif -%}
+            {%- if h.r_gap %}<span class="rmark-gap">{{ h.r_gap }}</span>{% endif -%}
+          </td>
+          <td class="center">{{ h.馬番 | int }}</td>
+          <td class="horse-name-cell">{{ h.馬名 }}{% if h.buy_kinds %}<span class="buy-kind">{{ h.buy_kinds }}</span>{% endif %}</td>
+          <td><span class="signal-badge signal-{{ h.signal_cls }}">{{ h.signal_label }}</span></td>
+          <td class="center"><span class="grade grade-{{ h.grade }}"
+              title="5年OOSの実測で切った評価。実際の馬券内率は S:76% / A:50% / B:28% / D:9%。Dは11回に1回しか来ない＝買わない判定。期待獲得点 {{ h.grade_score }}＝勝率{{ h.win_pct }}%＋連対{{ h.ren_pct }}%＋複勝{{ h.fuku_pct }}%">{{ h.grade }}</span>
+              <span class="grade-score">{{ h.grade_score }}</span>
+              {% if h.is_ana %}<span class="badge-ana-mark"
+                title="穴注目: 10-12番人気でモデル複勝5位以内。5年OOSで勝率2.00倍（2.49% vs 1.25%）">穴</span>{% endif %}</td>
+          <td class="center w-cell {{ h.w_cls }}">
+            {%- if h.w_val -%}
+              <span class="w-val">{{ h.w_val }}</span>
+              {%- if h.w_diff is not none %}<span class="w-diff">{{ "%+d"|format(h.w_diff) }}</span>{% endif -%}
+            {%- else -%}
+              <span class="w-none" title="発走50分前ごろに発表されます">―</span>
+            {%- endif -%}
+          </td>
+          <td class="abil-cell">
+            {%- if h.abil_avg is not none -%}
+            <span class="abil-num">{{ "%.1f"|format(h.abil_avg) }}</span>
+            <span class="abil-bar"><i style="width:{{ h.abil_avg }}%"></i></span>
+            {%- else -%}<span class="res-none">–</span>{%- endif -%}
+          </td>
+          <td class="center ai-rank">{{ h.ai_rank if h.ai_rank else '-' }}</td>
+          <td class="center {{ 'gap-plus' if h.gap_val >= 3 else ('gap-minus' if h.gap_val <= -3 else '') }}">{{ h.gap or '-' }}</td>
+          <td class="center">{{ h.人気 }}</td>
+          <td class="center">{{ h.単勝オッズ }}</td>
+          <td class="center pct-cell">{{ h.win_pct }}%</td>
+          <td class="center pct-cell">{{ h.ren_pct }}%</td>
+          <td class="center pct-cell">{{ h.fuku_pct }}%</td>
+          <td class="center {{ h.ev_cls }}">{{ "%.2f"|format(h.ev_val) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+{# 馬体重の発表状況（2026-08-22）。発走50分前ごろに出るので、
+   朝の予想時点では未発表。「取れていない」との区別が付くようにする。 #}
+{% if weight_status %}
+<p class="w-status {{ 'w-status-done' if weight_status.done else '' }}">
+  馬体重: <b>{{ weight_status.label }}</b>
+  {%- if not weight_status.done %}<span class="w-status-note">（未発表でも予想は出ています）</span>{% endif -%}
+</p>
+{% endif %}
+
+<!-- 推奨買い目（残差モデル・2026-08-22改定） -->
+{#
+  旧方式(my_bets)は購入停止で常に空になり、画面に何も出なくなっていた。
+  いま実際に記録しているのは残差モデルの買い目なので、それを出す。
+  gap = モデルの予測確率 ÷ 市場の確率。2.0なら市場の2倍強いと見ている。
+#}
+<section class="section-block">
+  <h2 class="section-title">💰 推奨買い目</h2>
+  {% if r_bets %}
+  <div class="rbet-flow">
+    <div class="rbet-ax">
+      <span class="rmark-main">★軸</span>
+      <span class="rbet-no">{{ r_ax.馬番 | int }}番</span>
+      <span class="rbet-name">{{ r_ax.馬名 }}</span>
+      <span class="rbet-odds">{{ r_ax.単勝オッズ }}倍</span>
+      <span class="rbet-gap" title="モデルの予測確率 ÷ 市場の確率">gap {{ r_ax.r_gap }}</span>
+    </div>
+    {% if r_mates %}
+    <div class="rbet-arrow">↓ ダートなので相手に流す</div>
+    {% for m in r_mates %}
+    <div class="rbet-mate">
+      <span class="rmark-sub rmark-2">○</span>
+      <span class="rbet-no">{{ m.馬番 | int }}番</span>
+      <span class="rbet-name">{{ m.馬名 }}</span>
+      <span class="rbet-odds">{{ m.単勝オッズ }}倍</span>
+      <span class="rbet-gap">gap {{ m.r_gap }}</span>
+    </div>
+    {% endfor %}
+    {% elif r_is_dirt %}
+    <div class="rbet-arrow">相手なし（gap1.3以上の馬がいない）→ 単勝のみ</div>
+    {% else %}
+    <div class="rbet-arrow">芝は単勝のみ（ワイドを足すのはダートだけ）</div>
+    {% endif %}
+  </div>
+  <table class="bets-table">
+    <thead><tr><th>券種</th><th>組み合わせ</th><th>点数</th></tr></thead>
+    <tbody>
+      {% for b in r_bets %}
+      <tr>
+        <td><b>{{ b.kind }}</b></td>
+        <td class="bets-combo">{{ b.combo }}</td>
+        <td>{{ b.points }}点</td>
+      </tr>
+      {% endfor %}
+      <tr><td colspan="2"><b>合計</b></td>
+          <td><b>{{ r_bets | sum(attribute='points') }}点</b></td></tr>
+    </tbody>
+  </table>
+  {% else %}
+  <p class="bets-note"><b>見送り</b>（gapが1.5以上の馬がいません）</p>
+  {% endif %}
+  <p class="bets-note">
+    <b>※ 記録のみで、実際には購入していません。</b><br>
+    5年検証 回収率120.6%（10,349点・的中1,178本）。
+    ただし年別は 137 / 116 / 111 / 163 / <b>79</b>% と振れます。
+    年単位では負ける年があるので、通算でしか判断できません。<br>
+    ★軸＝買う馬（単勝）。○＝ダートで流す相手（ワイド）。
+    <b>「評価」列とは別物</b>で、評価は「来やすさ」、買い印は「市場との評価差」を見ています。
+    両方が同じ馬を指すのは0.6%しかないので、評価Dの★軸は正常です。
+  </p>
+</section>
+
+
+<!-- 能力値パラメータ -->
+{% if param_horses %}
+<section class="section-block">
+  <h2 class="section-title">📊 能力値パラメータ（レース内相対・100が最上位）</h2>
+  <div class="ability-grid">
+    {% for ph in param_horses if not ph.is_sub %}
+    <div class="ability-card {{ 'ability-myo' if ph.is_myo else '' }}">
+      <div class="ability-head">
+        <span class="rank-mark rank-{{ ph.signal_cls }}">{{ ph.mark }}</span>
+        <span class="uma-ban-sm">{{ ph.ban }}</span>
+        <span class="ability-name">{{ ph.name }}</span>
+        {% if ph.is_myo %}<span class="myo-chip">💎妙</span>{% endif %}
+      </div>
+      {% if ph.is_myo %}<div class="myo-hint">※ MFが高評価の妙味馬。市場・通常モデルは低評価なので「安定」は低め＝それが妙味の源泉</div>{% endif %}
+      <div class="ability-bars">
+        {% for a in ph.abilities %}
+        <div class="ability-row">
+          <span class="ability-label">{{ a.label }}</span>
+          <div class="ability-track">
+            <div class="ability-fill {{ 'fill-hi' if a.val and a.val >= 75 else ('fill-mid' if a.val and a.val >= 45 else 'fill-lo') }}"
+                 style="width: {{ a.val if a.val is not none else 0 }}%"></div>
+          </div>
+          <span class="ability-val">{{ a.val if a.val is not none else '—' }}</span>
+        </div>
+        {% endfor %}
+      </div>
     </div>
     {% endfor %}
   </div>
-
-  {% if not unlocked %}
-  <div class="gate">
-    <div style="font-size:.85rem;margin-bottom:8px">
-      残り{{ race.rest }}頭は購読者向けです
-    </div>
-    <form method="get">
-      <input type="text" name="k" placeholder="合言葉" autocomplete="off">
-      <button type="submit">見る</button>
-    </form>
-    {% if tried %}<div class="err">合言葉が違います</div>{% endif %}
-  </div>
-  {% else %}
-
-  <details>
-    <summary>能力6軸（オッズを一切見ずに付けた点数）</summary>
-    <div class="dd">
-      <div style="font-size:.78rem;color:#888;margin-bottom:8px">
-        市場の評価が入っていない実力だけの点数です。人気とズレている馬を探せます。
+  {# 印が付かなかった馬。このモデルはオッズを見ないので、選ばれなかった馬の
+     能力値にも「なぜ選ばれなかったか」という情報がある。既定は畳んでおく。 #}
+  {% set subs = param_horses | selectattr('is_sub') | list %}
+  {% if subs %}
+  <details class="ability-more">
+    <summary>印なしの{{ subs|length }}頭も表示する</summary>
+    <div class="ability-grid">
+      {% for ph in subs %}
+      <div class="ability-card ability-sub">
+        <div class="ability-head">
+          <span class="uma-ban-sm">{{ ph.ban }}</span>
+          <span class="ability-name">{{ ph.name }}</span>
+        </div>
+        <div class="ability-bars">
+          {% for a in ph.abilities %}
+          <div class="ability-row">
+            <span class="ability-label">{{ a.label }}</span>
+            <div class="ability-track">
+              <div class="ability-fill {{ 'fill-hi' if a.val and a.val >= 75 else ('fill-mid' if a.val and a.val >= 45 else 'fill-lo') }}"
+                   style="width: {{ a.val if a.val is not none else 0 }}%"></div>
+            </div>
+            <span class="ability-val">{{ a.val if a.val is not none else '—' }}</span>
+          </div>
+          {% endfor %}
+        </div>
       </div>
-      <table class="t">
-        <tr><th class="l">馬</th>{% for l in labels %}<th>{{ l }}</th>{% endfor %}</tr>
-        {% for h in race.all %}
-        <tr><td class="l">{{ h.num }} {{ h.name }}</td>
-          {% for a in h.abil %}<td class="bar">{{ a }}</td>{% endfor %}</tr>
-        {% endfor %}
-      </table>
+      {% endfor %}
     </div>
   </details>
   {% endif %}
+  <p class="bets-note">※ 各値はこのレース出走馬の中での相対順位（百分位）。「—」は初出走などデータ不足。<br>
+     ※ このモデルはオッズ・人気を一切使わず、能力データだけで評価しています。</p>
+</section>
+{% endif %}
 
-  {% if cal %}
-  <details>
-    <summary>この確率はどれくらい当たっているか（最大のズレ {{ cal_worst }}pt）</summary>
-    <div class="dd">
-      <div style="font-size:.78rem;color:#888;margin-bottom:8px">
-        <b>補正に使っていない日</b>（{{ cal_day }}・{{ cal_races }}レース・{{ cal_horses }}頭）で検証。
-        学習に使ったデータで測ると必ず良く見えるので、わざと外した日で測っています。
-      </div>
-      <table class="t">
-        <tr><th class="l">人気</th><th>頭数</th><th>予測</th><th>実際</th><th>差</th></tr>
-        {% for r in cal %}
-        <tr><td class="l">{{ r.band }}</td><td>{{ r.n }}</td><td>{{ r.pred }}%</td>
-            <td><b>{{ r.act }}%</b></td><td>{{ r.diff }}</td></tr>
-        {% endfor %}
-      </table>
+
+<!-- MF穴馬候補 -->
+{% if ana_candidates %}
+<section class="section-block">
+  <h2 class="section-title">💎 AI注目穴馬（市場評価と乖離あり）</h2>
+  <div class="ana-list">
+    {% for h in ana_candidates %}
+    <div class="ana-card">
+      <span class="rank-mark rank-{{ h.signal_cls }}">{{ h.推奨ランク }}</span>
+      <span class="uma-name">{{ h.馬名 }}</span>
+      <span class="pop-badge">{{ h.人気 | int }}番人気</span>
+      <span class="mf-rank">MF{{ h.MF予測順位 }}位</span>
+      <span class="win-pct">勝{{ h.win_pct }}%</span>
+      <span class="odds-val">{{ h.単勝オッズ }}倍</span>
     </div>
-  </details>
-  {% endif %}
-
-  <div class="note">
-    <b>確率が高い馬は人気馬に寄ります。的中率と回収率は別物です。</b><br>
-    どう買うかはご自身でご判断ください。買い目の指示は含みません。<br>
-    馬券の的中・利益を保証するものではありません。20歳未満の方は購入できません。
+    {% endfor %}
   </div>
+</section>
+{% endif %}
+
+<script>
+// 出走表の並べ替え（外部ライブラリなし）。
+// 見出しの data-k と、各行の data-* を対応させて数値ソートする。
+// 既定は印順（◎○▲△×→無印）。同じ列を再クリックで昇順/降順が入れ替わる。
+(function () {
+  var head = document.querySelector('.horse-table tr.sortable');
+  if (!head) return;
+  var tbody = document.querySelector('.horse-table tbody');
+  // 小さい方が良い指標（順位・人気・オッズ）は既定を昇順、率などは降順にする
+  var ASC_FIRST = { mark: 1, rmark: 1, w: 1, ban: 1, airank: 1, pop: 1, odds: 1, res: 1, grade: 1 };
+  var cur = null, asc = true;
+  head.querySelectorAll('th[data-k]').forEach(function (th) {
+    th.style.cursor = 'pointer';
+    th.addEventListener('click', function () {
+      var k = th.dataset.k;
+      if (cur === k) { asc = !asc; } else { cur = k; asc = !!ASC_FIRST[k]; }
+      var rows = Array.prototype.slice.call(tbody.querySelectorAll('tr'));
+      rows.sort(function (a, b) {
+        var x = parseFloat(a.dataset[k]), y = parseFloat(b.dataset[k]);
+        if (isNaN(x)) x = asc ? Infinity : -Infinity;
+        if (isNaN(y)) y = asc ? Infinity : -Infinity;
+        return asc ? x - y : y - x;
+      });
+      rows.forEach(function (r) { tbody.appendChild(r); });
+      head.querySelectorAll('th').forEach(function (o) {
+        o.classList.remove('sorted-asc', 'sorted-desc');
+      });
+      th.classList.add(asc ? 'sorted-asc' : 'sorted-desc');
+    });
+  });
+})();
+</script>
+
+
+{# ── 販売用の追加（2026-08-28）───────────────────────────────
+   中身は元のレース詳細と同じ。無料は上位3頭までで、残りは合言葉の後ろ。
+   独自UIを作って失敗した経緯は flask_app._race_context のコメント参照。 #}
+{% if not unlocked %}
+<div style="max-width:760px;margin:16px auto;padding:16px;border:1px dashed #ccc;
+            border-radius:8px;background:#fbfbfb;text-align:center">
+  <div style="font-size:.9rem;margin-bottom:10px">
+    残り{{ n_all - 3 }}頭は購読者向けです
+  </div>
+  <form method="get">
+    <input type="text" name="k" placeholder="合言葉" autocomplete="off"
+           style="padding:8px;font-size:.95rem;width:10em;margin-right:5px">
+    <button type="submit" style="padding:8px 16px;font-size:.95rem;cursor:pointer">見る</button>
+  </form>
+  {% if tried %}<div style="color:#c00;font-size:.82rem;margin-top:8px">合言葉が違います</div>{% endif %}
+</div>
+{% endif %}
+<div style="max-width:760px;margin:18px auto;padding:12px 16px 0;border-top:1px solid #eee;
+            font-size:.75rem;color:#999;line-height:1.8">
+  <b>確率が高い馬は人気馬に寄ります。的中率と回収率は別物です。</b><br>
+  どう買うかはご自身でご判断ください。買い目の指示は含みません。<br>
+  馬券の的中・利益を保証するものではありません。20歳未満の方は購入できません。
 </div>
 {% endblock %}

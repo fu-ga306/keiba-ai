@@ -899,8 +899,27 @@ def races():
     return render_template("races.html", cards=cards, highlights=highlights, date_str=date_str)
 
 
+def _race_context(race_id, limit=None):
+    """レース詳細の表示に必要なものを全部そろえる。
+
+    ⚠ /race と /sale で**同じものを見せる**ためにここに集約した（2026-08-28）。
+      販売用に別UIを作ったが失敗した。確率順に並べると1位は平均1.1番人気で、
+      「AIの推奨＝1番人気」となり、買う人が既に知っていることしか出せない。
+      乖離を前面に出す案も測ったが、実測で
+        AIが人気より高く見た馬 馬券内17.6% / 市場と同じ 25.4%
+      と**差が出るほど成績が悪く**、売り物にならなかった。
+      的中率と妙味は必ず逆を向くので、片方を前面に出す設計は成立しない。
+      元の「全部見せて買う人が選ぶ」形に戻し、limit で頭数だけ絞る。
+    """
+    return _race_detail_impl(race_id, limit)
+
+
 @app.route("/race/<race_id>")
 def race_detail(race_id):
+    return _race_detail_impl(race_id, None)
+
+
+def _race_detail_impl(race_id, limit=None, template="race_detail.html", extra=None):
     df = _fill_resid_gap(fetch_csv(TODAY_PRED_URL))
     if df.empty:
         return render_template("error.html", msg="データ取得失敗")
@@ -911,6 +930,9 @@ def race_detail(race_id):
 
     sorted_g = group.sort_values("推奨ランク", key=rank_sort_key)
     horses = enrich_group(sorted_g)
+    n_all = len(horses)
+    if limit is not None:
+        horses = horses[:limit]      # 販売の無料枠。上位だけ見せる
     are_tan, are_ren = calc_are_score(group)
     bet_recs = build_bet_recs(group, are_tan, are_ren)
 
@@ -1060,8 +1082,11 @@ def race_detail(race_id):
     # 実際に記録している買い目をこちらで作って画面に出す。
     r_bets, r_ax, r_mates = resid_bets(horses, baba)
 
+    ctx = dict(extra or {})
+    ctx.update({"n_all": n_all, "limited": limit is not None})
     return render_template(
-        "race_detail.html",
+        template,
+        **ctx,
         race_id=race_id,
         horses=horses,
         has_result=bool(rmap),
@@ -1274,30 +1299,48 @@ def _sale_bar(v, w=5):
 
 
 def _sale_rows(g):
+    """販売表示用の1レース分。確率の高い順。
+
+    ⚠ 辞書のキーに "pop" を使ってはいけない（2026-08-28に事故）
+      Jinja の {{ h.pop }} は**辞書の pop メソッド**を先に拾うため、
+      画面に「<built-in method pop of dict>」と出た。
+      dict のメソッド名（pop/keys/items/values/get/copy/update/clear）は
+      キーに使わない。ここでは ninki にしている。
+    """
     import sale_view
     g = g.copy()
-    for c in ("複勝確率", "人気", "単勝オッズ"):
-        g[c] = pd.to_numeric(g.get(c), errors="coerce")
-    g = sale_view.apply_calib(g).sort_values("複勝確率_較正", ascending=False)
+    for c in ("複勝確率", "人気", "単勝オッズ", "勝ち確率"):
+        if c in g.columns:
+            g[c] = pd.to_numeric(g[c], errors="coerce")
+    g = sale_view.apply_calib(g)
+
+    # 評価ランク（S/A/B/D）。市場とモデルを合わせたスコアから決まる
+    grades = None
+    try:
+        sc = grade_scores(g.get("単勝オッズ"), g.get("勝ち確率"), g.get("複勝確率"))
+        if sc is not None:
+            grades = [grade_of(v) for v in pd.to_numeric(sc, errors="coerce")]
+    except Exception:
+        grades = None
+    # ⚠ 列名をアンダースコアで始めない（2026-08-28に事故）
+    #   itertuples() はアンダースコア始まりの列を _1 などへ改名するため、
+    #   getattr(r, "_grade") が取れずランクが全部「―」になっていた。
+    g["grade"] = grades if grades is not None else "―"
+
+    g = g.sort_values("複勝確率_較正", ascending=False).reset_index(drop=True)
     out = []
-    for r in g.itertuples():
-        gap = getattr(r, "resid_gap", np.nan)
-        gs = "―"
-        if pd.notna(gap):
-            gs = f"{gap:.2f}" + ("　高く見ている" if gap >= 1.3
-                                 else "　低く見ている" if gap <= 0.8 else "")
-        mk = getattr(r, "推奨ランク", None)
+    for i, r in enumerate(g.itertuples(), start=1):
         pv = float(r.複勝確率_較正) * 100
-        # 確率の帯で色を変える。数字を読まなくても強弱が分かるように
         cls = "p5" if pv >= 50 else "p4" if pv >= 35 else "p3" if pv >= 20 else "p0"
+        gap = getattr(r, "resid_gap", np.nan)
         out.append({
-            "mark": mk if isinstance(mk, str) and mk else "―",
+            "rank": i,                      # AI順位（確率の高い順）
+            "grade": getattr(r, "grade", "―"),
             "num": r.馬番, "name": r.馬名,
             "prob": f"{pv:.1f}", "cls": cls,
-            "pop": f"{int(r.人気)}" if pd.notna(r.人気) else "―",
+            "ninki": f"{int(r.人気)}" if pd.notna(r.人気) else "―",
             "odds": f"{r.単勝オッズ:.1f}" if pd.notna(r.単勝オッズ) else "―",
-            "gap": gs,
-            # 市場より高く見ている馬だけ印を出す。全部に出すと読めない
+            # 市場より高く見ている馬にだけ印。全部に出すと読めない
             "gapup": "妙" if (pd.notna(gap) and gap >= 1.3) else "",
             "abil": [_sale_bar(getattr(r, c, np.nan)) for c in _SALE_ABI],
         })
@@ -1342,37 +1385,13 @@ def sale_index():
 
 @app.route("/sale/<race_id>")
 def sale(race_id):
+    """販売用のレース詳細。**中身は元のレース詳細と同じ。**無料は上位3頭まで。"""
     import sale_gate
-    import sale_view
-    df = _fill_resid_gap(fetch_csv(TODAY_PRED_URL))
-    if df.empty:
-        return render_template("error.html", msg="予想データが取得できませんでした。")
-    g = df[df["race_id"].astype(str) == str(race_id)]
-    if g.empty:
-        return render_template("error.html", msg=f"レース {race_id} が見つかりません")
-
-    rows = _sale_rows(g)
-    jyo = g["jyo"].iloc[0] if "jyo" in g.columns else ""
-    rno = g["race_no"].iloc[0] if "race_no" in g.columns else ""
-    race = {"head": f"{jyo}{int(rno) if pd.notna(rno) else ''}R",
-            "free": rows[:3], "all": rows, "rest": max(0, len(rows) - 3)}
-
     k = request.args.get("k", "")
     unlocked = sale_gate.check(k)
-
-    cal_df, cr, ch, cday = sale_view.calibration()
-    cal, worst = [], 0.0
-    if cal_df is not None:
-        for r in cal_df.itertuples():
-            d = r.実際 - r.予測
-            worst = max(worst, abs(d))
-            cal.append({"band": r.帯, "n": r.頭数,
-                        "pred": f"{r.予測:.1f}", "act": f"{r.実際:.1f}",
-                        "diff": f"{d:+.1f}"})
-    return render_template("sale.html", race=race, labels=_SALE_LAB,
-                           unlocked=unlocked, tried=bool(k), k=k,
-                           cal=cal, cal_day=cday, cal_races=cr, cal_horses=ch,
-                           cal_worst=f"{worst:.1f}")
+    return _race_detail_impl(
+        race_id, limit=None if unlocked else 3, template="sale.html",
+        extra={"unlocked": unlocked, "tried": bool(k), "k": k})
 
 
 if __name__ == "__main__":
