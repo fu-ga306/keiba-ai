@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block content %}
+<style>
+  .g{max-width:520px;margin:48px auto;padding:0 16px;text-align:center}
+  .g h1{font-size:1.15rem;margin:0 0 10px}
+  .g p{font-size:.9rem;color:#666;line-height:1.9}
+  .g form{margin:22px 0}
+  .g input{padding:10px;font-size:1rem;width:12em;margin-right:6px}
+  .g button{padding:10px 20px;font-size:1rem;cursor:pointer}
+  .err{color:#c00;font-size:.85rem;margin-top:10px}
+  .free{margin-top:28px;padding-top:18px;border-top:1px solid #eee}
+  .free a{font-size:.95rem}
+</style>
+<div class="g">
+  <h1>合言葉を入力してください</h1>
+  <p>
+    このページは購読者向けです。<br>
+    合言葉は購入後の記事に記載しています（毎週変わります）。
+  </p>
+  <form method="get">
+    <input type="text" name="k" placeholder="合言葉" autocomplete="off" autofocus>
+    <button type="submit">開く</button>
+  </form>
+  {% if tried %}<div class="err">合言葉が違います。今週のものをご確認ください。</div>{% endif %}
+  <div class="free">
+    <a href="/sale">無料で見られるページはこちら</a><br>
+    <span style="font-size:.85rem;color:#888">各レースの上位3頭は合言葉なしで見られます</span>
+  </div>
+</div>
+{% endblock %}

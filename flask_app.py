@@ -11,9 +11,66 @@ from io import StringIO
 import numpy as np
 import pandas as pd
 import requests
-from flask import Flask, render_template, redirect, url_for, request, jsonify
+from flask import (Flask, render_template, redirect, url_for, request,
+                   jsonify, make_response)
 
 app = Flask(__name__)
+
+
+# ── 閲覧の制限（2026-08-27追加）────────────────────────────────────────
+#   売り物を有料にしたのに、**同じ内容が別ページで無料公開されていた。**
+#     /sale/<id>  合言葉が要る（有料）
+#     /race/<id>  誰でも見られる ← 能力・乖離・印・gap が全部出ていた
+#   URLを知っていれば合言葉を買う必要がない状態だった。認証は元々ゼロ。
+#   自分専用のうちは問題なかったが、売り物にした時点で穴になった。
+#
+#   ⚠ これは強固な認証ではない。合言葉が共有されれば誰でも見られる。
+#     ただし「無料で全部見える」よりはるかにマシで、規模に見合っている。
+#     購読者が増えて実害が出たら本物の認証に移す。
+_GATE_COOKIE = "keiba_k"
+_OPEN_PREFIX = ("/sale", "/static", "/api", "/favicon")
+
+
+def _gate_ok():
+    """合言葉が通っているか。クエリ ?k= か、前に通したときのクッキー。"""
+    import sale_gate
+    k = request.args.get("k", "")
+    if k and sale_gate.check(k):
+        return True, k
+    c = request.cookies.get(_GATE_COOKIE, "")
+    if c and sale_gate.check(c):
+        return True, c
+    return False, k
+
+
+@app.before_request
+def _require_passphrase():
+    path = request.path or "/"
+    if path.startswith(_OPEN_PREFIX):
+        return None
+    # ローカルからの呼び出し（自動更新・自分の確認）は通す
+    if (request.remote_addr or "") in ("127.0.0.1", "::1", "localhost"):
+        return None
+    ok, k = _gate_ok()
+    if ok:
+        return None
+    return make_response(render_template("gate.html", tried=bool(k)), 401)
+
+
+@app.after_request
+def _remember_passphrase(resp):
+    """合言葉で通ったらクッキーに覚える。毎回入力させないため。"""
+    k = request.args.get("k", "")
+    if k and resp.status_code == 200:
+        try:
+            import sale_gate
+            if sale_gate.check(k):
+                # 8日。週が変わっても前週分は通るので、体感で切れない
+                resp.set_cookie(_GATE_COOKIE, k, max_age=8 * 24 * 3600,
+                                samesite="Lax")
+        except Exception:
+            pass
+    return resp
 app.config["TEMPLATES_AUTO_RELOAD"] = True
 
 # ── 評価グレードのしきい値（2026-08-16・馬券内率そのもので定義）────────
