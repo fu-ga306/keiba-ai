@@ -1236,6 +1236,40 @@ def _sale_rows(g):
     return out
 
 
+@app.route("/sale")
+def sale_index():
+    """販売ページの入口。note からはここに来る。
+
+    ⚠ これが無いと、note のリンクから飛んだ人の着地点が無い（2026-08-27に気づいた）。
+      /sale/<race_id> はレース単位なので、一覧が要る。
+    """
+    import datetime as _dt
+    import sale_gate
+    df = _fill_resid_gap(fetch_csv(TODAY_PRED_URL))
+    if df.empty:
+        return render_template("sale_index.html", races=[], unlocked=False,
+                               tried=False, date_str="")
+    df = _keep_latest_meet_day(df)
+    if "jyo" not in df.columns:
+        df["jyo"] = df["race_id"].astype(str).str[4:6]
+    if "race_no" not in df.columns:
+        df["race_no"] = df["race_id"].astype(str).str[10:12].astype(int)
+    k = request.args.get("k", "")
+    unlocked = sale_gate.check(k)
+    races = []
+    for rid, g in df.groupby("race_id", sort=True):
+        rows = _sale_rows(g)
+        if not rows:
+            continue
+        races.append({"id": rid, "jyo": g["jyo"].iloc[0],
+                      "no": int(g["race_no"].iloc[0]),
+                      "top": rows[0], "n": len(rows)})
+    races.sort(key=lambda x: (str(x["jyo"]), x["no"]))
+    return render_template("sale_index.html", races=races, unlocked=unlocked,
+                           tried=bool(k), k=k,
+                           date_str=_dt.datetime.now().strftime("%m/%d"))
+
+
 @app.route("/sale/<race_id>")
 def sale(race_id):
     import sale_gate

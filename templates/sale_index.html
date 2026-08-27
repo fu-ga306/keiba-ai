@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block content %}
+<style>
+  .si{max-width:960px;margin:0 auto;padding:0 12px}
+  .si h1{font-size:1.2rem;margin:16px 0 4px}
+  .si .lead{font-size:.85rem;color:#666;line-height:1.8}
+  .gate{border:2px dashed #bbb;border-radius:8px;padding:16px;margin:16px 0;background:#fafafa}
+  .gate input{padding:8px;font-size:1rem;width:12em;margin-right:6px}
+  .gate button{padding:8px 16px;font-size:1rem;cursor:pointer}
+  .err{color:#c00;font-size:.85rem;margin-top:8px}
+  .ok{background:#eefaf0;border-color:#8c8}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:10px;margin:14px 0}
+  .card{border:1px solid #ddd;border-radius:8px;padding:10px 12px;text-decoration:none;color:inherit;display:block}
+  .card:hover{background:#f8f8f8}
+  .card .r{font-weight:700;font-size:1rem}
+  .card .h{font-size:.85rem;color:#333;margin-top:4px}
+  .card .p{font-size:.8rem;color:#666;margin-top:2px}
+  .none{color:#888;padding:24px 0}
+  .disc{font-size:.8rem;color:#666;border-top:1px solid #eee;margin-top:24px;padding-top:12px;line-height:1.8}
+</style>
+
+<div class="si">
+  <h1>AI評価表　{{ date_str }}</h1>
+  <div class="lead">
+    全出走馬の <b>3着以内に入る確率</b> を出しています。<br>
+    レースを選ぶと、確率・印・能力6軸・市場との差が見られます。
+  </div>
+
+  {% if unlocked %}
+  <div class="gate ok">購読者向けの表示になっています。全頭ぶんが見られます。</div>
+  {% else %}
+  <div class="gate">
+    <div style="font-size:.9rem;margin-bottom:8px">
+      合言葉を入れると<b>全頭ぶん</b>が見られます。入れなくても上位3頭は表示されます。
+    </div>
+    <form method="get">
+      <input type="text" name="k" placeholder="合言葉" autocomplete="off" value="{{ k or '' }}">
+      <button type="submit">見る</button>
+    </form>
+    {% if tried %}<div class="err">合言葉が違います。今週のものをご確認ください。</div>{% endif %}
+  </div>
+  {% endif %}
+
+  {% if races %}
+  <div class="grid">
+    {% for r in races %}
+    <a class="card" href="/sale/{{ r.id }}{% if unlocked and k %}?k={{ k }}{% endif %}">
+      <div class="r">{{ r.jyo }}{{ r.no }}R</div>
+      <div class="h">1位 {{ r.top.name }}（{{ r.top.prob }}%）</div>
+      <div class="p">{{ r.n }}頭　{{ r.top.pop }}番人気 / {{ r.top.odds }}倍</div>
+    </a>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="none">
+    本日の予想データがまだありません。<br>
+    開催日の朝に更新されます。
+  </div>
+  {% endif %}
+
+  <div class="disc">
+    ・3着以内に入る確率を予測したものです。<b>馬券の的中・利益を保証するものではありません</b><br>
+    ・確率が高い馬は人気馬に寄ります。的中率と回収率は別物です<br>
+    ・どう買うかはご自身でご判断ください。買い目の指示は含みません<br>
+    ・20歳未満の方は勝馬投票券を購入できません
+  </div>
+</div>
+{% endblock %}
