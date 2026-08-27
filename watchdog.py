@@ -322,6 +322,34 @@ def check_disk():
     return None
 
 
+def check_dashboard(dry=False):
+    """販売するダッシュボードが、外から見えるかを確かめる（2026-08-27追加）。
+
+    なぜ要るか
+      売り物はダッシュボードなのに、flask も ngrok もタスク登録されておらず
+      手動起動だった。PCを再起動したら復活しない。
+      予想システムには見張り番が付いているのに、売り物にだけ付いていなかった。
+
+    なぜ外形監視か
+      **プロセスが生きていても、ngrokのトンネルが切れていれば外からは見えない。**
+      内側の生死確認では検出できない。7分前メールが丸一日飛ばなかったのと同じ、
+      沈黙する故障の型。実際に自分のURLを叩いて確かめる。
+
+    稼働窓（金06:00〜月09:00）の外なら何もしない。平日は誰も見に来ない。
+    """
+    try:
+        import dashboard_service as ds
+    except Exception as e:
+        return f"dashboard_service を読めません: {type(e).__name__}"
+    if not ds.in_window():
+        return None                      # 窓の外。正常
+    if dry:
+        code, err = ds.probe()
+        return None if code == 200 else f"ダッシュボードが見えません（{err or code}）"
+    msg, warn = ds.ensure()
+    return f"ダッシュボード: {msg}" if warn else None
+
+
 def main():
     dry = "--dry" in sys.argv
     h = datetime.now().hour
@@ -341,6 +369,7 @@ def main():
         ("archive", check_archive(times) if race_day else None),
         ("odds_history", check_odds_history(times) if race_day else None),
         ("fallback", check_fallback()),
+        ("dashboard", check_dashboard(dry)),
     ]:
         if res:
             problems.append((name, res))

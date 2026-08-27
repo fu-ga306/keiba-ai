@@ -1,0 +1,213 @@
+# -*- coding: utf-8 -*-
+"""ダッシュボード（Flask + ngrok）の稼働窓を管理する（2026-08-27）
+
+なぜ必要か
+  販売するのはダッシュボードなのに、**flask も ngrok もタスク登録されていなかった。**
+  手動起動なので、PCを再起動したら復活しない。
+    PC再起動 / Windows Update / 停電 → ダッシュボードは落ちたまま
+  予想システムには見張り番が付いているのに、売り物にだけ付いていなかった。
+
+  購読者から見ると「合言葉は届いたのにページが開かない」が最悪の体験になる。
+
+なぜ24時間ではなく「金曜から」か
+  開催は土日。合言葉つきの販売noteも金曜配信。
+  つまり読者が見に来るのは**金曜〜日曜**で、平日は誰も来ない。
+  常時稼働はPCとネットワークを無駄に使うだけなので、窓を合わせる。
+
+  窓: 金曜 06:00 〜 月曜 09:00
+      月曜まで開けるのは、日曜の結果を月曜に見る人がいるため。
+
+⚠ 内側の生死確認だけでは足りない
+  プロセスが生きていても、**ngrokのトンネルが切れていれば外からは見えない。**
+  以前「7分前メールが丸一日飛ばなかった」のと同じ、沈黙する故障の型。
+  だから外形監視（自分のURLを叩いて200が返るか）も入れてある。
+
+実行
+  python dashboard_service.py status    いまの状態
+  python dashboard_service.py ensure    窓の中なら起動、外なら停止（定期実行用）
+  python dashboard_service.py start     窓に関係なく起動
+  python dashboard_service.py stop      停止
+  python dashboard_service.py probe     外形監視だけ実行
+"""
+import sys
+
+for _s in (sys.stdout, sys.stderr):   # cp932環境でのUnicodeEncodeError→異常終了を防ぐ
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
+import os
+import subprocess
+from datetime import datetime
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+NGROK_DOMAIN = "sway-uncanny-exonerate.ngrok-free.dev"
+URL = f"https://{NGROK_DOMAIN}"
+FLASK_PORT = 5000
+
+# ── 稼働窓 ────────────────────────────────────────────────────────────
+#   0=月 1=火 2=水 3=木 4=金 5=土 6=日
+OPEN_DOW, OPEN_HOUR = 4, 6      # 金曜 06:00 に開ける
+CLOSE_DOW, CLOSE_HOUR = 0, 9    # 月曜 09:00 に閉める
+
+
+def log(m):
+    print(m, flush=True)
+
+
+def in_window(now=None):
+    """いま稼働窓の中か。金06:00 〜 月09:00。"""
+    d = now or datetime.now()
+    w, h = d.weekday(), d.hour
+    if w == OPEN_DOW:
+        return h >= OPEN_HOUR
+    if w in (5, 6):                     # 土日は終日
+        return True
+    if w == CLOSE_DOW:
+        return h < CLOSE_HOUR
+    return False
+
+
+def _procs():
+    """flask と ngrok のプロセスを探す。"""
+    out = {"flask": [], "ngrok": []}
+    try:
+        import psutil
+    except ImportError:
+        return out
+    for p in psutil.process_iter(["pid", "name"]):
+        try:
+            cl = p.cmdline()
+            joined = " ".join(cl)
+            if any(a.endswith("flask_app.py") for a in cl):
+                out["flask"].append(p.info["pid"])
+            elif "ngrok" in (p.info["name"] or "").lower() and NGROK_DOMAIN in joined:
+                out["ngrok"].append(p.info["pid"])
+            elif "ngrok.exe" in joined and BASE_DIR in joined:
+                out["ngrok"].append(p.info["pid"])
+        except Exception:
+            continue
+    return out
+
+
+def probe(timeout=15):
+    """外から見えるかを確かめる。**これが本番の生死確認。**
+
+    プロセスが生きていてもトンネルが切れていれば外からは見えないので、
+    内側の確認だけでは不十分。
+    """
+    try:
+        import urllib.request
+        req = urllib.request.Request(URL + "/races",
+                                     headers={"ngrok-skip-browser-warning": "1"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.status, ""
+    except Exception as e:
+        return 0, f"{type(e).__name__}: {str(e)[:120]}"
+
+
+def start():
+    p = _procs()
+    started = []
+    if not p["flask"]:
+        subprocess.Popen([sys.executable, os.path.join(BASE_DIR, "flask_app.py")],
+                         cwd=BASE_DIR,
+                         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        started.append("flask")
+    if not p["ngrok"]:
+        exe = os.path.join(BASE_DIR, "ngrok.exe")
+        if os.path.exists(exe):
+            subprocess.Popen([exe, "http", f"--domain={NGROK_DOMAIN}", str(FLASK_PORT)],
+                             cwd=BASE_DIR,
+                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            started.append("ngrok")
+        else:
+            log(f"  ⚠ {exe} がありません")
+    log(f"  起動: {', '.join(started) if started else '（すでに動いています）'}")
+    return started
+
+
+def stop():
+    p = _procs()
+    n = 0
+    try:
+        import psutil
+        for pid in p["flask"] + p["ngrok"]:
+            try:
+                psutil.Process(pid).terminate()
+                n += 1
+            except Exception:
+                pass
+    except ImportError:
+        pass
+    log(f"  停止: {n}プロセス")
+    return n
+
+
+def status():
+    p = _procs()
+    now = datetime.now()
+    log("■ ダッシュボードの状態")
+    log(f"  いま        {now:%m/%d(%a) %H:%M}")
+    log(f"  稼働窓      金{OPEN_HOUR:02d}:00 〜 月{CLOSE_HOUR:02d}:00"
+        f"  → いまは{'窓の中' if in_window(now) else '窓の外'}")
+    log(f"  flask       {p['flask'] if p['flask'] else '× 停止'}")
+    log(f"  ngrok       {p['ngrok'] if p['ngrok'] else '× 停止'}")
+    code, err = probe()
+    log(f"  外から見えるか {'○ HTTP ' + str(code) if code == 200 else '× ' + (err or f'HTTP {code}')}")
+    log(f"  URL         {URL}")
+    return p, code
+
+
+def ensure():
+    """窓の中なら起動を保証し、外なら止める。定期実行から呼ぶ。
+
+    戻り値: (状態を表す文字列, 警告が要るか)
+    """
+    now = datetime.now()
+    p = _procs()
+    alive = bool(p["flask"]) and bool(p["ngrok"])
+    if in_window(now):
+        if not alive:
+            log(f"  窓の中だが停止していた（flask={len(p['flask'])} ngrok={len(p['ngrok'])}）→ 起動")
+            start()
+            return "起動しました", True
+        code, err = probe()
+        if code != 200:
+            # プロセスは生きているのに外から見えない＝トンネルが切れている
+            log(f"  プロセスは生きているが外から見えない（{err or code}）→ 立て直し")
+            stop()
+            start()
+            return f"外形監視に失敗したため再起動（{err or code}）", True
+        log(f"  正常（外形監視 HTTP {code}）")
+        return "正常", False
+    else:
+        if alive:
+            log("  窓の外なので停止します")
+            stop()
+            return "窓の外のため停止", False
+        log("  窓の外・停止中（正常）")
+        return "窓の外・停止中", False
+
+
+def main():
+    a = sys.argv[1:]
+    cmd = a[0] if a else "status"
+    if cmd == "status":
+        status()
+    elif cmd == "ensure":
+        ensure()
+    elif cmd == "start":
+        start()
+    elif cmd == "stop":
+        stop()
+    elif cmd == "probe":
+        code, err = probe()
+        log(f"  {URL} → {'HTTP ' + str(code) if code else '× ' + err}")
+    else:
+        log(__doc__)
+
+
+if __name__ == "__main__":
+    main()
