@@ -1194,6 +1194,83 @@ def api_refresh():
     return jsonify({"status": "ok", "msg": "キャッシュをクリアしました"})
 
 
+# ── 販売用ページ（2026-08-27追加）──────────────────────────────────────
+#   既存のページ（/races /race/<id> /results /stats）には一切触っていない。
+#   売り物は「当たる予想」ではなく **「確率が正しい表」**。
+#   複勝確率は較正済みの値（複勝確率_較正）を使う。元の列は書き換えない。
+#   課金は note に任せ、ここは合言葉で有料部分を隠すだけ（sale_gate.py 参照）。
+_SALE_ABI = ["能力_勝負", "能力_安定", "能力_末脚", "能力_先行", "能力_距離", "能力_実績"]
+_SALE_LAB = ["勝負", "安定", "末脚", "先行", "距離", "実績"]
+
+
+def _sale_bar(v, w=5):
+    if pd.isna(v):
+        return "―"
+    n = int(round(float(v) / 100 * w))
+    return "■" * n + "□" * (w - n) + f" {int(v)}"
+
+
+def _sale_rows(g):
+    import sale_view
+    g = g.copy()
+    for c in ("複勝確率", "人気", "単勝オッズ"):
+        g[c] = pd.to_numeric(g.get(c), errors="coerce")
+    g = sale_view.apply_calib(g).sort_values("複勝確率_較正", ascending=False)
+    out = []
+    for r in g.itertuples():
+        gap = getattr(r, "resid_gap", np.nan)
+        gs = "―"
+        if pd.notna(gap):
+            gs = f"{gap:.2f}" + ("　高く見ている" if gap >= 1.3
+                                 else "　低く見ている" if gap <= 0.8 else "")
+        mk = getattr(r, "推奨ランク", None)
+        out.append({
+            "mark": mk if isinstance(mk, str) and mk else "―",
+            "num": r.馬番, "name": r.馬名,
+            "prob": f"{r.複勝確率_較正*100:.1f}",
+            "pop": f"{int(r.人気)}" if pd.notna(r.人気) else "―",
+            "odds": f"{r.単勝オッズ:.1f}" if pd.notna(r.単勝オッズ) else "―",
+            "gap": gs,
+            "abil": [_sale_bar(getattr(r, c, np.nan)) for c in _SALE_ABI],
+        })
+    return out
+
+
+@app.route("/sale/<race_id>")
+def sale(race_id):
+    import sale_gate
+    import sale_view
+    df = _fill_resid_gap(fetch_csv(TODAY_PRED_URL))
+    if df.empty:
+        return render_template("error.html", msg="予想データが取得できませんでした。")
+    g = df[df["race_id"].astype(str) == str(race_id)]
+    if g.empty:
+        return render_template("error.html", msg=f"レース {race_id} が見つかりません")
+
+    rows = _sale_rows(g)
+    jyo = g["jyo"].iloc[0] if "jyo" in g.columns else ""
+    rno = g["race_no"].iloc[0] if "race_no" in g.columns else ""
+    race = {"head": f"{jyo}{int(rno) if pd.notna(rno) else ''}R",
+            "free": rows[:3], "all": rows}
+
+    k = request.args.get("k", "")
+    unlocked = sale_gate.check(k)
+
+    cal_df, cr, ch, cday = sale_view.calibration()
+    cal, worst = [], 0.0
+    if cal_df is not None:
+        for r in cal_df.itertuples():
+            d = r.実際 - r.予測
+            worst = max(worst, abs(d))
+            cal.append({"band": r.帯, "n": r.頭数,
+                        "pred": f"{r.予測:.1f}", "act": f"{r.実際:.1f}",
+                        "diff": f"{d:+.1f}"})
+    return render_template("sale.html", race=race, labels=_SALE_LAB,
+                           unlocked=unlocked, tried=bool(k),
+                           cal=cal, cal_day=cday, cal_races=cr, cal_horses=ch,
+                           cal_worst=f"{worst:.1f}")
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=False)

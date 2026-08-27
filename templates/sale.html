@@ -1,0 +1,123 @@
+{% extends "base.html" %}
+{% block content %}
+<style>
+  .sale-wrap{max-width:960px;margin:0 auto;padding:0 12px}
+  .sale-head{margin:16px 0 8px}
+  .sale-head h1{font-size:1.25rem;margin:0 0 4px}
+  .sale-note{font-size:.85rem;color:#666;line-height:1.7}
+  .axis{width:100%;border-collapse:collapse;margin:12px 0;font-size:.85rem}
+  .axis th,.axis td{border:1px solid #ddd;padding:6px 8px;text-align:left}
+  .axis th{background:#f6f6f6;width:8em}
+  .rt{width:100%;border-collapse:collapse;margin:10px 0;font-size:.9rem}
+  .rt th,.rt td{border:1px solid #ddd;padding:6px 8px;text-align:right;white-space:nowrap}
+  .rt th{background:#f6f6f6;text-align:center;font-size:.8rem}
+  .rt td.l{text-align:left}
+  .rt tr.top td{background:#fffbe6}
+  .p{font-weight:700}
+  .gate{border:2px dashed #bbb;border-radius:8px;padding:18px;margin:18px 0;background:#fafafa}
+  .gate h3{margin:0 0 8px;font-size:1rem}
+  .gate input{padding:8px;font-size:1rem;width:12em;margin-right:6px}
+  .gate button{padding:8px 16px;font-size:1rem;cursor:pointer}
+  .err{color:#c00;font-size:.85rem;margin-top:8px}
+  .bar{font-family:monospace;letter-spacing:-1px}
+  .cal{width:100%;border-collapse:collapse;margin:10px 0;font-size:.85rem}
+  .cal th,.cal td{border:1px solid #ddd;padding:5px 8px;text-align:right}
+  .cal th{background:#f6f6f6;text-align:center}
+  .cal td.l{text-align:left}
+  .disc{font-size:.8rem;color:#666;border-top:1px solid #eee;margin-top:24px;padding-top:12px;line-height:1.8}
+  @media(max-width:640px){.rt,.cal{font-size:.78rem}.rt th,.rt td{padding:4px 5px}}
+</style>
+
+<div class="sale-wrap">
+  <div class="sale-head">
+    <h1>{{ race.head }}　AI評価表</h1>
+    <div class="sale-note">3着以内に入る確率の高い順に並べています。</div>
+  </div>
+
+  <table class="axis">
+    <tr><th>3着内確率</th><td>堅さ（来やすさ）。高い馬は<b>人気馬に寄ります</b></td></tr>
+    <tr><th>印 ◎○▲△×</th><td>妙味（市場との差）。<b>人気薄が混じります</b></td></tr>
+  </table>
+  <div class="sale-note">
+    <b>確率1位に印が付いていないことがあります。</b>
+    「堅いが、オッズ相応で妙味は無い」という意味で、故障ではありません。
+  </div>
+
+  <h3>上位3頭</h3>
+  <table class="rt">
+    <tr><th>印</th><th>馬番</th><th>馬名</th><th>3着内</th><th>人気</th><th>単勝</th></tr>
+    {% for h in race.free %}
+    <tr class="top">
+      <td>{{ h.mark }}</td><td>{{ h.num }}</td><td class="l">{{ h.name }}</td>
+      <td class="p">{{ h.prob }}%</td><td>{{ h.pop }}</td><td>{{ h.odds }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+
+  {% if not unlocked %}
+  <div class="gate">
+    <h3>ここから先は購読者向けです</h3>
+    <div class="sale-note">
+      全出走馬の確率・能力6軸・市場との差が見られます。<br>
+      合言葉は購入後の記事に記載しています（毎週変わります）。
+    </div>
+    <form method="get" style="margin-top:12px">
+      <input type="text" name="k" placeholder="合言葉" autocomplete="off">
+      <button type="submit">見る</button>
+    </form>
+    {% if tried %}<div class="err">合言葉が違います。今週のものをご確認ください。</div>{% endif %}
+  </div>
+  {% else %}
+
+  <h3>全頭の評価</h3>
+  <table class="rt">
+    <tr><th>印</th><th>馬番</th><th>馬名</th><th>3着内</th><th>人気</th><th>単勝</th><th>市場との差</th></tr>
+    {% for h in race.all %}
+    <tr>
+      <td>{{ h.mark }}</td><td>{{ h.num }}</td><td class="l">{{ h.name }}</td>
+      <td class="p">{{ h.prob }}%</td><td>{{ h.pop }}</td><td>{{ h.odds }}</td>
+      <td class="l">{{ h.gap }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+
+  <h3>能力（オッズを一切見ずに付けた点数）</h3>
+  <div class="sale-note">
+    市場の評価が入っていない、実力だけの点数です。人気とズレている馬を探す材料になります。
+  </div>
+  <table class="rt">
+    <tr><th>馬番</th><th>馬名</th>{% for l in labels %}<th>{{ l }}</th>{% endfor %}</tr>
+    {% for h in race.all %}
+    <tr>
+      <td>{{ h.num }}</td><td class="l">{{ h.name }}</td>
+      {% for a in h.abil %}<td class="bar">{{ a }}</td>{% endfor %}
+    </tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+
+  {% if cal %}
+  <h3>この確率はどれくらい当たっているか</h3>
+  <div class="sale-note">
+    <b>補正に使っていない日</b>（{{ cal_day }}・{{ cal_races }}レース・{{ cal_horses }}頭）で
+    検証した結果です。学習に使ったデータで測ると必ず良く見えるので、わざと外した日で測っています。
+  </div>
+  <table class="cal">
+    <tr><th>人気</th><th>頭数</th><th>予測した確率</th><th>実際に3着以内</th><th>差</th></tr>
+    {% for r in cal %}
+    <tr><td class="l">{{ r.band }}</td><td>{{ r.n }}</td><td>{{ r.pred }}%</td>
+        <td class="p">{{ r.act }}%</td><td>{{ r.diff }}</td></tr>
+    {% endfor %}
+  </table>
+  <div class="sale-note">最大のズレは {{ cal_worst }} ポイントでした。</div>
+  {% endif %}
+
+  <div class="disc">
+    <b>この表について</b><br>
+    ・3着以内に入る確率を予測したものです。<b>馬券の的中・利益を保証するものではありません</b><br>
+    ・確率が高い馬は人気馬に寄ります。的中率と回収率は別物です<br>
+    ・どう買うかはご自身でご判断ください。買い目の指示は含みません<br>
+    ・20歳未満の方は勝馬投票券を購入できません
+  </div>
+</div>
+{% endblock %}
