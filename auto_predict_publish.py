@@ -796,9 +796,27 @@ def run_daily_check():
     except Exception:
         pass
 
+    # 販売ページの合言葉。期間が変わる月だけ、note に貼る文面を添える
+    #   ⚠ note には投稿APIが無いので、ここだけは手で貼るしかない。
+    #     せめて「そのまま貼れる完成形」で渡し、考える手間をゼロにする。
+    sale_line = ""
+    try:
+        import sale_gate
+        d = datetime.now()
+        soon = (d.day <= 3) if sale_gate.ROTATE == "month" else (d.weekday() == 0)
+        if soon:
+            url = os.environ.get("SALE_URL", "（ダッシュボードのURL）")
+            sale_line = ("\n" + "=" * 60
+                         + "\n■ 販売ページ：note に貼る文面（期間が変わりました）\n"
+                         + "=" * 60 + "\n"
+                         + sale_gate.note_block(url, d) + "\n")
+    except Exception:
+        pass
+
     head = (f"競馬AI 日次点検 {datetime.now():%Y/%m/%d}\n\n"
             f"重要度高 {ng_high}件 / 重要度中 {ng_mid}件\n"
             + (mail_line + "\n" if mail_line else "")
+            + sale_line
             + "\n（このメールは毎晩21:20に自動送信されます）\n\n")
     mark = "⚠" if ng_high else "○"
     _send_alert(f"【競馬AI 日次点検 {mark}高{ng_high}/中{ng_mid}】"

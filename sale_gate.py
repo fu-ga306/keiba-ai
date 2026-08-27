@@ -36,6 +36,15 @@ from datetime import datetime
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
+# ── 合言葉の更新周期 ────────────────────────────────────────────────
+#   "week"  : 毎週変わる。漏れても被害は1週間で切れるが、**毎週noteを書き換える手間**が出る
+#   "month" : 毎月変わる。手間は月1回。購読者が少ないうちはこれで十分
+#   "fixed" : 変えない。手間ゼロ。漏れたら手動で SALE_SALT を変える
+#
+#   購読者0人の段階で毎週の手作業を背負うのは割に合わない。既定は "month"。
+#   購読者が増えて漏洩の実害が出たら "week" に上げる。
+ROTATE = "month"
+
 # 合言葉に使う語。読みやすく、口頭でも伝えられるものにする
 _WORDS = [
     "さくら", "うみ", "そら", "やま", "かぜ", "つき", "ほし", "かわ",
@@ -56,15 +65,24 @@ def _salt():
     return "keiba-ai-default-salt"
 
 
+def _period_key(d):
+    """更新周期に応じた期間の識別子。"""
+    if ROTATE == "fixed":
+        return "fixed"
+    if ROTATE == "month":
+        return f"{d.year}-{d.month:02d}"
+    y, w, _ = d.isocalendar()
+    return f"{y}-W{w:02d}"
+
+
 def passphrase(when=None):
-    """その週の合言葉を返す。日曜始まりのISO週で切り替わる。
+    """その期間の合言葉を返す。ROTATE で切り替わる単位が決まる。
 
     形式: ひらがな2語＋数字2桁（例: さくら-うみ-73）
     覚えやすく、かつ総当たりされにくい程度の長さにしている。
     """
     d = when or datetime.now()
-    y, w, _ = d.isocalendar()
-    h = hashlib.sha256(f"{_salt()}|{y}-{w:02d}".encode("utf-8")).hexdigest()
+    h = hashlib.sha256(f"{_salt()}|{_period_key(d)}".encode("utf-8")).hexdigest()
     a = _WORDS[int(h[0:2], 16) % len(_WORDS)]
     b = _WORDS[int(h[2:4], 16) % len(_WORDS)]
     n = int(h[4:6], 16) % 100
@@ -83,38 +101,104 @@ def check(given, when=None):
     g = str(given).strip().lower().replace(" ", "").replace("　", "")
     d = when or datetime.now()
     from datetime import timedelta
-    for delta in (0, -7):
+    # 前の期間のものも通す。切り替わり直後に見られなくなるのを防ぐため
+    #   （「買った翌日に見られない」は問い合わせの元になる）
+    backs = {"week": (0, -7), "month": (0, -32), "fixed": (0,)}[ROTATE]
+    for delta in backs:
         if g == passphrase(d + timedelta(days=delta)).lower():
             return True
     return False
 
 
-def week_label(when=None):
-    """note に書くときの表示用（例: 2026年 第35週（8/25〜8/31））。"""
+def period_label(when=None):
+    """note に書くときの表示用。"""
     from datetime import timedelta
     d = when or datetime.now()
+    if ROTATE == "fixed":
+        return "（固定）"
+    if ROTATE == "month":
+        return f"{d.year}年{d.month}月"
     y, w, dow = d.isocalendar()
     mon = d - timedelta(days=dow - 1)
     sun = mon + timedelta(days=6)
-    return f"{y}年 第{w}週（{mon:%-m/%-d}〜{sun:%-m/%-d}）" if os.name != "nt" \
-        else f"{y}年 第{w}週（{mon.month}/{mon.day}〜{sun.month}/{sun.day}）"
+    return f"{y}年 第{w}週（{mon.month}/{mon.day}〜{sun.month}/{sun.day}）"
+
+
+def ensure_salt():
+    """SALE_SALT が無ければ自動生成して .env に書く。
+
+    種は一度決めれば変える必要がない（合言葉のほうが期間ごとに変わるため）。
+    人が考える必要も無いので、自動で作る。
+    ⚠ 既にあれば絶対に上書きしない。上書きすると既存の合言葉が全部変わる。
+    """
+    import secrets
+    if _salt() != "keiba-ai-default-salt":
+        return False, "既に設定済み（変更しません）"
+    p = os.path.join(BASE_DIR, ".env")
+    v = secrets.token_urlsafe(24)
+    try:
+        cur = open(p, encoding="utf-8").read() if os.path.exists(p) else ""
+        if cur and not cur.endswith("\n"):
+            cur += "\n"
+        cur += ("\n# 販売ページの合言葉の種（自動生成・変更すると合言葉が全部変わります）\n"
+                f"SALE_SALT={v}\n")
+        with open(p, "w", encoding="utf-8") as f:
+            f.write(cur)
+        return True, "生成して .env に書きました"
+    except Exception as e:
+        return False, f"書けませんでした: {type(e).__name__}: {e}"
+
+
+def note_block(url_base, when=None):
+    """note に貼るだけの文面を作る。ここが毎回の手作業になるので、完成形で渡す。"""
+    d = when or datetime.now()
+    rot = {"month": "毎月", "week": "毎週", "fixed": ""}[ROTATE]
+    return "\n".join([
+        f"【{period_label(d)}の閲覧情報】",
+        "",
+        f"合言葉： {passphrase(d)}",
+        "",
+        "下のリンクを開き、合言葉を入力すると全頭の評価が表示されます。",
+        url_base,
+        "",
+        f"※ 合言葉は{rot}変わります。前の期間のものもしばらく有効です。",
+        "※ 3着以内に入る確率を示したもので、的中・利益を保証するものではありません。",
+    ])
 
 
 def main():
     from datetime import timedelta
+    a = sys.argv[1:]
+    if a and a[0] == "--init":
+        ok, msg = ensure_salt()
+        print(f"  SALE_SALT: {msg}")
+        if ok:
+            print("  → これ以降、合言葉はこの環境に固有のものになります")
+        return
+
     now = datetime.now()
     print("■ 販売用ページの合言葉")
-    print(f"  salt: {'設定あり' if _salt() != 'keiba-ai-default-salt' else '⚠ 既定値のまま（.env に SALE_SALT を設定してください）'}")
+    print(f"  更新周期: {ROTATE}"
+          + {"month": "（毎月・手間は月1回）", "week": "（毎週）",
+             "fixed": "（固定・手間ゼロ）"}[ROTATE])
+    ok = _salt() != "keiba-ai-default-salt"
+    print(f"  種(SALE_SALT): {'設定あり' if ok else '⚠ 既定値のまま → python sale_gate.py --init'}")
     print()
-    print(f"  今週  {week_label(now)}")
-    print(f"        合言葉: {passphrase(now)}")
+    print(f"  今 {period_label(now)}   合言葉: {passphrase(now)}")
     print()
-    print("  先の週（note の予約投稿に使えます）")
+    print("  先の期間（note の予約投稿に使えます）")
     for i in (1, 2, 3):
-        d = now + timedelta(weeks=i)
-        print(f"    {week_label(d)}  {passphrase(d)}")
+        if ROTATE == "month":
+            # ⚠ 32日ずつ足すと月が飛ぶ（8/27+96日=12/1 で11月が抜けた）。
+            #   月そのものを進めて、各月の1日を使う。
+            m = now.month + i
+            d = now.replace(year=now.year + (m - 1) // 12,
+                            month=(m - 1) % 12 + 1, day=1)
+        else:
+            d = now + timedelta(days=7 * i)
+        print(f"    {period_label(d):<16}{passphrase(d)}")
     print()
-    print("  ※ 前週の合言葉も1週間は通ります（週の境目に買った人のため）")
+    print("  前の期間のものも通ります（切り替わり直後に見られなくなるのを防ぐため）")
 
 
 if __name__ == "__main__":
