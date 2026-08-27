@@ -836,9 +836,27 @@ def run_daily_check():
     except Exception:
         pass
 
+    # 撤退条件の判定日までの残り（2026-08-27に事前登録）
+    #   金銭で測ると労力に見合わないので期限を切った。
+    #   だらだら続けて消耗するのを避けるため、残り日数を毎日突きつける。
+    #   条件は 撤退条件.md に固定してある。**判定日まで動かさない。**
+    dead_line = ""
+    try:
+        from datetime import date
+        _left = (date(2026, 11, 30) - date.today()).days
+        if _left >= 0:
+            dead_line = (f"撤退条件の判定日まで あと{_left}日"
+                         f"（2026/11/30・撤退条件.md）\n")
+        else:
+            dead_line = ("⚠ 撤退条件の判定日を過ぎています。"
+                         "撤退条件.md の記録欄を埋めて判断してください\n")
+    except Exception:
+        pass
+
     head = (f"競馬AI 日次点検 {datetime.now():%Y/%m/%d}\n\n"
             f"重要度高 {ng_high}件 / 重要度中 {ng_mid}件\n"
             + (mail_line + "\n" if mail_line else "")
+            + dead_line
             + sale_line
             + "\n（このメールは毎晩21:20に自動送信されます）\n\n")
     mark = "⚠" if ng_high else "○"
