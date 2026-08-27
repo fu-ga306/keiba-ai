@@ -341,11 +341,17 @@ def check_dashboard(dry=False):
         import dashboard_service as ds
     except Exception as e:
         return f"dashboard_service を読めません: {type(e).__name__}"
-    if not ds.in_window():
-        return None                      # 窓の外。正常
     if dry:
+        if not ds.in_window():
+            return None
         code, err = ds.probe()
         return None if code == 200 else f"ダッシュボードが見えません（{err or code}）"
+
+    # ⚠ 窓の外でも ensure() を呼ぶ（2026-08-28に修正）
+    #   以前は窓の外で早期returnしていたため、**「窓の外なので停止」が
+    #   一度も実行されなかった。** 結果、旧コードのプロセスが動き続け、
+    #   閲覧制限を足しても反映されない状態が続いた。
+    #   窓の判定は ensure() が持っているので、ここでは呼ぶだけでよい。
     msg, warn = ds.ensure()
     return f"ダッシュボード: {msg}" if warn else None
 

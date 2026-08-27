@@ -166,17 +166,36 @@ def start():
     return started
 
 
-def stop():
+def stop(wait=10):
+    """止める。**終了を待つ。**
+
+    ⚠ 待たないと事故る（2026-08-28に実際に発生）
+      stop() の直後に start() を呼ぶと、プロセスがまだ消えていないため
+      start() が「もう動いている」と誤判定して起動をスキップする。
+      結果、flask だけ落ちたまま ngrok が生き、502 になった。
+    """
     p = _procs()
+    pids = p["flask"] + p["ngrok"]
     n = 0
     try:
         import psutil
-        for pid in p["flask"] + p["ngrok"]:
+        procs = []
+        for pid in pids:
             try:
-                psutil.Process(pid).terminate()
+                pr = psutil.Process(pid)
+                pr.terminate()
+                procs.append(pr)
                 n += 1
             except Exception:
                 pass
+        if procs:
+            gone, alive = psutil.wait_procs(procs, timeout=wait)
+            for pr in alive:                 # 素直に終わらないものは強制
+                try:
+                    pr.kill()
+                except Exception:
+                    pass
+            psutil.wait_procs(alive, timeout=3)
     except ImportError:
         pass
     log(f"  停止: {n}プロセス")

@@ -48,8 +48,14 @@ def _require_passphrase():
     path = request.path or "/"
     if path.startswith(_OPEN_PREFIX):
         return None
-    # ローカルからの呼び出し（自動更新・自分の確認）は通す
-    if (request.remote_addr or "") in ("127.0.0.1", "::1", "localhost"):
+    # ⚠ remote_addr だけで判定してはいけない（2026-08-28に事故）
+    #   ngrok は localhost:5000 に転送するので、**外部からのアクセスも
+    #   remote_addr は 127.0.0.1 になる。** 「ローカルは通す」だけだと
+    #   全員が素通りし、閲覧制限が完全に無効化される。実際にそうなっていた。
+    #   転送されてきた要求には X-Forwarded-For が付くので、そこで見分ける。
+    fwd = request.headers.get("X-Forwarded-For", "")
+    local = (not fwd) and (request.remote_addr or "") in ("127.0.0.1", "::1", "localhost")
+    if local:
         return None
     ok, k = _gate_ok()
     if ok:
