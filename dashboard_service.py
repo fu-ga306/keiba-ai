@@ -91,6 +91,44 @@ def _procs():
     return out
 
 
+def _stale_code(pids):
+    """動いているプロセスより後に flask_app.py が更新されていないか。
+
+    プロセスの起動時刻とファイルの更新時刻を比べるだけ。
+    テンプレートも見る（HTMLだけ直した場合も反映が要るため）。
+    """
+    if not pids:
+        return None
+    try:
+        import psutil
+    except ImportError:
+        return None
+    watch = [os.path.join(BASE_DIR, "flask_app.py"),
+             os.path.join(BASE_DIR, "sale_gate.py"),
+             os.path.join(BASE_DIR, "sale_view.py")]
+    tdir = os.path.join(BASE_DIR, "templates")
+    if os.path.isdir(tdir):
+        watch += [os.path.join(tdir, f) for f in os.listdir(tdir)
+                  if f.endswith(".html")]
+    try:
+        started = min(psutil.Process(pid).create_time() for pid in pids)
+    except Exception:
+        return None
+    newest, name = 0.0, ""
+    for f in watch:
+        try:
+            m = os.path.getmtime(f)
+        except Exception:
+            continue
+        if m > newest:
+            newest, name = m, os.path.basename(f)
+    if newest > started + 5:          # 5秒の余裕（起動直後の誤検知を防ぐ）
+        from datetime import datetime as _d
+        return (f"{name} が {_d.fromtimestamp(newest):%m/%d %H:%M} 更新 / "
+                f"プロセスは {_d.fromtimestamp(started):%m/%d %H:%M} 起動")
+    return None
+
+
 def probe(timeout=15):
     """外から見えるかを確かめる。**これが本番の生死確認。**
 
@@ -173,6 +211,19 @@ def ensure():
             log(f"  窓の中だが停止していた（flask={len(p['flask'])} ngrok={len(p['ngrok'])}）→ 起動")
             start()
             return "起動しました", True
+        # コードが更新されていたら立て直す（2026-08-27追加）
+        #   ⚠ 「生きていて200が返れば正常」だけだと、**コードを直しても
+        #     永久に反映されない。** 実際に閲覧制限を足したのに、稼働中の
+        #     旧プロセスが200を返し続けるため一生有効にならない状態だった。
+        #     たまたま窓の外だったので停止→再起動で助かったが、
+        #     窓の中で直したら気づけない。
+        stale = _stale_code(p["flask"])
+        if stale:
+            log(f"  {stale} → コードが新しいので立て直し")
+            stop()
+            start()
+            return f"コード更新を反映するため再起動（{stale}）", False
+
         code, err = probe()
         if code != 200:
             # プロセスは生きているのに外から見えない＝トンネルが切れている
