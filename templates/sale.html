@@ -17,7 +17,6 @@
     <span class="race-class-lg">{{ klass }}</span>
     <span class="race-dist-lg">{{ baba_emo }} {{ dist }}m</span>
     {% if cond %}<span class="track-cond cond-{{ cond }}">{{ cond }}</span>{% endif %}
-    {% if rec_level %}<span class="rec-badge {{ rec_cls }}">{{ rec_level }}</span>{% endif %}
   </div>
 
   <!-- 荒れスコア -->
@@ -65,12 +64,11 @@
         {# 列見出しクリックで並べ替え。data-k は tbody の data-* と対応させる #}
         <tr class="sortable">
           {% if has_result %}<th data-k="res" title="確定した着順と払戻">結果</th>{% endif %}
-          <th data-k="rmark" title="残差モデルの印。gap＝モデルの予測確率÷市場の確率で、市場が何を見落としているかを表す。★軸=gap1.5以上でレース内最大→メインで買う馬（単勝）。○=gap1.3以上→軸との組み合わせ（ワイド・馬連）で狙える。△=gap1.1以上→押さえ">買い印</th>
           <th data-k="mark">印</th>
           <th data-k="ban">馬番</th>
           <th>馬名</th>
           <th>シグナル</th>
-          <th data-k="grade" title="市場とモデルを合わせた「来やすさ」。5年OOSの実測で S:87% / A:65% / B:43% / D:12%（馬券内率）。買い印とは別物で、こちらは絶対的に来る確率を見ている">評価</th>
+          <th data-k="grade" title="市場とモデルを合わせた「来やすさ」。5年OOSの実測で S:87% / A:65% / B:43% / D:12%（馬券内率）。市場とモデルを合わせた「来やすさ」の評価">評価</th>
           <th data-k="w" title="馬体重と前走からの増減。発走の約50分前に発表される。それより前は「―」になる（異常ではない）">馬体重</th>
           <th data-k="abil" title="能力6軸（勝負力・安定感・末脚・先行力・距離適性・実績）の平均。レース内100点満点・オッズは見ない">能力</th>
           <th data-k="airank" title="市場フリーモデルの3着内予測順">AI順位</th>
@@ -95,7 +93,6 @@
             data-res="{{ h.res_pos or 99 }}"
             data-grade="{{ {'S':1,'A':2,'B':3,'D':4}.get(h.grade, 9) }}"
             data-abil="{{ h.abil_avg if h.abil_avg is not none else -1 }}"
-            data-rmark="{{ 1 if h.r_main else (2 if h.r_mark == '○' else (3 if h.r_mark == '△' else 9)) }}"
             data-w="{{ h.w_val if h.w_val else -1 }}">
           {% if has_result %}
           <td class="res-cell center{% if h.res_pos and h.res_pos <= 3 %} res-medal res-{{ h.res_pos }}{% endif %}">
@@ -109,17 +106,9 @@
           <td class="rank-mark rank-{{ h.signal_cls }} center">
             {%- if h.is_star %}<span class="star" title="市場より高評価（乖離{{ h.gap }}）">★</span>{% endif -%}
             {{ h.推奨ランク }}</td>
-          <td class="center rmark-cell">
-            {%- if h.r_main -%}
-              <span class="rmark-main" title="メインで買う馬（単勝）。gap {{ h.r_gap }}＝市場の{{ h.r_gap }}倍強いとモデルが見ている">★軸</span>
-            {%- elif h.r_mark -%}
-              <span class="rmark-sub rmark-{{ '2' if h.r_mark == '○' else '3' }}"
-                title="軸との組み合わせ（ワイド・馬連）で狙える相手。gap {{ h.r_gap }}">{{ h.r_mark }}</span>
-            {%- endif -%}
-            {%- if h.r_gap %}<span class="rmark-gap">{{ h.r_gap }}</span>{% endif -%}
-          </td>
+          
           <td class="center">{{ h.馬番 | int }}</td>
-          <td class="horse-name-cell">{{ h.馬名 }}{% if h.buy_kinds %}<span class="buy-kind">{{ h.buy_kinds }}</span>{% endif %}</td>
+          <td class="horse-name-cell">{{ h.馬名 }}</td>
           <td><span class="signal-badge signal-{{ h.signal_cls }}">{{ h.signal_label }}</span></td>
           <td class="center"><span class="grade grade-{{ h.grade }}"
               title="5年OOSの実測で切った評価。実際の馬券内率は S:76% / A:50% / B:28% / D:9%。Dは11回に1回しか来ない＝買わない判定。期待獲得点 {{ h.grade_score }}＝勝率{{ h.win_pct }}%＋連対{{ h.ren_pct }}%＋複勝{{ h.fuku_pct }}%">{{ h.grade }}</span>
@@ -164,68 +153,13 @@
 </p>
 {% endif %}
 
-<!-- 推奨買い目（残差モデル・2026-08-22改定） -->
-{#
-  旧方式(my_bets)は購入停止で常に空になり、画面に何も出なくなっていた。
-  いま実際に記録しているのは残差モデルの買い目なので、それを出す。
-  gap = モデルの予測確率 ÷ 市場の確率。2.0なら市場の2倍強いと見ている。
-#}
-<section class="section-block">
-  <h2 class="section-title">💰 推奨買い目</h2>
-  {% if r_bets %}
-  <div class="rbet-flow">
-    <div class="rbet-ax">
-      <span class="rmark-main">★軸</span>
-      <span class="rbet-no">{{ r_ax.馬番 | int }}番</span>
-      <span class="rbet-name">{{ r_ax.馬名 }}</span>
-      <span class="rbet-odds">{{ r_ax.単勝オッズ }}倍</span>
-      <span class="rbet-gap" title="モデルの予測確率 ÷ 市場の確率">gap {{ r_ax.r_gap }}</span>
-    </div>
-    {% if r_mates %}
-    <div class="rbet-arrow">↓ ダートなので相手に流す</div>
-    {% for m in r_mates %}
-    <div class="rbet-mate">
-      <span class="rmark-sub rmark-2">○</span>
-      <span class="rbet-no">{{ m.馬番 | int }}番</span>
-      <span class="rbet-name">{{ m.馬名 }}</span>
-      <span class="rbet-odds">{{ m.単勝オッズ }}倍</span>
-      <span class="rbet-gap">gap {{ m.r_gap }}</span>
-    </div>
-    {% endfor %}
-    {% elif r_is_dirt %}
-    <div class="rbet-arrow">相手なし（gap1.3以上の馬がいない）→ 単勝のみ</div>
-    {% else %}
-    <div class="rbet-arrow">芝は単勝のみ（ワイドを足すのはダートだけ）</div>
-    {% endif %}
-  </div>
-  <table class="bets-table">
-    <thead><tr><th>券種</th><th>組み合わせ</th><th>点数</th></tr></thead>
-    <tbody>
-      {% for b in r_bets %}
-      <tr>
-        <td><b>{{ b.kind }}</b></td>
-        <td class="bets-combo">{{ b.combo }}</td>
-        <td>{{ b.points }}点</td>
-      </tr>
-      {% endfor %}
-      <tr><td colspan="2"><b>合計</b></td>
-          <td><b>{{ r_bets | sum(attribute='points') }}点</b></td></tr>
-    </tbody>
-  </table>
-  {% else %}
-  <p class="bets-note"><b>見送り</b>（gapが1.5以上の馬がいません）</p>
-  {% endif %}
-  <p class="bets-note">
-    <b>※ 記録のみで、実際には購入していません。</b><br>
-    5年検証 回収率120.6%（10,349点・的中1,178本）。
-    ただし年別は 137 / 116 / 111 / 163 / <b>79</b>% と振れます。
-    年単位では負ける年があるので、通算でしか判断できません。<br>
-    ★軸＝買う馬（単勝）。○＝ダートで流す相手（ワイド）。
-    <b>「評価」列とは別物</b>で、評価は「来やすさ」、買い印は「市場との評価差」を見ています。
-    両方が同じ馬を指すのは0.6%しかないので、評価Dの★軸は正常です。
-  </p>
-</section>
-
+{# ── 推奨買い目は販売ページには出さない（2026-08-28）──────────────
+   購入は停止中（BETTING_ENABLED=False）で、実測29点・的中1本しかない。
+   その段階で買い目を出すのは、
+     ・現状（買っていない）と表示（買え）が矛盾する
+     ・「買い目の指示は含みません」と末尾に書いているのと食い違う
+     ・景表法の距離が縮まる（利益の示唆になる）
+   自分用の /race には残してある。 #}
 
 <!-- 能力値パラメータ -->
 {% if param_horses %}
