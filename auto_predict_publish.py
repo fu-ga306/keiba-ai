@@ -811,6 +811,17 @@ def run_daily_check():
         SALE_DOW = 4          # 0=月 4=金
         soon = (d.day <= 3) if sale_gate.ROTATE == "month" else (d.weekday() == SALE_DOW)
         if soon:
+            # ⚠ .env をここで読む（2026-08-28）
+            #   _send_alert が load_dotenv するのはメール送信の直前で、
+            #   この行より**後**。先に environ を見ても SALE_URL は入っておらず、
+            #   案内文のURLが「（ダッシュボードのURL）」のまま配信されていた。
+            #   note_weekly.py は自分で .env を読むので下書き側は正しく、
+            #   **同じメールの中でURLが食い違う**という気づきにくい形で出ていた。
+            try:
+                from dotenv import load_dotenv
+                load_dotenv(os.path.join(BASE_DIR, ".env"))
+            except Exception:
+                pass
             url = os.environ.get("SALE_URL", "（ダッシュボードのURL）")
             sale_line = ("\n" + "=" * 60
                          + "\n■ 販売ページ：note に貼る文面（合言葉が変わりました）\n"

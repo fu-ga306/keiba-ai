@@ -134,13 +134,29 @@ def probe(timeout=15):
 
     プロセスが生きていてもトンネルが切れていれば外からは見えないので、
     内側の確認だけでは不十分。
+
+    ⚠ 「応答した」と「中身が見えた」を混同しないこと（2026-08-28）
+      合言葉ゲートを入れた日から、/races は外部アクセスに401を返すようになった。
+      401は**サーバーが生きている証拠**（ゲートが答えている）なのに、
+      HTTPError を例外として拾って故障扱いにしていたため、
+      20分ごとに flask と ngrok を再起動し続けていた。
+      直し方は2つ入れる。
+        ① ゲートの無い /sale を叩く
+        ② HTTPエラーでも「ステータスが返った＝生きている」と扱う
+      落ちているときは接続そのものが失敗するので、この2つで区別がつく。
     """
+    import urllib.request
+    import urllib.error
+    req = urllib.request.Request(URL + "/sale",
+                                 headers={"ngrok-skip-browser-warning": "1"})
     try:
-        import urllib.request
-        req = urllib.request.Request(URL + "/races",
-                                     headers={"ngrok-skip-browser-warning": "1"})
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return r.status, ""
+    except urllib.error.HTTPError as e:
+        # 応答はある。502(トンネル先が落ちている)だけは故障とみなす
+        if e.code in (502, 503, 504):
+            return 0, f"HTTP {e.code}（トンネルの先が応答しません）"
+        return e.code, ""
     except Exception as e:
         return 0, f"{type(e).__name__}: {str(e)[:120]}"
 
@@ -212,7 +228,8 @@ def status():
     log(f"  flask       {p['flask'] if p['flask'] else '× 停止'}")
     log(f"  ngrok       {p['ngrok'] if p['ngrok'] else '× 停止'}")
     code, err = probe()
-    log(f"  外から見えるか {'○ HTTP ' + str(code) if code == 200 else '× ' + (err or f'HTTP {code}')}")
+    log(f"  外から見えるか "
+        + (f"○ HTTP {code}" if 200 <= code < 500 else "× " + (err or f"HTTP {code}")))
     log(f"  URL         {URL}")
     return p, code
 
@@ -244,7 +261,9 @@ def ensure():
             return f"コード更新を反映するため再起動（{stale}）", False
 
         code, err = probe()
-        if code != 200:
+        # 「200以外＝故障」にしない。**応答があること**が生死の判定条件。
+        # 401（合言葉ゲート）を故障扱いして20分ごとに再起動し続けた事故がある。
+        if not (200 <= code < 500):
             # プロセスは生きているのに外から見えない＝トンネルが切れている
             log(f"  プロセスは生きているが外から見えない（{err or code}）→ 立て直し")
             stop()

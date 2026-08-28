@@ -44,6 +44,7 @@ FIELDS = [
     ("cc_v",     "ココナラ 出品閲覧",  2),
     ("cc_msg",   "ココナラ 問い合わせ", 3),
     ("cc_ord",   "ココナラ 受注",      4),
+    ("note_paid","note 有料記事 本数",  2),
     ("note_buy", "note 有料 購入",    4),
     ("yen",      "売上（円）",        5),
 ]
@@ -160,6 +161,15 @@ def show():
             log(f"      {pad(LABEL[k], 22)}{v:>8,.0f}{d}")
             if v > 0:
                 cur_tier = max(cur_tier, tier)
+        log("")
+
+    # 売り物が無いのに購入0件を「売れない証拠」と読まない。
+    # 過去に何度もやった「0件＝正常ではないかもしれない」の裏返しで、
+    # ここでは「0件＝異常ではない」を見落とさないための注記。
+    npaid = num(last, "note_paid")
+    if npaid is not None and npaid == 0 and num(last, "note_buy") == 0:
+        log("  ※ 有料記事が0本なので、購入0件は情報を持ちません。")
+        log("     閲覧がいくら増えても、買うものが無ければ売上は立ちません。")
         log("")
 
     log("  " + "-" * 56)
