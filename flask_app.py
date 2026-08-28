@@ -1378,9 +1378,25 @@ def sale_index():
                       "cls": rows[0]["cls"]})
     races.sort(key=lambda x: (x["jyo"], x["no"]))
     venues = sorted({r["jyo"] for r in races})
+
+    # ⚠ 日付は**データの日付**を出す（2026-08-28）
+    #   now() を表示していたため、5日前のデータに今日の日付が付いていた。
+    #   有料で売るページでこれは鮮度の偽装になる。
+    #   金曜の夜にnoteを読んだ人がここへ来ると、翌日の予想はまだ無く、
+    #   前の開催ぶんが並ぶ。**それを隠さずに書く。**
+    date_str, stale = "", ""
+    try:
+        dd = pd.to_datetime(df["予想日時"].iloc[0]).date()
+        date_str = dd.strftime("%m/%d")
+        if dd != _dt.date.today():
+            stale = (f"表示しているのは {date_str} の開催ぶんです。"
+                     "次の開催の予想は、開催当日の朝に入れ替わります。")
+    except Exception:
+        pass
+
     return render_template("sale_index.html", races=races, venues=venues,
                            unlocked=unlocked, tried=bool(k), k=k,
-                           date_str=_dt.datetime.now().strftime("%m/%d"))
+                           date_str=date_str, stale=stale)
 
 
 @app.route("/sale/<race_id>")
