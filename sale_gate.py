@@ -105,7 +105,16 @@ def check(given, when=None):
     from datetime import timedelta
     # 前の期間のものも通す。切り替わり直後に見られなくなるのを防ぐため
     #   （「買った翌日に見られない」は問い合わせの元になる）
-    backs = {"week": (0, -7), "month": (0, -32), "fixed": (0,)}[ROTATE]
+    #
+    # ⚠ ただし週跨ぎは**月〜水だけ**にする（2026-08-28）
+    #   それまでは前週の合言葉を丸7日通していた。開催は土日なので、
+    #   8/29-30ぶんを買った人が翌週の 9/5-6 も見られてしまう。
+    #   隔週で買えば全開催をカバーできることになり、売り物が成立しない。
+    #   防ぎたいのは「日曜に買って月曜に見られない」なので、
+    #   次の開催（土曜）に届かない水曜までで足りる。
+    backs = {"week": (0,), "month": (0, -32), "fixed": (0,)}[ROTATE]
+    if ROTATE == "week" and d.weekday() <= 2:      # 月火水のみ前週を通す
+        backs = (0, -7)
     for delta in backs:
         if g == passphrase(d + timedelta(days=delta)).lower():
             return True
@@ -120,10 +129,14 @@ def period_label(when=None):
         return "（固定）"
     if ROTATE == "month":
         return f"{d.year}年{d.month}月"
+    # 表示は「開催の2日間」にする（2026-08-28）
+    #   合言葉はISO週で切り替わるが、読者に意味があるのは**どの開催で使えるか**。
+    #   「第35週（8/24〜8/30）」では、平日を含む7日間に見えて実態と合わない。
+    #   実際に使えるのは土日の2日ぶん。そこを書く。
     y, w, dow = d.isocalendar()
-    mon = d - timedelta(days=dow - 1)
-    sun = mon + timedelta(days=6)
-    return f"{y}年 第{w}週（{mon.month}/{mon.day}〜{sun.month}/{sun.day}）"
+    sat = d + timedelta(days=5 - (dow - 1))     # 同じISO週の土曜
+    sun = sat + timedelta(days=1)
+    return f"{sat.month}/{sat.day}(土)・{sun.month}/{sun.day}(日)"
 
 
 def ensure_salt():
