@@ -1224,6 +1224,37 @@ def predict_race_pdf(race_id: str, *, history_df: pd.DataFrame, models_pack: dic
         pdf = build_features(race_df, history_df)
         print(f"  特徴量構築成功(従来): {len(pdf)}行")
 
+    # ── 本番が実際に計算した特徴量を残す（2026-08-29）
+    #   ⚠ これが無いと、検証とのズレを**後から一切調べられない**。
+    #     実際に「本番とBTで軸が72レース中2レースしか一致しない」という
+    #     結果が出たが、原因を特定できなかった。本番側の特徴量が
+    #     どこにも残っていないため。
+    #
+    #   BT は race_features.csv を読み、本番は build_features_for_prediction が
+    #   その場で計算する。**同じ323列を別のコードが作っている。**
+    #   両者を突き合わせるには、本番側を保存しておくしかない。
+    #
+    #   容量: 1レース約16頭 x 323列。1日36レースで数MB。
+    #   開催日ぶんだけ残す（古いものは日次アーカイブで整理する）。
+    try:
+        import resid_io as _rio
+        _rm = _rio.load_model()
+        if _rm is not None:
+            _keep = [c for c in _rm["use_cols"] if c in pdf.columns]
+            _snap = pdf[_keep].copy()
+            _snap.insert(0, "race_id", str(race_id))
+            for _c in ("馬番", "馬名"):
+                if _c in pdf.columns:
+                    _snap.insert(1, _c, pdf[_c].values)
+            _snap["記録時刻"] = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
+            _snap["欠損列数"] = int(len(_rm["use_cols"]) - len(_keep))
+            _fp = os.path.join(BASE_DIR, "pred_features.csv")
+            _snap.to_csv(_fp, mode="a", header=not os.path.exists(_fp),
+                         index=False, encoding="utf-8-sig")
+    except Exception as _e_snap:
+        # 保存に失敗しても予想は続ける。**記録のために本番を止めない**
+        print(f"  （特徴量の保存に失敗: {type(_e_snap).__name__}）")
+
     # ── 勝ち確率（レース内正規化）
     print("予測中...")
     X     = pdf.reindex(columns=win_cols)
