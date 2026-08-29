@@ -46,6 +46,40 @@ def log(m):
     print(m, flush=True)
 
 
+
+def _vintage_ok():
+    """検証データが、本番のモデル・特徴量より新しいかを見る（2026-08-29）
+
+    なぜ要るか
+      このスクリプトは「選び方(resid_io.pick_bets)が検証どおりか」しか見ていない。
+      **選び方が同じでも、モデルが違えば選ぶ馬が変わる。**
+      実際に次の状態で「✅ 実装は検証どおり」と出していた。
+
+        08/17  resid_kinds_pred.csv  ← 検証データ。120.6%の根拠
+        08/25  race_features.csv     ← 8日後に作り直された
+        08/25  model_resid.pkl       ← 8日後に学習し直された。本番はこちら
+
+      本番の芝の軸は平均8.7番人気、検証は5.9番人気で、95%区間の外に出ていた。
+      gapの分布も頭数もほぼ同じなのに選ぶ馬だけが違う＝モデルが違う。
+      これは6原因の④「検証と本番で同じものを計算していない」そのもの。
+    """
+    import os
+    base = "resid_kinds_pred.csv"
+    if not os.path.exists(base):
+        return True, []
+    t0 = os.path.getmtime(base)
+    # ⚠ 見るのは「①で検証できないもの」だけにする。
+    #   resid_io.py と features.py は①が実際に走らせて数字の一致を見ているので
+    #   ここで日付だけを見て警告すると、二重に鳴る＝オオカミ少年になる。
+    #   ①で見られないのは、本番だけが使うモデルと特徴量。
+    ng = []
+    for f in ("race_features.csv", "model_resid.pkl"):
+        if os.path.exists(f) and os.path.getmtime(f) > t0:
+            d = (os.path.getmtime(f) - t0) / 86400
+            ng.append(f"{f} が {d:.1f}日 新しい")
+    return (not ng), ng
+
+
 def main():
     try:
         d = pd.read_csv("resid_kinds_pred.csv", dtype={"race_id": str, "bn": str})
@@ -110,6 +144,21 @@ def main():
     log(f"\n  点数 {len(R):,} vs {EXPECT['点数']:,}  {'○' if abs(len(R)-EXPECT['点数'])<=5 else '×'}")
     log(f"  的中 {hit} vs {EXPECT['的中']}  {'○' if abs(hit-EXPECT['的中'])<=3 else '×'}")
     log(f"  ROI {roi:.1f}% vs {EXPECT['ROI']}%  {'○' if abs(roi-EXPECT['ROI'])<1.0 else '×'}")
+
+    # ── ②' 検証データが古くないか ───────────────────────────
+    #   ここが×なら、上の○は「古いモデルに対して選び方が合っている」という
+    #   意味しか持たない。本番の成績を表さない。
+    v_ok, v_ng = _vintage_ok()
+    log("")
+    log("=== 検証データと本番の世代が揃っているか ===")
+    if v_ok:
+        log("  ○ resid_kinds_pred.csv は本番のモデル・特徴量より新しい")
+    else:
+        log("  ⚠ 検証データのほうが古い。**この数字は本番の成績を表さない**")
+        for m in v_ng:
+            log(f"     - {m}")
+        log("     → python resid_kinds.py で作り直す（開催日は避ける。メモリを食う）")
+    ok = ok and v_ok
 
     # ── ③ 欠けへの耐性 ───────────────────────────────────
     log("\n=== ③ 本番で起こりうる欠けへの耐性 ===")
