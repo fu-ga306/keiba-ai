@@ -55,8 +55,40 @@ def run(name, timeout):
         return False, "", f"{timeout}秒で打ち切り", (datetime.now() - t0).total_seconds() / 60
 
 
+LOCK = os.path.join(BASE_DIR, "rebuild_bt.lock")
+
+
+def _lock():
+    """二重起動を防ぐ。5年ぶんの学習が2本同時に走るとメモリが尽きて両方落ちる。
+    手動実行と予約タスク(22:45)の両方から呼ばれるので必ず要る。"""
+    if os.path.exists(LOCK):
+        try:
+            import psutil
+            pid = int(open(LOCK).read().strip())
+            if psutil.pid_exists(pid):
+                return False, pid
+        except Exception:
+            pass
+        os.remove(LOCK)          # 中身が読めない/死んでいる＝残骸なので消す
+    with open(LOCK, "w") as f:
+        f.write(str(os.getpid()))
+    return True, os.getpid()
+
+
 def main():
     log(f"[{datetime.now():%Y-%m-%d %H:%M}] 検証データの作り直しを開始")
+    got, pid = _lock()
+    if not got:
+        log(f"  すでに pid{pid} が実行中です。二重には走らせません")
+        return
+    try:
+        _main()
+    finally:
+        if os.path.exists(LOCK):
+            os.remove(LOCK)
+
+
+def _main():
 
     # 予想が動いていたら走らせない。メモリを奪い合って両方失敗する
     try:
@@ -64,8 +96,23 @@ def main():
         for p in psutil.process_iter(["cmdline"]):
             c = " ".join(p.info["cmdline"] or [])
             if "auto_predict_publish" in c and "python" in c.lower():
-                log("  ⚠ 予想システムが稼働中。メモリを奪い合うので中止します")
+                alive = p
+                break
+        else:
+            alive = None
+        if alive is not None:
+            # 22:30に予想が自分で終わるので、そこまでは待つ。
+            # 待たずに中止すると、手動で走らせたときに必ず空振りする。
+            log("  予想システムが稼働中。終了を待ちます（最大40分）")
+            import time as _t
+            for _ in range(80):
+                _t.sleep(30)
+                if not psutil.pid_exists(alive.pid):
+                    break
+            else:
+                log("  ⚠ 40分待っても終わりませんでした。中止します")
                 return
+            log(f"  [{datetime.now():%H:%M}] 予想の終了を確認しました")
     except Exception:
         pass
 
