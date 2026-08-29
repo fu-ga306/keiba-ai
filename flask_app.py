@@ -203,8 +203,13 @@ RESID_MATE = 1.3        # 相手のしきい値（resid_io.MATE_GAP と揃える
 RESID_SUB = 1.1         # 押さえ
 
 
-def resid_marks(horses):
+def resid_marks(horses, baba=None):
     """各馬に残差モデルの印を付ける。gap が無ければ何もしない。
+
+    ⚠ baba を渡すこと（2026-08-29）
+      ○は「ワイドの相手」で、**ワイドを買うのはダートだけ**。
+      芝で○を出しても、その馬を買う経路がどこにも無い。
+      渡されなければ従来どおり（相手も表示する）。
 
     h["r_mark"]  : "★軸" / "○" / "△" / ""
     h["r_gap"]   : gap（小数2桁）
@@ -217,12 +222,26 @@ def resid_marks(horses):
         for h in horses:
             h["r_mark"], h["r_gap"], h["r_main"] = "", None, False
         return
+    import math
     top = max((g for g in gs if pd.notna(g)), default=None)
+    # 軸が立つか。○△は「軸の相手」なので、軸が無いときは意味を持たない
+    has_ax = bool(top is not None and pd.notna(top) and top >= RESID_AX)
+    # 芝は単勝のみ。相手を買わないので相手の印も出さない
+    if baba is not None and not str(baba).startswith(("ダ", "ダート")):
+        has_ax = False
     for h, g in zip(horses, gs):
-        h["r_gap"] = round(float(g), 2) if pd.notna(g) else None
+        # ⚠ 切り捨てる。四捨五入してはいけない（2026-08-29）
+        #   gap 1.4970 を round すると 1.50 と表示され、しきい値1.5と同じに見える。
+        #   実際は下回っているので★軸が付かず、**画面が自分と矛盾する**。
+        #   新潟1Rで「1.50なのに軸が無い」として実際に混乱が出た。
+        h["r_gap"] = math.floor(float(g) * 100) / 100 if pd.notna(g) else None
         h["r_main"] = bool(pd.notna(g) and g == top and g >= RESID_AX)
         if h["r_main"]:
             h["r_mark"] = "★軸"
+        elif not has_ax:
+            # 軸が無いレースは買わない。相手だけ印を付けても買い目にならず、
+            # 「○が3頭もあるのに買い目なし」という読めない表示になる。
+            h["r_mark"] = ""
         elif pd.notna(g) and g >= RESID_MATE:
             h["r_mark"] = "○"
         elif pd.notna(g) and g >= RESID_SUB:
@@ -246,7 +265,7 @@ def resid_bets(horses, baba=None):
     返り値: (買い目リスト, 軸dict または None, 相手リスト)
     ⚠ 実際には購入していない。表示と記録だけ。
     """
-    resid_marks(horses)
+    resid_marks(horses, baba)
     ax = next((h for h in horses if h.get("r_main")), None)
     if ax is None:
         return [], None, []
@@ -1077,7 +1096,7 @@ def _race_detail_impl(race_id, limit=None, template="race_detail.html", extra=No
     #   ⚠ 表示のみ。購入は BETTING_ENABLED=False で停止中。
     #   ⚠ 検証値は「軸の単勝＋ダートならワイド」で 5年120.6%（軸gap>=1.5）。
     #     馬連・3連系は検証で単勝に届かなかったので、印はあくまで目安。
-    resid_marks(horses)
+    resid_marks(horses, baba)
     # 残差モデルの買い目（2026-08-22）。旧方式(my_bets)は購入停止で常に空なので、
     # 実際に記録している買い目をこちらで作って画面に出す。
     r_bets, r_ax, r_mates = resid_bets(horses, baba)

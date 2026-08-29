@@ -54,8 +54,17 @@ def main():
         return
     d["gap"] = d.p1 / d.q
     d["馬番"] = pd.to_numeric(d["bn"], errors="coerce")
-    rf = pd.read_csv("race_features.csv", low_memory=False, dtype={"race_id": str},
-                     usecols=["race_id", "is_turf"]).drop_duplicates("race_id")
+    # ⚠ 分割して読む（2026-08-29）
+    #   一括で読むと予想システムがMFモデル3GBを抱えている時間帯にメモリ不足で落ちる。
+    #   実際に日次点検が「check_resid.py が異常終了」と報告したが、
+    #   単体で走らせると通る＝**実装ではなく点検側が落ちていた**。
+    #   これを放置すると重要度高の警告が出続けてオオカミ少年になる。
+    _p = []
+    for _ch in pd.read_csv("race_features.csv", usecols=["race_id", "is_turf"],
+                           dtype={"race_id": str}, chunksize=200000):
+        _p.append(_ch.drop_duplicates("race_id"))
+    rf = pd.concat(_p).drop_duplicates("race_id")
+    del _p
     rf["race_id"] = rf["race_id"].astype(str).str.replace(r"\.0$", "", regex=True)
     d = d.merge(rf, on="race_id", how="left")
     jv = pd.read_csv("jv_payouts.csv", dtype=str)
