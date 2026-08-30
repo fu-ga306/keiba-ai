@@ -415,6 +415,25 @@ def get_race_data(race_id):
             return None
 
         df = pd.DataFrame(rows)
+
+        # 騎手・調教師を履歴と同じ表記に直す（2026-08-30）
+        #   出馬表は省略表記で、履歴（学習データ）は正式名。
+        #     出馬表 '岩田望'   / 履歴 '岩田望来'
+        #     出馬表 '美浦水野' / 履歴 '[東]水野貴広'
+        #   照合できないので集計対象が0件になり、騎手勝率・調教師勝率が
+        #   NaN のままモデルに渡っていた。実測で騎手90.9%・調教師100%欠損。
+        #   学習データ側は同じ列が0.1%しか欠けていない。
+        #   **モデルは騎手と調教師を見て学習し、見ずに予測していた。**
+        #
+        #   一意に定まらない名前は変換しない（'原' は2人に当たる）。
+        #   間違った人の成績を付けるくらいなら欠損のままのほうがましなため。
+        try:
+            import name_resolve
+            _n, _t = name_resolve.apply_to(df)
+            print(f"  騎手・調教師の名寄せ: {_n}/{_t}件を正式名に変換")
+        except Exception as _e_nr:
+            print(f"  （名寄せに失敗: {type(_e_nr).__name__}: {_e_nr}）")
+
         for key, val in race_info.items():
             df[key] = val
         df["race_id"] = str(race_id)
