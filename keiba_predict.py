@@ -1213,15 +1213,18 @@ def predict_race_pdf(race_id: str, *, history_df: pd.DataFrame, models_pack: dic
 
     # 特徴量構築（一本化: 学習と同じパイプライン。失敗時は従来法にフォールバック）
     print("特徴量構築中...")
+    _feat_path = "不明"
     try:
         import features as _features
         pdf = _features.build_features_for_prediction(race_df, history_df)
         if pdf is None or len(pdf) == 0 or "馬名" not in pdf.columns:
             raise ValueError("一本化パイプラインの出力が不正")
+        _feat_path = "一本化"
         print(f"  特徴量構築成功(一本化): {len(pdf)}行")
     except Exception as e_uni:
         print(f"  一本化パイプライン不可({e_uni}) → 従来法にフォールバック")
         pdf = build_features(race_df, history_df)
+        _feat_path = "従来(fallback:%s)" % type(e_uni).__name__
         print(f"  特徴量構築成功(従来): {len(pdf)}行")
 
     # ── 本番が実際に計算した特徴量を残す（2026-08-29）
@@ -1248,6 +1251,13 @@ def predict_race_pdf(race_id: str, *, history_df: pd.DataFrame, models_pack: dic
             for _c in ("馬名", "馬番"):
                 if _c in pdf.columns and _c not in _snap.columns:
                     _snap.insert(1, _c, pdf[_c].values)
+            # 原因追跡用の生の値。騎手勝率などが NaN になるのは、
+            # ここの名前が履歴側（race_data_clean.csv）と一致しないときなので、
+            # 実物を残さないと突き合わせられない。
+            for _c in ("騎手", "調教師", "回り"):
+                if _c in pdf.columns and _c not in _snap.columns:
+                    _snap[_c] = pdf[_c].values
+            _snap["特徴量経路"] = _feat_path
             _snap["記録時刻"] = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
             _snap["欠損列数"] = int(len(_rm["use_cols"]) - len(_keep))
             _fp = os.path.join(BASE_DIR, "pred_features.csv")

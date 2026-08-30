@@ -306,7 +306,16 @@ def get_race_data(race_id):
             race_info["is_turf"] = 1.0 if "芝" in text else 0.0
 
             # 回り（右/左/直）を抽出 — モデルの学習データと一致させる
-            m_turn = re.search(r"[芝ダ](右|左|直)", text)
+            #
+            # ⚠ 2026-08-30 修正。旧: r"[芝ダ](右|左|直)"
+            #   「芝の直後に右/左/直」を期待していたが、実際の表記は
+            #     17:15発走 / ダ1400m (左)
+            #     16:10発走 / 芝1400m (左 B)
+            #   で距離を挟むため**必ず外れていた**。
+            #   結果、回り_num が常に欠損し、回り別_過去勝率・回り別_過去複勝率と
+            #   その _R順/_R偏差 が連鎖して欠損。学習側は5.2%しか欠けていないので、
+            #   モデルは学習していない入力を渡されていた。
+            m_turn = re.search(r"[芝ダ]\s*\d{3,4}\s*m\s*[（(]?\s*(右|左|直)", text)
             race_info["回り"] = m_turn.group(1) if m_turn else None
             race_info["回り_num"] = {"右": 1, "左": 2, "直": 3}.get(race_info["回り"])
 
@@ -351,6 +360,26 @@ def get_race_data(race_id):
             cls_name, cls_num = classify_race_class(race_name, text2, grade_icon)
             race_info["レースクラス"] = cls_name
             race_info["クラス_num"] = cls_num
+
+        # 回りが取れなかったときは、競馬場と距離から引く（2026-08-30）
+        #   回りは物理的に決まっているので、表記が変わっても崩れない受け皿になる。
+        #   履歴32.6万行で (競馬場, 芝ダ, 距離) の103通りすべてが一意に定まることを
+        #   確認済み（build_course_turn.py）。
+        if race_info.get("回り") is None:
+            try:
+                _ct = os.path.join(BASE_DIR, "course_turn.csv")
+                if os.path.exists(_ct):
+                    _m = pd.read_csv(_ct, dtype={"jyo": str})
+                    _hit = _m[(_m["jyo"] == str(race_id)[4:6])
+                              & (_m["is_turf"] == int(race_info.get("is_turf") or 0))
+                              & (_m["距離"] == int(race_info.get("距離") or 0))]
+                    if len(_hit):
+                        race_info["回り"] = str(_hit["回り"].iat[0])
+                        race_info["回り_num"] = {"右": 1, "左": 2,
+                                                 "直": 3}.get(race_info["回り"])
+                        print(f"  回り: 表から補完 → {race_info['回り']}")
+            except Exception as _e_ct:
+                print(f"  （回りの補完に失敗: {type(_e_ct).__name__}）")
 
         table = soup.find("table", class_="Shutuba_Table")
         print(f"  Shutuba_Table: {table is not None}")
