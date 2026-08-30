@@ -75,3 +75,4 @@ x_queue.txt
 x_posted.csv
 X_POST_ARMED
 note_weekly/
+pred_features*.csv
