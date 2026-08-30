@@ -1243,8 +1243,10 @@ def predict_race_pdf(race_id: str, *, history_df: pd.DataFrame, models_pack: dic
             _keep = [c for c in _rm["use_cols"] if c in pdf.columns]
             _snap = pdf[_keep].copy()
             _snap.insert(0, "race_id", str(race_id))
-            for _c in ("馬番", "馬名"):
-                if _c in pdf.columns:
+            # 馬番はモデルの特徴量でもあるので、すでに _keep に入っている。
+            # 条件を見ずに insert すると ValueError で落ちる（2026-08-30に発生）。
+            for _c in ("馬名", "馬番"):
+                if _c in pdf.columns and _c not in _snap.columns:
                     _snap.insert(1, _c, pdf[_c].values)
             _snap["記録時刻"] = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
             _snap["欠損列数"] = int(len(_rm["use_cols"]) - len(_keep))
@@ -1253,7 +1255,18 @@ def predict_race_pdf(race_id: str, *, history_df: pd.DataFrame, models_pack: dic
                          index=False, encoding="utf-8-sig")
     except Exception as _e_snap:
         # 保存に失敗しても予想は続ける。**記録のために本番を止めない**
-        print(f"  （特徴量の保存に失敗: {type(_e_snap).__name__}）")
+        #   ただし黙って終わらせない。この仕組み自体が「沈黙する故障」を
+        #   捕まえるためのものなので、それが沈黙して壊れたら意味がない。
+        #   実際に初日、ValueError を握り潰して丸一日1件も記録できなかった。
+        _msg = "{0}: {1}".format(type(_e_snap).__name__, _e_snap)
+        print("  （特徴量の保存に失敗: " + _msg + "）")
+        try:
+            _lp = os.path.join(BASE_DIR, "pred_features_error.log")
+            with open(_lp, "a", encoding="utf-8") as _fe:
+                _fe.write(datetime.now().strftime("%Y/%m/%d %H:%M:%S")
+                          + chr(9) + str(race_id) + chr(9) + _msg + chr(10))
+        except Exception:
+            pass
 
     # ── 勝ち確率（レース内正規化）
     print("予測中...")
