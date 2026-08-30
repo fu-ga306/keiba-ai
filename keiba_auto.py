@@ -429,8 +429,9 @@ def get_race_data(race_id):
         #   間違った人の成績を付けるくらいなら欠損のままのほうがましなため。
         try:
             import name_resolve
-            _n, _t = name_resolve.apply_to(df)
-            print(f"  騎手・調教師の名寄せ: {_n}/{_t}件を正式名に変換")
+            _n, _ng, _t = name_resolve.apply_to(df)
+            print(f"  騎手・調教師の名寄せ: {_t}件中 {_n}件を変換 / "
+                  f"未解決{_ng}件（未解決は欠損のまま。誤った成績を付けない）")
         except Exception as _e_nr:
             print(f"  （名寄せに失敗: {type(_e_nr).__name__}: {_e_nr}）")
 
