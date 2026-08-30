@@ -71,16 +71,62 @@ def _send_alert(subject, body):
         print(f"  警告メール送信失敗: {e}")
 
 
+def _disk_context():
+    """ディスクが減った理由を添える（2026-08-30）
+
+    なぜ要るか
+      「不要ファイルを消してください」とだけ書いていたが、実際の原因は
+      **ページファイルの膨張**だった。物理メモリ7.9GBに対しコミット済み20.6GB
+      という状態で、予想がMFモデル3GBを読むたびに pagefile.sys が伸びて
+      ディスクを食う。ファイルを消しても、空けた分だけページファイルが伸びる。
+      原因を書かないと、消す作業を繰り返して直らない。
+    """
+    lines = []
+    try:
+        import psutil
+        m = psutil.virtual_memory()
+        sw = psutil.swap_memory()
+        lines.append("  物理メモリ 空き %.1fGB / 全体 %.1fGB（使用率 %.0f%%）"
+                     % (m.available / 2 ** 30, m.total / 2 ** 30, m.percent))
+        lines.append("  スワップ   使用 %.1fGB / 確保 %.1fGB"
+                     % (sw.used / 2 ** 30, sw.total / 2 ** 30))
+        if m.percent > 85:
+            lines.append("  → メモリが逼迫しています。ページファイルが伸びて"
+                         "ディスクを食っている可能性が高いです。")
+            lines.append("    ファイルを消しても、空けた分だけページファイルが伸びます。")
+            lines.append("    VSCodeやブラウザを閉じるほうが効きます。")
+    except Exception:
+        pass
+    try:
+        import psutil
+        top = {}
+        for p in psutil.process_iter(["name", "memory_info"]):
+            try:
+                top[p.info["name"]] = top.get(p.info["name"], 0) + p.info["memory_info"].rss
+            except Exception:
+                pass
+        rank = sorted(top.items(), key=lambda x: -x[1])[:5]
+        lines.append("  メモリ上位: " + " / ".join("%s %.1fGB" % (n, v / 2 ** 30)
+                                                   for n, v in rank))
+    except Exception:
+        pass
+    return "\n".join(lines)
+
+
 def check_disk_ok():
     """C:の空きが DISK_MIN_GB 以上か。不足ならFalse＋メール警告。"""
     import shutil
     free_gb = shutil.disk_usage(BASE_DIR).free / (1024 ** 3)
     if free_gb < DISK_MIN_GB:
-        msg = (f"競馬AI: ディスク空きが {free_gb:.2f}GB しかありません（閾値{DISK_MIN_GB}GB）。\n"
-               f"予想を中止しました。C:ドライブを空けてください（例: 管理者cmdで powercfg /h off、"
-               f"ディスククリーンアップ、不要ファイル削除）。空けたら予想が再開します。")
-        print(f"  ⚠ ディスク不足 {free_gb:.2f}GB → 予想中止・メール警告")
-        _send_alert(f"⚠競馬AI ディスク不足 残{free_gb:.1f}GB 予想中止", msg)
+        msg = ("競馬AI: ディスク空きが %.2fGB しかありません（閾値%.1fGB）。\n"
+               "予想を中止しました。\n\n" % (free_gb, DISK_MIN_GB)
+               + _disk_context()
+               + "\n\n消せるもの（運用手順.md の順）:\n"
+               "  archive_*/            古いアーカイブ\n"
+               "  探索用の中間CSV        data/jv から作り直せるもの\n"
+               "  ※ data/jv/ は消さないこと。JV-VAN解約済みで再取得できません\n")
+        print("  ⚠ ディスク不足 %.2fGB → 予想中止・メール警告" % free_gb)
+        _send_alert("⚠競馬AI ディスク不足 残%.1fGB 予想中止" % free_gb, msg)
         return False
     return True
 
