@@ -163,6 +163,41 @@ def trainer(name):
     return _resolve(name, "調教師", region_hint=hint)
 
 
+OWNER = os.path.join(BASE_DIR, "owner_master.csv")
+
+
+def build_owner(force=False):
+    """馬ごとの最新の馬主を表にする。
+
+    出馬表は馬主を取っていないが、馬主は馬に紐づくので履歴から引ける。
+    同じ馬でも馬主が変わることがあるので、**最新の1件**を採る。
+    """
+    if os.path.exists(OWNER) and not force:
+        return OWNER
+    h = pd.read_csv(SOURCE, usecols=["race_id", "馬名", "馬主"],
+                    dtype={"race_id": str}, low_memory=False)
+    h = h.dropna(subset=["馬名", "馬主"])
+    h["馬名"] = h["馬名"].astype(str).str.strip()
+    last = h.sort_values("race_id").groupby("馬名")["馬主"].last()
+    last.reset_index().to_csv(OWNER, index=False, encoding="utf-8-sig")
+    _cache.pop("馬主", None)
+    return OWNER
+
+
+def _owner_map():
+    if "馬主" not in _cache:
+        if not os.path.exists(OWNER):
+            build_owner()
+        m = pd.read_csv(OWNER)
+        _cache["馬主"] = dict(zip(m["馬名"].astype(str), m["馬主"].astype(str)))
+    return _cache["馬主"]
+
+
+def owner(horse):
+    """馬名から馬主を引く。引けなければ None（初出走など）。"""
+    return _owner_map().get(str(horse or "").strip())
+
+
 def apply_to(df):
     """騎手・調教師の列をまとめて直す。戻り値は (変換数, 未解決数, 全体数)。"""
     n = ng = tot = 0
@@ -176,6 +211,11 @@ def apply_to(df):
         ng += int((~after.isin(known)).sum())
         tot += len(before)
         df[col] = after
+
+    # 馬主は出馬表に無いので履歴から補う。列が無いと features.py の
+    # has_owner が False になり、馬主系の特徴量が一律 NaN になる。
+    if "馬主" not in df.columns and "馬名" in df.columns:
+        df["馬主"] = df["馬名"].map(owner)
     return n, ng, tot
 
 
@@ -187,6 +227,7 @@ if __name__ == "__main__":
         except Exception:
             pass
     build(force="--rebuild" in sys.argv)
+    build_owner(force="--rebuild" in sys.argv)
     print(f"  name_master.csv  騎手{len(_table('騎手'))}人 / "
           f"調教師{len(_table('調教師'))}人")
     print("  騎手")

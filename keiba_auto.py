@@ -323,9 +323,16 @@ def get_race_data(race_id):
             full_text = "".join(
                 elem for elem in race_div.parent.find_all(string=True)
             ).replace("\n", "").replace(" ", "").replace("\xa0", "")
-            for condition in ["不良", "稍重", "重", "良"]:
+            # ⚠ ページは略記（2026-08-30）
+            #     / 馬場:良   205件
+            #     / 馬場:稍    34件
+            #   「稍重」で探すと稍重のレースを取りこぼす。長い順に見て、
+            #   略記で当たったら正式名に直す。長い順なのは「重」が
+            #   「稍重」の一部に当たるのを避けるため。
+            for condition in ["不良", "稍重", "重", "良", "稍", "不"]:
                 if condition in full_text:
-                    race_info["馬場状態"] = condition
+                    race_info["馬場状態"] = {"稍": "稍重", "不": "不良"}.get(
+                        condition, condition)
                     break
             # 保険: RaceData01の局所テキストで拾えない場合(函館ダート等でNaN化していた)、
             # ページ全体からラベル付きで拾う。netkeibaは芝/ダートの状態を別表示するため、
@@ -336,9 +343,10 @@ def get_race_data(race_id):
                 labels = ([r"ダート?[:：]", r"馬場[:：]"] if is_dirt
                           else [r"芝[:：]", r"馬場[:：]"])
                 for lab in labels:
-                    m = re.search(lab + r"\s*(不良|稍重|重|良)", page)
+                    m = re.search(lab + r"\s*(不良|稍重|重|良|稍|不)", page)
                     if m:
-                        race_info["馬場状態"] = m.group(1)
+                        race_info["馬場状態"] = {"稍": "稍重", "不": "不良"}.get(
+                            m.group(1), m.group(1))
                         break
             race_info["馬場状態_num"] = {"良": 1, "稍重": 2, "重": 3, "不良": 4}.get(race_info["馬場状態"])
         else:
