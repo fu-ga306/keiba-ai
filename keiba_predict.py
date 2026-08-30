@@ -1261,7 +1261,28 @@ def predict_race_pdf(race_id: str, *, history_df: pd.DataFrame, models_pack: dic
             _snap["記録時刻"] = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
             _snap["欠損列数"] = int(len(_rm["use_cols"]) - len(_keep))
             _fp = os.path.join(BASE_DIR, "pred_features.csv")
-            _snap.to_csv(_fp, mode="a", header=not os.path.exists(_fp),
+            # ⚠ 追記型なので、列構成が変わったら別ファイルにする（2026-08-30）
+            #   列を足したときに古い行と混ざり、ファイル全体が読めなくなった。
+            #   ヘッダを読んで一致しなければ、古いほうを退避してから書き直す。
+            _hdr = ",".join(map(str, _snap.columns))
+            _new = True
+            if os.path.exists(_fp):
+                try:
+                    with open(_fp, encoding="utf-8-sig") as _fh:
+                        _new = _fh.readline().rstrip("\r\n") != _hdr
+                except Exception:
+                    _new = True
+                if _new:
+                    _bak = os.path.join(
+                        BASE_DIR,
+                        "pred_features_%s.csv" % datetime.now().strftime("%Y%m%d_%H%M%S"))
+                    try:
+                        os.rename(_fp, _bak)
+                        print("  （特徴量の列が変わったので %s に退避）"
+                              % os.path.basename(_bak))
+                    except Exception:
+                        pass
+            _snap.to_csv(_fp, mode="a", header=_new or not os.path.exists(_fp),
                          index=False, encoding="utf-8-sig")
     except Exception as _e_snap:
         # 保存に失敗しても予想は続ける。**記録のために本番を止めない**
