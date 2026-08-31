@@ -10,6 +10,42 @@ HEADERS = {
 }
 
 
+# クラス名として妥当かの検査と、ページ全体からの抽出（2026-08-31）
+_CLASS_WORDS = ("新馬", "未勝利", "1勝クラス", "2勝クラス", "3勝クラス",
+                "500万", "1000万", "1600万", "オープン", "リステッド",
+                "G1", "G2", "G3", "GI", "GII", "GIII",
+                "Jpn1", "Jpn2", "Jpn3", "JpnI", "JpnII", "JpnIII")
+# 条件文だと分かる語。これが入っていたらクラス名ではない
+_NOT_CLASS = ("天候", "発走")
+
+
+def _looks_like_class(s):
+    """クラス名として妥当か。条件文を掴んでいたら False。"""
+    if not s:
+        return False
+    t = str(s)
+    if any(w in t for w in _NOT_CLASS):
+        return False
+    if len(t) > 60:
+        return False
+    return any(w in t for w in _CLASS_WORDS)
+
+
+def _find_class_text(soup):
+    """ページ全体からクラスを表す語を探す。見つからなければ None。"""
+    try:
+        text = soup.get_text(" ", strip=True)
+    except Exception:
+        return None
+    for w in ("3勝クラス", "2勝クラス", "1勝クラス", "1600万", "1000万", "500万",
+              "未勝利", "新馬", "リステッド", "オープン",
+              "GIII", "GII", "GI", "G3", "G2", "G1",
+              "JpnIII", "JpnII", "JpnI", "Jpn3", "Jpn2", "Jpn1"):
+        if w in text:
+            return w
+    return None
+
+
 def get_race_result(race_id):
     url = f"https://db.netkeiba.com/race/{race_id}/"
 
@@ -40,6 +76,15 @@ def get_race_result(race_id):
                 h1 = race_name_tag.find("h1")
                 if h1:
                     race_info["レースクラス"] = h1.get_text(strip=True)
+
+            # 取れた文字列がクラス名として妥当か検査する（2026-08-31）
+            #   2026年6月ごろからページ構造が変わり、ここに
+            #     'ダ右1700m / 天候 : 晴 / ダート : 良 / 発走 : 11:30'
+            #   というレース条件の文字列が入るようになっていた。
+            #   7月以降は クラス_num が100%欠損し、クラス変化が計算できなかった。
+            #   DOMの形を当てにいかない。妥当でなければページ全体から探す。
+            if not _looks_like_class(race_info.get("レースクラス")):
+                race_info["レースクラス"] = _find_class_text(soup)
 
         table = soup.find("table", class_="race_table_01")
         if table is None:

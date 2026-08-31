@@ -34,6 +34,12 @@ def classify_class(s):
     if pd.isna(s):
         return np.nan
     s = str(s)
+    # 条件文を掴んでいることがある（2026-08-31）
+    #   'ダ右1700m / 天候 : 晴 / ダート : 良 / 発走 : 11:30' のような文字列が
+    #   レースクラス欄に入っていた。'重' が含まれるので誤判定しうる。
+    #   クラス名ではないと分かる語があれば、最初から欠損として扱う。
+    if any(w in s for w in ("天候", "発走")):
+        return np.nan
     su = s.replace("Ⅰ", "I").replace("Ⅱ", "II").replace("Ⅲ", "III")
     # グレード
     if "G1" in su or "GI" in su and "GII" not in su and "GIII" not in su or "Jpn1" in su or "JpnI" in su and "JpnII" not in su:

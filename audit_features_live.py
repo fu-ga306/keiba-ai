@@ -46,7 +46,9 @@ for i in range(0, len(cols), BATCH):
     acc = np.zeros(len(part))
     for ch in pd.read_csv("race_features.csv", usecols=part,
                           chunksize=100000, low_memory=True):
-        acc += ch.isna().sum().values
+        # ⚠ usecols はファイルの列順で返る（2026-08-31に踏んだ）。
+        #   part の順で受け取ると列と値がずれ、監査結果が丸ごと嘘になる。
+        acc += ch.reindex(columns=part).isna().sum().values
         cnt += len(ch)
     tot[part] = acc / cnt
     n = cnt
