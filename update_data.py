@@ -74,6 +74,27 @@ def make_driver():
 
 
 # ── Step1: 対象race_idを生成 ──────────────────────────────────────────────
+# クラス名の抽出（2026-08-31）
+#   長い順に見るのは「G1」が「G10」等に当たるのを防ぐため。
+#   条件文（天候・発走を含む）はクラス名ではないので弾く。
+_CLASS_WORDS = ("3勝クラス", "2勝クラス", "1勝クラス", "1600万下", "1000万下",
+                "500万下", "1600万", "1000万", "500万",
+                "未勝利", "新馬", "リステッド", "オープン",
+                "JpnIII", "JpnII", "JpnI", "Jpn3", "Jpn2", "Jpn1",
+                "GIII", "GII", "GI", "G3", "G2", "G1")
+
+
+def _extract_class(text):
+    """文字列からクラス名を取り出す。見つからなければ None。"""
+    if not text:
+        return None
+    t = str(text)
+    for w in _CLASS_WORDS:
+        if w in t:
+            return w
+    return None
+
+
 def _race_ids_of_dates(dates: list) -> list:
     """各日のレース一覧ページから、実在する race_id だけを拾う。
 
@@ -188,9 +209,25 @@ def scrape_races(race_ids: list) -> int:
                         if cond in info_text:
                             race_info["馬場状態"] = cond
                             break
-                cls_tag = race_data_div.find("p")
-                if cls_tag:
-                    race_info["レースクラス"] = cls_tag.get_text(strip=True)
+                # ⚠ 最初の <p> は条件文（2026-08-31に判明）
+                #     <p><span>ダ右1700m / 天候 : 晴 / …</span></p>
+                #     <p class="smalltxt">2026年8月30日 … サラ系3歳未勝利 …</p>
+                #   最初の <p> を取っていたため、レースクラス欄に条件文が入り、
+                #   クラス_num が 2026-07 以降 100% 欠損していた。
+                #   クラス変化・距離×クラスが計算できず、学習にも本番にも影響。
+                #
+                #   DOMの形だけに頼らない。候補を順に見て、
+                #   **クラス名として妥当なもの**を採る。
+                race_info["レースクラス"] = None
+                for _cand in ([t.get_text(" ", strip=True)
+                               for t in race_data_div.find_all("p", class_="smalltxt")]
+                              + [t.get_text(" ", strip=True)
+                                 for t in race_data_div.find_all("p")]
+                              + [soup.get_text(" ", strip=True)]):
+                    _cls = _extract_class(_cand)
+                    if _cls:
+                        race_info["レースクラス"] = _cls
+                        break
 
             table = soup.find("table", class_="race_table_01")
             if table is None:
