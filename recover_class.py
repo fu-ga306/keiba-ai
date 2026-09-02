@@ -53,6 +53,76 @@ def log(m):
     print(m, flush=True)
 
 
+def _fill_mawari(df):
+    """回りを競馬場・馬場・距離から埋める。
+
+    取り直した行には回りが入っていない（取得関数が拾わない）。
+    回りは物理的に決まっているので course_turn.csv から引ける。
+    """
+    p = os.path.join(BASE_DIR, "course_turn.csv")
+    if "回り" not in df.columns or not os.path.exists(p):
+        return
+    na = df["回り"].isna()
+    if not na.any():
+        return
+    m = pd.read_csv(p, dtype={"jyo": str})
+    key = {(r.jyo, int(r.is_turf), int(r.距離)): r.回り for r in m.itertuples()}
+    jyo = df["race_id"].astype(str).str[4:6]
+    turf = (df.get("馬場種別").astype(str) == "芝").astype(int)
+    dist = pd.to_numeric(df.get("距離"), errors="coerce")
+    got = 0
+    vals = df["回り"].copy()
+    for i in df.index[na]:
+        d = dist.at[i]
+        if pd.isna(d):
+            continue
+        v = key.get((jyo.at[i], int(turf.at[i]), int(d)))
+        if v:
+            vals.at[i] = v
+            got += 1
+    df["回り"] = vals
+    log(f"  ③ 回りを表から補完   {got:>4} 行")
+
+
+def _fill_shokin(df):
+    """賞金を (クラス, 着順) の中央値で埋める。
+
+    ページの結果表に賞金の列がないので取得では埋まらない。
+    JRAの賞金は定額なので、クラスと着順が分かればほぼ決まる。
+    **推定値なので 賞金_出所 に印を残す。**
+    """
+    if "賞金" not in df.columns:
+        return
+    p = pd.to_numeric(df["賞金"], errors="coerce")
+    na = p.isna()
+    if not na.any():
+        return
+    cls = pd.to_numeric(df.get("クラス_num"), errors="coerce")
+    ch = pd.to_numeric(df.get("着順"), errors="coerce")
+    ok = p.notna() & cls.notna() & ch.notna()
+    tbl = (pd.DataFrame({"c": cls[ok], "k": ch[ok], "p": p[ok]})
+           .groupby(["c", "k"])["p"].median())
+    if "賞金_出所" not in df.columns:
+        df["賞金_出所"] = np.where(p.notna(), "取得", "")
+    vals = p.copy()
+    src = df["賞金_出所"].copy()
+    got = 0
+    for i in df.index[na]:
+        c, k = cls.at[i], ch.at[i]
+        if pd.isna(c) or pd.isna(k):
+            continue
+        v = tbl.get((c, k))
+        if v is None and k >= 6:
+            v = 0.0                      # 6着以下は原則ゼロ
+        if v is not None:
+            vals.at[i] = float(v)
+            src.at[i] = "推定"
+            got += 1
+    df["賞金"] = vals
+    df["賞金_出所"] = src
+    log(f"  ④ 賞金を定額表から補完 {got:>4} 行")
+
+
 def main():
     dry = "--dry-run" in sys.argv
     import cleaner
@@ -64,9 +134,10 @@ def main():
     cls = pd.to_numeric(df.get("クラス_num"), errors="coerce").copy()
     bad_ids = sorted(set(df.loc[cls.isna(), "race_id"]))
     log(f"  クラスが欠けているレース {len(bad_ids)} / 行 {int(cls.isna().sum()):,}")
-    if not bad_ids:
-        log("  復旧するものはありません")
-        return
+
+    # ⚠ クラスが全部埋まっていても、ここで return しないこと（2026-09-02に踏んだ）
+    #   回りと賞金の補完に到達せず、27.7%欠損のまま残った。
+    #   クラスの復旧と、回り・賞金の補完は別の仕事。
 
     if "クラス_出所" not in df.columns:
         df["クラス_出所"] = np.where(cls.notna(), "取得", "")
@@ -74,7 +145,7 @@ def main():
     filled = {}
 
     # ── ① 実測：自分の予想記録から ────────────────────────────────
-    if os.path.exists(MARKS):
+    if bad_ids and os.path.exists(MARKS):
         m = pd.read_csv(MARKS, dtype={"race_id": str}, usecols=["race_id", "クラス"])
         m = m.dropna(subset=["クラス"]).drop_duplicates("race_id")
         for r in m.itertuples():
@@ -91,7 +162,7 @@ def main():
         hist[nm] = [float(x) for x in pd.to_numeric(g, errors="coerce").dropna()]
 
     n_infer = n_lowconf = 0
-    for rid in bad_ids:
+    for rid in (bad_ids if bad_ids else []):
         if rid in filled:
             continue
         g = df[df.race_id == rid]
@@ -112,14 +183,19 @@ def main():
     log(f"  ② 馬の履歴から推定 {n_infer:>4} レース（確信度{CONF_MIN}以上）")
     log(f"     確信度が足りず見送り {n_lowconf} レース")
 
-    rest = len(bad_ids) - len(filled)
-    log("")
-    log(f"  埋まる {len(filled)} / {len(bad_ids)} レース（{len(filled)/len(bad_ids)*100:.1f}%）")
-    log(f"  埋まらない {rest} レース ← 再取得しない限り欠損のまま")
+    if bad_ids:
+        rest = len(bad_ids) - len(filled)
+        log("")
+        log(f"  埋まる {len(filled)} / {len(bad_ids)} レース"
+            f"（{len(filled)/len(bad_ids)*100:.1f}%）")
+        log(f"  埋まらない {rest} レース ← 再取得しない限り欠損のまま")
 
     if dry:
         log("\n  --dry-run のため書き戻しません")
         return
+
+    _fill_mawari(df)
+    _fill_shokin(df)
 
     idx = df["race_id"].map(lambda r: filled.get(r))
     hit = idx.notna()
