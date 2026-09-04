@@ -191,6 +191,22 @@ def main():
                     timeout=1800):
         log("  [警告] クラスの復旧に失敗。クラス変化・距離×クラスが欠損します")
 
+    # ── Step 0.95: 基準表を作り直す ───────────────────────────────────────
+    #   speed_baseline.csv / agari_baseline.csv / course_style_bias*.csv は
+    #   「あれば読む」作りなので、一度作ると古いまま固定される。
+    #   データが増えても基準が更新されず、学習と本番が同じ古い基準を使い続ける。
+    #   Step1 の特徴量再生成で作り直させるため、ここで消す。
+    log("[Step0.95] 基準表を作り直す（消してStep1で再作成させる）")
+    for _b in ("speed_baseline.csv", "agari_baseline.csv",
+               "course_style_bias.csv", "course_style_bias_dated.csv"):
+        _p = os.path.join(BASE_DIR, _b)
+        if os.path.exists(_p):
+            try:
+                os.remove(_p)
+                log(f"    {_b} を削除（Step1で作り直されます）")
+            except Exception as _e:
+                log(f"    [警告] {_b} を消せませんでした: {_e}")
+
     # ── Step 1: 特徴量再生成 ───────────────────────────────────────────────
     log("[Step1] 特徴量再生成")
     run_step(

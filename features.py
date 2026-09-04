@@ -841,7 +841,20 @@ def add_extra_advanced_features(df):
                                 labels=[1, 2, 3, 4]).astype(float)
         if "競馬場cd" not in df.columns:
             df["競馬場cd"] = df["race_id"].astype(str).str[4:6].astype(int)
-        _turf = df["馬場"].astype(str).str.contains("芝").astype(int) if "馬場" in df.columns else 0
+        # ⚠ 芝ダの判定（2026-09-04に修正）
+        #   もとは df["馬場"] を見ていたが、その列は
+        #   race_features.csv にも race_data_clean.csv にも存在しない。
+        #   常に0（ダート扱い）になり、**芝とダートを混ぜて集計していた。**
+        #   実際、保存された表の _track は 0 しか無かった。
+        #   脚質の有利不利は芝とダートで大きく違うので、混ぜると意味が薄れる。
+        if "is_turf" in df.columns:
+            _turf = pd.to_numeric(df["is_turf"], errors="coerce").fillna(0).astype(int)
+        elif "馬場種別" in df.columns:
+            _turf = df["馬場種別"].astype(str).str.contains("芝").astype(int)
+        elif "馬場" in df.columns:
+            _turf = df["馬場"].astype(str).str.contains("芝").astype(int)
+        else:
+            _turf = 0
         df["_track"] = _turf
         df["_距離帯"] = (pd.to_numeric(df["距離"], errors="coerce") / 400).round()
         df["_fuku3"] = (df["着順_num"] <= 3).astype(float)
@@ -863,6 +876,8 @@ def add_extra_advanced_features(df):
         # 学習ビルド(大データ)では最新累積値をCSV保存し、予測時(履歴を対象馬に絞るため
         # コース全体の集計が組めない)はCSVから補完する(course_bias.csvと同じ流儀)。
         _bias_csv = os.path.join(os.path.dirname(os.path.abspath(__file__)), "course_style_bias.csv")
+        _bias_dated = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                   "course_style_bias_dated.csv")
         if len(df) > 100000:
             # 「最新の累積値」も実開催日順で取る（2026-08-14）
             _latest = (_t.sort_values(["_race_dt", "race_id"], na_position="last")
@@ -873,8 +888,49 @@ def add_extra_advanced_features(df):
                 _tot_c >= 30, (_latest["_cs"] + _latest["sum"]) / _tot_c, np.nan)
             _latest.dropna(subset=["コース脚質バイアス"])[_keys + ["コース脚質バイアス"]].to_csv(
                 _bias_csv, index=False, encoding="utf-8-sig")
+
+            # 日付別の累積値も保存する（2026-09-04追加）
+            #   最新値だけだと、BTが各レース時点の値を使うのに対し
+            #   本番は常に最新値を使うことになり、値が食い違う。
+            #   実測60レースで 一致0.0% / 平均差0.58（_R偏差）と全列で最大だった。
+            #   その日より前の直近の値を引けるよう、日付ごとに残す。
+            if "_race_dt" in _t.columns:
+                try:
+                    _d = _t.copy()
+                    _d["_tot"] = _d["_cc"] + _d["count"]
+                    _d["コース脚質バイアス"] = np.where(
+                        _d["_tot"] >= 30, (_d["_cs"] + _d["sum"]) / _d["_tot"], np.nan)
+                    _d = _d.dropna(subset=["コース脚質バイアス", "_race_dt"])
+                    _d = (_d.sort_values(["_race_dt", "race_id"])
+                            .groupby(_keys + ["_race_dt"]).tail(1))
+                    _d["日付"] = pd.to_datetime(_d["_race_dt"]).dt.strftime("%Y-%m-%d")
+                    _d[_keys + ["日付", "コース脚質バイアス"]].to_csv(
+                        _bias_dated, index=False, encoding="utf-8-sig")
+                except Exception as _e_bd:
+                    print(f"  コース脚質バイアス(日付別)の保存に失敗（続行）: {_e_bd}")
         elif os.path.exists(_bias_csv):
             try:
+                # まず日付別の表から「その日より前の直近の値」を引く（2026-09-04）
+                if os.path.exists(_bias_dated) and "_race_dt" in df.columns:
+                    try:
+                        _dt = pd.read_csv(_bias_dated)
+                        _dt["日付"] = pd.to_datetime(_dt["日付"])
+                        for _k in _keys:
+                            _dt[_k] = _dt[_k].astype(df[_k].dtype)
+                        _left = df[_keys + ["_race_dt"]].copy()
+                        _left["_i"] = np.arange(len(_left))
+                        _left = _left.dropna(subset=["_race_dt"]).sort_values("_race_dt")
+                        _dt = _dt.sort_values("日付")
+                        _m = pd.merge_asof(
+                            _left, _dt.rename(columns={"コース脚質バイアス": "_bias_dt"}),
+                            left_on="_race_dt", right_on="日付", by=_keys,
+                            allow_exact_matches=False)
+                        _s = pd.Series(np.nan, index=df.index)
+                        _s.iloc[_m["_i"].values] = _m["_bias_dt"].values
+                        df["コース脚質バイアス"] = df["コース脚質バイアス"].fillna(_s)
+                    except Exception as _e_dt:
+                        print(f"  コース脚質バイアス(日付別)の参照に失敗（最新値で続行）: {_e_dt}")
+
                 _lk = pd.read_csv(_bias_csv).rename(columns={"コース脚質バイアス": "_bias_lk"})
                 for _k in _keys:
                     _lk[_k] = _lk[_k].astype(df[_k].dtype)
@@ -1756,6 +1812,7 @@ def add_chokyo_features(df, base_dir=None):
 #   リークを出したのと同じ形。ここでは shift(1) を挟んだ過去分だけを残し、
 #   生の指数は計算し終えたら必ず drop する。
 SPEED_BASE_CSV = "speed_baseline.csv"
+AGARI_BASE_CSV = "agari_baseline.csv"
 SPEED_HIST_COLS = [
     "速度_過去平均", "速度_過去最高", "速度_過去標準偏差", "速度_直近3",
     "速度_前走", "速度_伸び",
@@ -1795,6 +1852,39 @@ def _speed_baseline(df, base_dir=None):
     return b
 
 
+def _agari_baseline(df, base_dir=None):
+    """(競馬場cd, 距離, is_turf, 馬場状態_num) ごとの基準上りを返す。
+
+    _speed_baseline と同じ考え方（2026-09-04に追加）。
+    それまでは、その場のデータフレームの中央値を使っていた。
+    BTは32万行、本番は絞り込み後の2万行なので基準が食い違い、
+    上指_過去平均/過去最高/直近3/前走 の4列がBTと一致しなかった。
+    """
+    base_dir = base_dir or os.path.dirname(os.path.abspath(__file__))
+    path = os.path.join(base_dir, AGARI_BASE_CSV)
+    keys = ["競馬場cd", "距離", "is_turf", "馬場状態_num"]
+    if os.path.exists(path):
+        try:
+            b = pd.read_csv(path)
+            if len(b) and set(keys).issubset(b.columns):
+                return b
+        except Exception as e:
+            print(f"  上り基準の読込に失敗（作り直します）: {e}")
+    d = df.copy()
+    for k in keys:
+        d[k] = pd.to_numeric(d[k], errors="coerce")
+    d["_a"] = pd.to_numeric(d.get("上り"), errors="coerce")
+    b = (d.dropna(subset=keys + ["_a"])
+           .groupby(keys, observed=True)["_a"].median()
+           .rename("基準上り").reset_index())
+    b = b[b["基準上り"] > 0]
+    try:
+        b.to_csv(path, index=False, encoding="utf-8-sig")
+    except Exception as e:
+        print(f"  上り基準の保存に失敗（続行）: {e}")
+    return b
+
+
 def add_speed_index_features(df, base_dir=None):
     """速度指数・上り指数を作り、その馬の過去分だけを特徴量として残す。"""
     if "タイム秒" not in df.columns:
@@ -1822,8 +1912,19 @@ def add_speed_index_features(df, base_dir=None):
 
     _agari = pd.to_numeric(df.get("上り"), errors="coerce")
     if _agari is not None and _agari.notna().any():
-        _ab = (df.dropna(subset=keys).assign(_a=_agari)
-                 .groupby(keys, observed=True)["_a"].transform("median"))
+        # ⚠ その場の中央値を使わない（2026-09-04）
+        #   BTは32万行、本番は絞り込み後の2万行で、基準が食い違っていた。
+        #   速度指数と同じく、保存した基準を引く。
+        ab = _agari_baseline(df, base_dir)
+        df = df.merge(ab, on=keys, how="left")
+        if df["基準上り"].isna().any():
+            # 基準が引けない条件は距離だけの平均で埋める（速度指数と同じ流儀）
+            fb = (ab.groupby("距離", observed=True)["基準上り"].mean()
+                    .rename("_基準上りfb").reset_index())
+            df = df.merge(fb, on="距離", how="left")
+            df["基準上り"] = df["基準上り"].fillna(df["_基準上りfb"])
+            df = df.drop(columns=["_基準上りfb"])
+        _ab = df["基準上り"]
         df["_上り指数"] = (_ab - _agari) / _ab * 1000
         df.loc[df["_上り指数"].abs() > 300, "_上り指数"] = np.nan
     else:
@@ -2040,15 +2141,21 @@ def build_features_for_prediction(race_df, history_df):
     #   ・馬の過去成績/距離適性/好調度 → 予測対象馬(馬名)の過去走
     #   ・騎手トレンド/騎手勝率 → 予測対象の騎手が乗った全レース
     #   ・調教師成績 → 予測対象の調教師のレース
+    #   ・馬主成績 → 予測対象の馬主の持ち馬のレース（2026-09-04に追加）
     #   ・血統 → sire_stats CSV から引く(履歴不要)
     # これらの和集合だけ残せば、計算結果は全履歴使用時と同一になる。
-    target_horses = target_jockeys = target_trainers = set()
+    #
+    # ⚠ 馬主が抜けていた（2026-09-04に発見）
+    #   馬主の他の持ち馬のレースが履歴から落ち、馬主成績がごく一部から
+    #   計算されていた。実測60レースで一致0.0%・平均差0.30。
+    target_horses = target_jockeys = target_trainers = target_owners = set()
     try:
         def _norm(s):
             return s.dropna().astype(str).str.strip()
         target_horses   = set(_norm(race_df["馬名"]))   if "馬名"   in race_df.columns else set()
         target_jockeys  = set(_norm(race_df["騎手"]))   if "騎手"   in race_df.columns else set()
         target_trainers = set(_norm(race_df["調教師"])) if "調教師" in race_df.columns else set()
+        target_owners   = set(_norm(race_df["馬主"]))   if "馬主"   in race_df.columns else set()
         mask = pd.Series(False, index=history_df.index)
         if target_horses and "馬名" in history_df.columns:
             mask |= history_df["馬名"].astype(str).str.strip().isin(target_horses)
@@ -2056,6 +2163,8 @@ def build_features_for_prediction(race_df, history_df):
             mask |= history_df["騎手"].astype(str).str.strip().isin(target_jockeys)
         if target_trainers and "調教師" in history_df.columns:
             mask |= history_df["調教師"].astype(str).str.strip().isin(target_trainers)
+        if target_owners and "馬主" in history_df.columns:
+            mask |= history_df["馬主"].astype(str).str.strip().isin(target_owners)
         if mask.any():
             history_df = history_df[mask].copy()
     except Exception as _e:
@@ -2067,7 +2176,14 @@ def build_features_for_prediction(race_df, history_df):
     #   過大なままなら「対象馬の過去走＋直近レース」に限定して上限を課す。
     #   通常レースは絞り込み後 約5〜11k行なので下記(20000)は no-op。新馬フォールバック時のみ
     #   発火し 32万行→2万行(約4分)に抑える。
-    _MAX_PRED_HISTORY = 20000
+    # 実験で上書きできるようにする（2026-09-03）
+    #   この値は「絞り込みが空振りして5〜11k行しか残らない」前提で決めたもの。
+    #   名寄せを直して騎手・調教師が一致するようになった結果、
+    #   38,000〜68,000行が残るようになり、その6〜7割が捨てられていた。
+    #   本番とBTで79列の値が違う原因がここ。
+    _MAX_PRED_HISTORY = globals().get("_MAX_PRED_HISTORY_OVERRIDE", 20000)
+    if _MAX_PRED_HISTORY is None:
+        _MAX_PRED_HISTORY = 10 ** 9
     if len(history_df) > _MAX_PRED_HISTORY:
         keep = pd.Series(False, index=history_df.index)
         if target_horses and "馬名" in history_df.columns:

@@ -53,8 +53,18 @@ def main():
             #   **引数として実際にそのスクリプトを走らせているか**を見る。
             if any(str(a).replace("\\", "/").endswith("auto_predict_publish.py")
                    for a in cl):
-                log(f"⚠ 予想システムが稼働中（pid{p.pid}）。中止します")
-                return
+                # 開催日でなければ予想は待機しているだけなので走らせてよい。
+                # 開催日（today_predictions.csv が当日更新）のときだけ止める。
+                import os as _os, datetime as _dt
+                _tp = _os.path.join(BASE_DIR, "today_predictions.csv")
+                _race_day = (_os.path.exists(_tp) and
+                             _dt.date.fromtimestamp(_os.path.getmtime(_tp))
+                             == _dt.date.today())
+                if _race_day:
+                    log(f"⚠ 開催日で予想が稼働中（pid{p.pid}）。中止します")
+                    return
+                log(f"  予想は稼働中（pid{p.pid}）だが開催日ではないので続行します")
+                break
     except Exception:
         pass
 

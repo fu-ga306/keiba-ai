@@ -1,146 +1,126 @@
 # -*- coding: utf-8 -*-
-"""2025年だけ弱いのはなぜか（2026-08-18）
+"""2025年だけ成績が悪い理由を切り分ける（2026-09-03）
 
-なぜ調べるか
-  どの買い方でも2025年だけ成績が落ちる。
-    軸gap>=1.5   137 / 116 / 111 / 163 / **79**
-    軸gap>=2.0   210 / 106 / 154 / 337 / **69**
-  「モデルが古くなったから」は否定済み（2024年末で固定しても毎年学習しても
-  2025年は79%前後で同じ）。ならば別の原因がある。
+年別（作り直し後の5年）
+  2021:107%  2022:110%  2023:113%  2024:134%  2025:81%
 
-  2026年（未見データ）は115.6%だったので、2025年が例外だった可能性が高い。
-  だが原因が分からないままだと、また起きたときに対応できない。
+⚠ 2025年はもう見てしまった。ここで分かったことをもとに構成を変えると
+  事前登録の枠組みが無効になる。**理解までにとどめ、変更はしない。**
 
-調べること（いずれも回収率とは独立に測れるもの）
-  ① 市場そのものが効率的になったか … 市場だけのR²が上がっていないか
-  ② モデルの実力が落ちたか        … ΔR²が下がっていないか
-  ③ 買っている馬の性質が変わったか  … 人気・オッズ・頭数の分布
-  ④ 特定の場・クラス・距離に偏っているか
-  ⑤ 運の問題か                  … 的中率は保たれているのに配当だけ低い、など
-
-  ⑤が本命の仮説。的中率が変わらず配当だけ落ちているなら、それは
-  「当てているが配当に恵まれなかった」＝運。
-
-実行: python diag_2025.py
+切り分ける観点
+  ① 的中率が落ちたのか、払戻が落ちたのか
+     的中率が同じで回収率だけ落ちたなら、当てた馬のオッズが安かった＝運
+     的中率が落ちたなら、モデルの選別力そのものが効いていない
+  ② シャッフル（中身ゼロ）の水準が年で違わないか
+     2025のシャッフルも低いなら、市場側の性質が変わっている
+  ③ データの質が年で違わないか（欠損率）
+  ④ 買った馬の人気が年で違わないか
 """
-import warnings
+import sys
+
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
+import os
+from datetime import datetime
 
 import numpy as np
 import pandas as pd
 
-warnings.filterwarnings("ignore")
-
-import model_diag as M
-
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+CACHE = os.path.join(BASE_DIR, "_diag_pred.pkl")
 YEARS = [2021, 2022, 2023, 2024, 2025]
-EPS = 1e-9
-AX_GAP, MATE_GAP, MATE_MAX = 1.5, 1.3, 3
-rng = np.random.default_rng(20260818)
 
 
 def log(m):
-    print(m, flush=True)
+    print(f"[{datetime.now():%H:%M:%S}] {m}", flush=True)
+
+
+def get_pred():
+    if os.path.exists(CACHE):
+        log("キャッシュから読み込み")
+        return pd.read_pickle(CACHE)
+    sys.path.insert(0, BASE_DIR)
+    import exp_model_202609 as E
+    log("5年分の予測を作成（10分ほど）")
+    D, BASE = E.load()
+    P = E.fit_predict(D, BASE, YEARS, [42, 7, 123], 600)
+    P.to_pickle(CACHE)
+    return P
+
+
+def with_payout(P):
+    jv = pd.read_csv(os.path.join(BASE_DIR, "jv_payouts.csv"), dtype=str)
+    jv = jv[jv.券種 == "単勝"].copy()
+    jv["払戻金"] = pd.to_numeric(jv["払戻金"], errors="coerce").fillna(0)
+    jv["bn"] = pd.to_numeric(jv["組み合わせ"], errors="coerce")
+    P = P.copy()
+    P["bn"] = pd.to_numeric(P["馬番"], errors="coerce")
+    P = P.merge(jv[["race_id", "bn", "払戻金"]], on=["race_id", "bn"], how="left")
+    P["払戻"] = P["払戻金"].fillna(0.0)
+    return P
 
 
 def main():
-    d = pd.read_csv("resid_kinds_pred.csv", dtype={"race_id": str, "bn": str})
-    d["gap"] = d.p1 / d.q
-    d["年"] = d.race_id.str[:4].astype(int)
-    rf = pd.read_csv("race_features.csv", low_memory=False, dtype={"race_id": str},
-                     usecols=["race_id", "is_turf", "距離", "出走頭数",
-                              "クラス_num"]).drop_duplicates("race_id")
-    rf["race_id"] = rf["race_id"].astype(str).str.replace(r"\.0$", "", regex=True)
-    d = d.merge(rf, on="race_id", how="left")
-    jv = pd.read_csv("jv_payouts.csv", dtype=str)
-    jv["払戻金"] = pd.to_numeric(jv["払戻金"], errors="coerce").fillna(0)
-    PAY = {(r.race_id, r.券種, r.組み合わせ): r.払戻金
-           for r in jv[jv.券種.isin(("単勝", "ワイド"))].itertuples()}
-    log(f"検体 {len(d):,}頭 / {d.race_id.nunique():,}レース\n")
+    P = with_payout(get_pred())
+    ax = P.loc[P.groupby("race_id")["gap"].idxmax()]
+    ax = ax[ax.gap >= 1.5]
+    log(f"  軸 {len(ax):,}点（単勝のみ・gap>=1.5）")
 
-    # ── ① 市場そのものが効率的になったか ────────────────────
-    log("=== ① 市場そのものの精度（市場だけで1着を当てたときのR²）===")
-    log(f"  {'年':<8}{'レース':>8}{'市場R2':>9}{'ΔR2(モデルの上乗せ)':>22}")
+    log("")
+    log("  === ① 的中率が落ちたのか、払戻が落ちたのか ===")
+    log("  %-6s %8s %9s %9s %12s %10s" %
+        ("年", "点数", "的中率", "回収率", "的中時の平均払戻", "平均人気"))
+    log("  " + "-" * 62)
+    for y, g in ax.groupby("年"):
+        hit = g["払戻"] > 0
+        log("  %-6d %8d %8.1f%% %8.1f%% %11.0f円 %9.1f"
+            % (y, len(g), hit.mean() * 100, g["払戻"].mean(),
+               g.loc[hit, "払戻"].mean() if hit.any() else 0,
+               pd.to_numeric(g["人気"], errors="coerce").mean()))
+
+    log("")
+    log("  === ② 中身をゼロにした水準（年ごと） ===")
+    log("  市場側の性質が変わっていれば、シャッフルの水準も年で動く")
+    rng = np.random.default_rng(903)
+    log("  %-6s %14s %12s" % ("年", "シャッフル平均", "実測"))
+    log("  " + "-" * 36)
     for y in YEARS:
-        s = d[d.年 == y].copy()
-        s["_rc"] = pd.factorize(s.race_id)[0]
-        s["lq"] = np.log(s.q.clip(EPS))
-        s["lp"] = np.log((s.p1 / s.groupby("race_id").p1.transform("sum")).clip(EPS))
-        l0 = M.null_ll(s)
-        _, lm = M.clogit(s, ["lq"])
-        _, lb = M.clogit(s, ["lq", "lp"])
-        log(f"  {y:<8}{s.race_id.nunique():>8,}{1-lm/l0:>9.4f}"
-            f"{(1-lb/l0)-(1-lm/l0):>21.4f}")
+        Py = P[P.年 == y]
+        vals = []
+        for _ in range(40):
+            S = Py.assign(_r=rng.random(len(Py))).sort_values(["race_id", "_r"])
+            S["g2"] = Py.sort_values("race_id")["gap"].values
+            a = S.loc[S.groupby("race_id")["g2"].idxmax()]
+            a = a[a["g2"] >= 1.5]
+            if len(a):
+                vals.append(a["払戻"].mean())
+        obs = ax[ax.年 == y]["払戻"].mean()
+        log("  %-6d %13.1f%% %11.1f%%" % (y, np.mean(vals), obs))
 
-    # ── ③⑤ 買っている馬と結果 ──────────────────────────
-    rows = []
-    for rid, g in d.groupby("race_id", sort=False):
-        gv = g.gap.values
-        k = int(np.argmax(gv))
-        if gv[k] < AX_GAP:
-            continue
-        a = g.bn.values[k]
-        y = int(rid[:4])
-        rows.append({"年": y, "券種": "単勝", "払戻": PAY.get((rid, "単勝", a), 0.0),
-                     "オッズ": g.odds.values[k], "人気": g["人気"].values[k],
-                     "gap": gv[k], "頭数": g["出走頭数"].iloc[0],
-                     "is_turf": g["is_turf"].iloc[0], "cls": g["クラス_num"].iloc[0]})
-        if pd.to_numeric(g["is_turf"], errors="coerce").iloc[0] == 0:
-            for j in [x for x in np.argsort(-gv) if x != k and gv[x] >= MATE_GAP][:MATE_MAX]:
-                b = g.bn.values[j]
-                rows.append({"年": y, "券種": "ワイド",
-                             "払戻": PAY.get((rid, "ワイド", f"{min(a,b)}-{max(a,b)}"), 0.0),
-                             "オッズ": g.odds.values[j], "人気": g["人気"].values[j],
-                             "gap": gv[j], "頭数": g["出走頭数"].iloc[0],
-                             "is_turf": 0, "cls": g["クラス_num"].iloc[0]})
-    R = pd.DataFrame(rows)
+    log("")
+    log("  === ③ 買った馬の人気帯（年ごと・単勝のみ） ===")
+    bands = [(1, 3, "1-3"), (4, 6, "4-6"), (7, 9, "7-9"), (10, 99, "10-")]
+    log("  %-6s " % "年" + "  ".join("%8s" % b[2] for b in bands))
+    log("  " + "-" * 46)
+    for y, g in ax.groupby("年"):
+        p = pd.to_numeric(g["人気"], errors="coerce")
+        log("  %-6d " % y + "  ".join(
+            "%7.1f%%" % (((p >= lo) & (p <= hi)).mean() * 100) for lo, hi, _ in bands))
 
-    log("\n=== ② 買っている馬の性質は変わったか ===")
-    log(f"  {'年':<8}{'点数':>7}{'的中率':>8}{'中央オッズ':>10}{'中央人気':>9}"
-        f"{'平均gap':>9}{'ROI':>8}")
-    for y in YEARS:
-        s = R[R.年 == y]
-        log(f"  {y:<8}{len(s):>7,}{(s.払戻>0).mean()*100:>7.1f}%"
-            f"{s.オッズ.median():>10.1f}{s.人気.median():>9.0f}"
-            f"{s.gap.mean():>9.2f}{s.払戻.mean():>7.1f}%")
-
-    log("\n=== ⑤ 的中率は保たれているのに配当だけ落ちたのか ===")
-    log("  当たったときの平均払戻を見る。的中率が同じで払戻だけ低いなら『運』")
-    log(f"  {'年':<8}{'的中率':>8}{'当たりの平均払戻':>16}{'ROI':>8}")
-    for y in YEARS:
-        s = R[R.年 == y]
-        h = s[s.払戻 > 0]
-        log(f"  {y:<8}{(s.払戻>0).mean()*100:>7.1f}%{h.払戻.mean():>15.0f}円"
-            f"{s.払戻.mean():>7.1f}%")
-
-    log("\n=== ④ 2025年の内訳（どこで落ちたか）===")
-    s25 = R[R.年 == 2025]
-    oth = R[R.年 != 2025]
-    log(f"  {'区分':<16}{'2025点数':>9}{'2025 ROI':>10}{'他年 ROI':>10}{'差':>8}")
-    segs = [("単勝", R.券種 == "単勝"), ("ワイド", R.券種 == "ワイド"),
-            ("芝", R.is_turf == 1), ("ダート", R.is_turf == 0),
-            ("少頭数(<=12)", R.頭数 <= 12), ("多頭数(13+)", R.頭数 >= 13),
-            ("下級(cls<=2)", R.cls <= 2), ("上級(cls>=4)", R.cls >= 4),
-            ("人気1-3", R.人気 <= 3), ("人気4-9", (R.人気 >= 4) & (R.人気 <= 9)),
-            ("人気10+", R.人気 >= 10)]
-    for lab, f in segs:
-        a = R[(R.年 == 2025) & f]
-        b = R[(R.年 != 2025) & f]
-        if len(a) < 50 or len(b) < 200:
-            continue
-        log(f"  {lab:<16}{len(a):>9,}{a.払戻.mean():>9.1f}%{b.払戻.mean():>9.1f}%"
-            f"{a.払戻.mean()-b.払戻.mean():>+8.1f}")
-
-    log("\n=== 2025年の成績は偶然の範囲か ===")
-    v_oth = oth.払戻.values
-    n25 = len(s25)
-    sim = np.array([rng.choice(v_oth, n25).mean() for _ in range(4000)])
-    p = float((sim <= s25.払戻.mean()).mean())
-    log(f"  他の4年の払戻から{n25:,}点を無作為に取ると、2025年({s25.払戻.mean():.1f}%)"
-        f"以下になる確率")
-    log(f"  p = {p:.4f}")
-    log(f"  → {'⚠ 偶然では説明しにくい。2025年に何かあった' if p < 0.05 else '○ 偶然の範囲。運の悪い年だったで説明がつく'}")
-    log(f"  （参考）他4年の分布: 中央{np.median(sim):.1f}% "
-        f"5%点{np.percentile(sim,5):.1f}% 95%点{np.percentile(sim,95):.1f}%")
+    log("")
+    log("  === ④ 人気帯ごとの回収率（年ごと） ===")
+    for lo, hi, lab in bands:
+        s = ax[(pd.to_numeric(ax["人気"], errors="coerce") >= lo)
+               & (pd.to_numeric(ax["人気"], errors="coerce") <= hi)]
+        row = []
+        for y in YEARS:
+            g = s[s.年 == y]
+            row.append("%6.0f%%" % g["払戻"].mean() if len(g) >= 30 else "     -")
+        log("    %-6s " % lab + " ".join(row) + "   ← " + " ".join(str(y) for y in YEARS))
 
 
 if __name__ == "__main__":
