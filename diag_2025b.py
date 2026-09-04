@@ -1,170 +1,118 @@
 # -*- coding: utf-8 -*-
-"""2025年の異常をさらに掘る（2026-08-18・第2段）
+"""2025年だけモデルが効かない理由を探す（2026-09-04）
 
-第1段でわかったこと
-  ・市場の精度は変わっていない（市場R² 0.2532 で他年と同水準）
-  ・モデルの上乗せだけが消えた（ΔR² 0.0115 → 0.0006）
-  ・的中率そのものが落ちた（13.2% → 9.3%）。運では説明できない（p=0.0013）
-  ・落ち方はほぼ全区分で均一（-40〜-77pt）。上級クラスだけ無傷
+年別（コース脚質バイアス修正後）
+  2021:129%  2022:109%  2023:149%  2024:132%  2025:97%
+シャッフルとの差  +36 +38 +51 +99 → +7
 
-  そして最大の手がかり:
-    **2025年は平均gapが最も高い（1.86）のに的中率が最も低い（9.3%）**
-    モデルは他の年より自信を持っていたのに、当たらなかった。
-    これは「較正が崩れた」形で、学習時と検証時で何かが変わったことを示す。
+市場側は変わっていない（シャッフルの水準は72.8%で普通）。
+**モデルの上乗せだけが消えている。**
 
-この段で調べること
-  ① 特徴量の欠損率が2025年に変わっていないか（データ側の事故）
-  ② gapの分布そのものが2025年にずれていないか
-  ③ gap帯ごとの的中率（較正が崩れているのはどの帯か）
-  ④ 2025年の中で時期による差はあるか
-  ⑤ 学習データから2024年を抜いたら2025年は良くなるか
-     （2024はΔR²0.0115と異常に良い年。そこに引きずられた可能性）
+⚠ 2025年はもう見てしまった。ここで分かったことをもとに構成を変えると
+  事前登録の枠組みが無効になる。**理解までにとどめ、変更はしない。**
 
-実行: python diag_2025b.py
+調べること
+  ① データの質が2025年だけ落ちていないか（列ごとの欠損率）
+  ② 確率の較正が2025年だけ崩れていないか
+  ③ 特徴量の分布が2025年でずれていないか
+  ④ 場・クラス・月で偏りがないか
 """
-import warnings
+import sys
 
-import lightgbm as lgb
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
+import os
+import pickle
+
 import numpy as np
 import pandas as pd
 
-warnings.filterwarnings("ignore")
-
-import model_diag as M
-from market_free_model import FEATURE_COLS_MF
-
-YEARS = [2021, 2022, 2023, 2024, 2025]
-EPS = 1e-9
-SEEDS = [42, 7, 123]
-N_ROUNDS = 600
-AX_GAP = 1.5
-rng = np.random.default_rng(20260818)
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+JYO = {"01": "札幌", "02": "函館", "03": "福島", "04": "新潟", "05": "東京",
+       "06": "中山", "07": "中京", "08": "京都", "09": "阪神", "10": "小倉"}
 
 
 def log(m):
     print(m, flush=True)
 
 
-def params(seed):
-    return dict(objective="binary", metric="binary_logloss", learning_rate=0.03,
-                num_leaves=63, min_data_in_leaf=50, feature_fraction=0.8,
-                bagging_fraction=0.8, bagging_freq=1, verbose=-1,
-                seed=seed, bagging_seed=seed, feature_fraction_seed=seed)
-
-
-def load():
-    head = pd.read_csv("race_features.csv", nrows=1)
-    BASE = [c for c in FEATURE_COLS_MF if c in head.columns]
-    use = list(dict.fromkeys(["race_id", "馬名", "馬番", "着順_num", "人気",
-                              "単勝オッズ", "is_turf", "距離"] + BASE))
-    D = pd.read_csv("race_features.csv", usecols=use, dtype={"race_id": str},
-                    low_memory=False)
-    D["race_id"] = D["race_id"].astype(str).str.replace(r"\.0$", "", regex=True)
-    D["年"] = D["race_id"].str[:4].astype(int)
-    D["着"] = pd.to_numeric(D["着順_num"], errors="coerce")
-    D["odds"] = pd.to_numeric(D["単勝オッズ"], errors="coerce")
-    D = D[(D.odds > 0) & D["着"].notna()].copy()
-    D["win"] = (D["着"] == 1).astype(float)
-    D["頭数"] = D.groupby("race_id")["race_id"].transform("size")
-    D = D[D["頭数"] >= 8].copy().reset_index(drop=True)
-    inv = 1.0 / D.odds
-    D["q"] = inv / D.groupby("race_id")["odds"].transform(lambda s: (1.0 / s).sum())
-    D["lq"] = np.log(D.q.clip(EPS))
-    return D, BASE
-
-
-def fit_predict(tr, te, cols):
-    f = np.mean([lgb.train(params(sd),
-                           lgb.Dataset(tr[cols], tr.win, init_score=tr.lq.values),
-                           num_boost_round=N_ROUNDS).predict(te[cols], raw_score=True)
-                 for sd in SEEDS], axis=0)
-    d = te.copy()
-    sc = f + te.lq.values
-    d["_sc"] = sc
-    e = np.exp(d._sc - d.groupby("race_id")._sc.transform("max"))
-    d["p"] = e / e.groupby(d.race_id).transform("sum")
-    d["gap"] = d.p / d.q
-    return d
-
-
-def dr2(d):
-    s = d.copy()
-    s["_rc"] = pd.factorize(s.race_id)[0]
-    s["lp"] = np.log(s.p.clip(EPS))
-    l0 = M.null_ll(s)
-    _, lm = M.clogit(s, ["lq"])
-    _, lb = M.clogit(s, ["lq", "lp"])
-    return (1 - lb / l0) - (1 - lm / l0)
-
-
 def main():
-    D, BASE = load()
-    log(f"検体 {len(D):,}頭 / {D.race_id.nunique():,}レース  特徴量{len(BASE)}列\n")
+    m = pickle.load(open(os.path.join(BASE_DIR, "model_resid.pkl"), "rb"))
+    cols = m["use_cols"]
 
-    # ── ① 欠損率 ────────────────────────────────────
-    log("=== ① 特徴量の欠損率は2025年に変わったか ===")
-    miss = {}
-    for y in YEARS:
-        s = D[D.年 == y]
-        miss[y] = s[BASE].isna().mean()
-    mdf = pd.DataFrame(miss)
-    log(f"  全特徴量の平均欠損率: " + "  ".join(
-        f"{y}:{mdf[y].mean()*100:.1f}%" for y in YEARS))
-    ch = (mdf[2025] - mdf[[2021, 2022, 2023, 2024]].mean(axis=1)).sort_values(
-        ascending=False)
-    log(f"\n  2025年に欠損が増えた列 上位8:")
-    for k, v in ch.head(8).items():
-        if v > 0.005:
-            log(f"    {k[:34]:<36}{mdf[2025][k]*100:>6.1f}%  (他年平均"
-                f"{mdf[[2021,2022,2023,2024]].mean(axis=1)[k]*100:.1f}% / 差{v*100:+.1f}pt)")
-    big = ch[ch > 0.05]
-    log(f"  → 5pt以上増えた列: {len(big)}件 {'⚠ 要注意' if len(big) else '（なし）'}")
+    # ── ① 欠損率を年ごとに ──────────────────────────────────
+    log("  === ① データの質（欠損率）を年ごとに ===")
+    BATCH = 40
+    acc = {}
+    for i in range(0, len(cols), BATCH):
+        part = cols[i:i + BATCH]
+        for ch in pd.read_csv(os.path.join(BASE_DIR, "race_features.csv"),
+                              usecols=part + ["race_id"], dtype={"race_id": str},
+                              chunksize=100000, low_memory=True):
+            ch["年"] = ch["race_id"].str[:4]
+            sub = ch.reindex(columns=part)
+            for y, idx in ch.groupby("年").groups.items():
+                a = acc.setdefault(y, {"n": 0, "na": np.zeros(len(cols))})
+                a["n"] += len(idx)
+                a["na"][i:i + len(part)] += sub.loc[idx].isna().sum().values
+    yrs = sorted(k for k in acc if k >= "2021")
+    log("  %-6s %8s %10s" % ("年", "行数", "平均欠損率"))
+    for y in yrs:
+        a = acc[y]
+        log("  %-6s %8d %9.1f%%" % (y, a["n"], (a["na"] / a["n"]).mean() * 100))
 
-    # ── ②③ gapの分布と較正 ──────────────────────────
-    log("\n=== ② gapの分布は2025年にずれたか ===")
-    d = pd.read_csv("resid_kinds_pred.csv", dtype={"race_id": str, "bn": str})
-    d["gap"] = d.p1 / d.q
-    d["年"] = d.race_id.str[:4].astype(int)
-    log(f"  {'年':<8}{'gap中央':>9}{'gap90%点':>10}{'gap>=1.5の割合':>15}{'gap>=2.0':>10}")
-    for y in YEARS:
-        s = d[d.年 == y]
-        log(f"  {y:<8}{s.gap.median():>9.3f}{s.gap.quantile(.9):>10.3f}"
-            f"{(s.gap>=1.5).mean()*100:>14.1f}%{(s.gap>=2.0).mean()*100:>9.1f}%")
+    log("")
+    log("  2025年だけ欠損が増えた列（上位10）")
+    base = np.mean([acc[y]["na"] / acc[y]["n"] for y in yrs if y != "2025"], axis=0)
+    cur = acc["2025"]["na"] / acc["2025"]["n"]
+    d = pd.DataFrame({"列": cols, "2021-24": base * 100, "2025": cur * 100})
+    d["差"] = d["2025"] - d["2021-24"]
+    for _, r in d.sort_values("差", ascending=False).head(10).iterrows():
+        log("    %-30s %6.1f%% → %6.1f%%  %+6.1f"
+            % (r["列"][:30], r["2021-24"], r["2025"], r["差"]))
 
-    log("\n=== ③ gap帯ごとの実際の勝率（較正が崩れているか）===")
-    log("  gapが高いほど勝率も高いはず。2025だけ崩れていないか見る。")
-    log(f"  {'gap帯':<12}" + "".join(f"{y:>10}" for y in YEARS))
-    for lo, hi in [(0, .8), (.8, 1.2), (1.2, 1.6), (1.6, 2.2), (2.2, 3.5), (3.5, 99)]:
-        row = f"  {lo}-{hi if hi < 90 else '∞'}".ljust(14)
-        for y in YEARS:
-            s = d[(d.年 == y) & (d.gap >= lo) & (d.gap < hi)]
-            row += f"{s.win.mean()*100:>9.1f}%" if len(s) > 200 else f"{'--':>10}"
-        log(row)
+    # ── ② 較正が年ごとに崩れていないか ──────────────────────
+    log("")
+    log("  === ② 確率の較正を年ごとに ===")
+    p = pd.read_csv(os.path.join(BASE_DIR, "resid_kinds_pred.csv"),
+                    dtype={"race_id": str, "bn": str})
+    p["着"] = pd.to_numeric(p["着"], errors="coerce")
+    p = p[p["着"].notna()]
+    p["年"] = p["race_id"].str[:4]
+    p["gap"] = p.p1 / p.q
+    log("  軸（gap最大かつ1.5以上）について")
+    log("  %-6s %8s %12s %12s %8s" % ("年", "頭数", "予測勝率", "実際の勝率", "比"))
+    ax = p.loc[p.groupby("race_id")["gap"].idxmax()]
+    ax = ax[ax["gap"] >= 1.5]
+    for y, g in ax.groupby("年"):
+        pr, ac = g["p1"].mean(), (g["着"] == 1).mean()
+        log("  %-6s %8d %11.1f%% %11.1f%% %8.2f" % (y, len(g), pr*100, ac*100, ac/max(pr,1e-9)))
 
-    # ── ④ 2025年内の時期差 ─────────────────────────
-    log("\n=== ④ 2025年の中で時期による差 ===")
-    s25 = d[d.年 == 2025].copy()
-    s25["kai"] = s25.race_id.str[6:8]
-    sel = s25.loc[s25.groupby("race_id").gap.idxmax()]
-    sel = sel[sel.gap >= AX_GAP]
-    log(f"  開催回ごとの軸の勝率（{len(sel)}レース）")
-    log(f"  {'開催回':<8}{'レース':>7}{'勝率':>8}")
-    for k, g in sel.groupby("kai"):
-        if len(g) >= 30:
-            log(f"  {k:<8}{len(g):>7}{g.win.mean()*100:>7.1f}%")
-
-    # ── ⑤ 2024年を学習から抜いたら ────────────────────
-    log("\n=== ⑤ 学習から2024年を抜いたら2025年は良くなるか ===")
-    log("  2024はΔR²0.0115と異常に良い年。そこに引きずられた可能性を確かめる。")
-    te = D[D.年 == 2025]
-    for lab, tr in (("2019-2024（通常）", D[D.年 <= 2024]),
-                    ("2019-2023（2024を除く）", D[D.年 <= 2023]),
-                    ("2019-2022（2023-24を除く）", D[D.年 <= 2022])):
-        log(f"  {lab} 学習中…")
-        r = fit_predict(tr, te, BASE)
-        s = r.loc[r.groupby("race_id").gap.idxmax()]
-        s = s[s.gap >= AX_GAP]
-        log(f"    ΔR² {dr2(r):.4f}  軸{len(s):,}レース 勝率{s.win.mean()*100:.1f}%")
+    # ── ④ 場・月で偏りがないか ─────────────────────────────
+    log("")
+    log("  === ④ 2025年の内訳 ===")
+    jv = pd.read_csv(os.path.join(BASE_DIR, "jv_payouts.csv"), dtype=str)
+    jv = jv[jv.券種 == "単勝"].copy()
+    jv["払戻金"] = pd.to_numeric(jv["払戻金"], errors="coerce").fillna(0)
+    jv["bn"] = pd.to_numeric(jv["組み合わせ"], errors="coerce")
+    ax2 = ax.copy()
+    ax2["bn2"] = pd.to_numeric(ax2["bn"], errors="coerce")
+    ax2 = ax2.merge(jv[["race_id", "bn", "払戻金"]].rename(columns={"bn": "bn2"}),
+                    on=["race_id", "bn2"], how="left")
+    ax2["払戻"] = ax2["払戻金"].fillna(0.0)
+    ax2["場"] = ax2["race_id"].str[4:6].map(JYO)
+    log("  場ごとの回収率")
+    log("  %-6s" % "場" + "".join("%8s" % y for y in yrs))
+    for j, g in ax2.groupby("場"):
+        row = []
+        for y in yrs:
+            s = g[g["年"] == y]
+            row.append("%7.0f%%" % s["払戻"].mean() if len(s) >= 40 else "      -")
+        log("  %-6s" % j + "".join(row))
 
 
 if __name__ == "__main__":
