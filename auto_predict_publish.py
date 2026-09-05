@@ -289,7 +289,13 @@ def run_morning_prediction():
     try:
         result = _run_with_beat(
             [PYTHON, os.path.join(BASE_DIR, "keiba_predict.py"), "today"],
-            timeout=PREDICT_TIMEOUT * 3,   # 36レース分。1レースあたりの想定×余裕
+            # ⚠ 2026-09-05: 4500秒(75分)では足りず、26レースで打ち切られた。
+            #   名寄せを直して履歴の絞り込みが正しく効くようになり、
+            #   1レースあたり33秒→167秒に増えたため。
+            #   36レース×167秒 = 100分。開始06:55、初レース09:50なので
+            #   150分まで許容できる。7分前ジョブが全レースを押さえているので
+            #   打ち切られても予想自体は落ちないが、朝の表示が欠ける。
+            timeout=9000,   # 150分
         )
         if result.returncode == 0:
             print(f"\n[{datetime.now().strftime('%H:%M')}] 朝の一括予想完了")
